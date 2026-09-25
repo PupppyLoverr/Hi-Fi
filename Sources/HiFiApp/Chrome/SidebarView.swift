@@ -29,10 +29,12 @@ struct SidebarView: View {
                 .padding(.horizontal, HFSpace.sm)
                 .padding(.top, HFSpace.xs)
             }
-            Divider().overlay(p.sBorder)
+            Divider().overlay(p.sBorder.opacity(0.5))
             spaceBar
         }
-        .background(p.sShell)
+        // Frosted rail: the wrap's .behindWindow material shows the desktop
+        // wallpaper; a light palette tint keeps rows readable (cosmos style).
+        .background(p.sShell.opacity(p.isDark ? 0.45 : 0.35))
     }
 
     // MARK: header (under traffic lights)
@@ -169,7 +171,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, HFSpace.sm)
         .padding(.vertical, 7)
-        .background(p.sShell)
+        .background(p.sShell.opacity(p.isDark ? 0.35 : 0.25))
     }
 
     // MARK: helpers

@@ -40,68 +40,63 @@ struct NewTabView: View {
             backgroundLayer(p)
 
             VStack(spacing: 0) {
-                Spacer(minLength: 0).frame(height: 90)
+                Spacer(minLength: 0)
 
-                // wordmark — Hi-Fi identity (app icon) in a glass tile
-                VStack(spacing: 10) {
-                    if let logo = NSImage(named: "AppIcon") {
-                        Image(nsImage: logo).resizable()
-                            .frame(width: 56, height: 56)
-                            .clipShape(RoundedRectangle(cornerRadius: 13))
-                            .background(glassTile(p, radius: 15))
-                            .padding(7)
-                            .shadow(color: .black.opacity(0.25), radius: 14, y: 5)
-                    } else {
-                        Text("Hi-Fi")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                            .foregroundStyle(p.sText)
-                    }
+                // hero: giant clock + greeting
+                VStack(spacing: 6) {
                     Text(clock, style: .time)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(bgImage != nil ? Color.white.opacity(0.75) : p.sFaint)
-                        .shadow(color: .black.opacity(0.4), radius: 4)
+                        .font(.system(size: 62, weight: .ultraLight, design: .rounded))
+                        .foregroundStyle(fg(p))
+                        .shadow(color: .black.opacity(bgImage != nil ? 0.35 : 0), radius: 12)
+                    Text("\(dateLine) · \(greeting)")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(fg(p).opacity(0.72))
+                        .shadow(color: .black.opacity(bgImage != nil ? 0.4 : 0), radius: 6)
                 }
 
-                // search
-                HStack(spacing: 10) {
+                // search — wide glass bar
+                HStack(spacing: 12) {
                     HFIconView(name: "magnifer", fallback: "magnifyingglass",
-                               size: 15, color: p.sFaint)
+                               size: 16, color: fg(p).opacity(0.6))
                     TextField("Search or type an address", text: $query)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 15))
-                        .foregroundStyle(p.sText)
+                        .font(.system(size: 16))
+                        .foregroundStyle(fg(p))
                         .onSubmit { open(query) }
                     if !query.isEmpty {
                         Button { query = "" } label: {
-                            HFIconView(name: "close", fallback: "xmark", size: 11, color: p.sFaint)
+                            HFIconView(name: "close", fallback: "xmark", size: 11, color: fg(p).opacity(0.6))
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, HFSpace.lg)
-                .frame(maxWidth: 520, maxHeight: 46)
+                .padding(.horizontal, 18)
+                .frame(maxWidth: 560, maxHeight: 52)
                 .background(cardBackground(p))
-                .padding(.top, 34)
+                .padding(.top, 26)
+
+                // speed dial — pinned tabs as glass tiles
+                speedDial(p)
 
                 // quick actions
                 HStack(spacing: HFSpace.sm) {
-                    ActionChip(icon: "terminal", sf: "terminal", title: "Terminal", p: p) {
+                    ActionChip(icon: "terminal", sf: "terminal", title: "Terminal", p: p, fg: fg(p)) {
                         _ = store.openTab("hifi://terminal")
                     }
-                    ActionChip(icon: "bot", sf: "sparkles", title: "Agent", p: p) {
+                    ActionChip(icon: "bot", sf: "sparkles", title: "Agent", p: p, fg: fg(p)) {
                         _ = store.openTab("hifi://agent")
                     }
-                    ActionChip(icon: "git-branch", sf: "arrow.triangle.branch", title: "Diff", p: p) {
+                    ActionChip(icon: "git-branch", sf: "arrow.triangle.branch", title: "Diff", p: p, fg: fg(p)) {
                         _ = store.openTab("hifi://diff")
                     }
-                    ActionChip(icon: "split-columns", sf: "rectangle.split.2x1", title: "Split", p: p) {
+                    ActionChip(icon: "split-columns", sf: "rectangle.split.2x1", title: "Split", p: p, fg: fg(p)) {
                         if let id = store.focusedTabID { _ = store.splitTab(anchorID: id, side: .right) }
                     }
-                    ActionChip(icon: "tuning", sf: "slider.horizontal.3", title: "Settings", p: p) {
+                    ActionChip(icon: "tuning", sf: "slider.horizontal.3", title: "Settings", p: p, fg: fg(p)) {
                         _ = store.openTab("hifi://settings")
                     }
                 }
-                .padding(.top, HFSpace.md)
+                .padding(.top, HFSpace.sm)
 
                 // recents
                 recents(p)
@@ -116,6 +111,47 @@ struct NewTabView: View {
         .onAppear { loadBackground() }
         .onChange(of: store.settings.backgroundImage) { _ in loadBackground() }
     }
+
+    // MARK: hero
+
+    /// Foreground: white over wallpaper, palette text otherwise.
+    private func fg(_ p: HFPalette) -> Color {
+        bgImage != nil ? .white : p.sText
+    }
+
+    private var greeting: String {
+        switch Calendar.current.component(.hour, from: clock) {
+        case 5..<12:  return "Good morning"
+        case 12..<17: return "Good afternoon"
+        case 17..<22: return "Good evening"
+        default:      return "Good night"
+        }
+    }
+
+    private var dateLine: String {
+        clock.formatted(.dateTime.weekday(.wide).month(.wide).day())
+    }
+
+    // MARK: speed dial
+
+    private var pinnedTabs: [HiFiCore.Tab] {
+        store.activeSpace.groups.flatMap(\.tabs).filter(\.pinned)
+    }
+
+    private func speedDial(_ p: HFPalette) -> some View {
+        Group {
+            if !pinnedTabs.isEmpty {
+                HStack(spacing: HFSpace.sm) {
+                    ForEach(pinnedTabs.prefix(8)) { t in
+                        SpeedDialTile(tab: t, store: store, fg: fg(p))
+                    }
+                }
+                .padding(.top, HFSpace.lg)
+            }
+        }
+    }
+
+    // MARK: helpers
 
     // MARK: layers
 
@@ -170,42 +206,33 @@ struct NewTabView: View {
             .shadow(color: .black.opacity(p.isDark ? 0.3 : 0.08), radius: 8, y: 3)
     }
 
+    /// "Jump back in" — recent sites as horizontal glass pills.
     private func recents(_ p: HFPalette) -> some View {
-        let entries = store.historyEntries(matching: "", limit: 6)
+        let entries = store.historyEntries(matching: "", limit: 5)
         return Group {
             if !entries.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("RECENT")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .tracking(0.8)
-                        .foregroundStyle(p.sFaint)
-                        .padding(.bottom, 5)
+                HStack(spacing: HFSpace.sm) {
                     ForEach(Array(entries.enumerated()), id: \.offset) { _, e in
                         Button { open(e.url) } label: {
-                            HStack(spacing: 9) {
+                            HStack(spacing: 7) {
                                 if let img = FaviconCache.shared.image(for: e.url) {
                                     Image(nsImage: img).resizable().frame(width: 13, height: 13)
                                 } else {
                                     HFIconView(name: "clock-circle", fallback: "clock",
-                                               size: 12, color: p.sFaint)
+                                               size: 11, color: fg(p).opacity(0.6))
                                 }
-                                Text(e.title.isEmpty ? e.url : e.title)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(p.sMuted).lineLimit(1)
-                                Spacer()
-                                Text(host(of: e.url))
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(p.sFaint.opacity(0.75)).lineLimit(1)
+                                Text(e.title.isEmpty ? host(of: e.url) : e.title)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(fg(p).opacity(0.8)).lineLimit(1)
+                                    .frame(maxWidth: 110)
                             }
-                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .padding(.horizontal, 10).padding(.vertical, 7)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(HoverFill(p: p))
+                        .buttonStyle(.plain)
+                        .background(glassTile(p, radius: HFRadius.round))
                     }
                 }
-                .padding(12)
-                .frame(maxWidth: 520)
-                .background(cardBackground(p))
                 .padding(.top, HFSpace.lg)
             }
         }
@@ -226,12 +253,12 @@ struct NewTabView: View {
         HStack(spacing: 4) {
             Text(key)
                 .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(p.sMuted)
+                .foregroundStyle(fg(p).opacity(0.75))
                 .padding(.horizontal, 5).padding(.vertical, 2.5)
                 .background(glassTile(p, radius: 4.5))
             Text(label)
                 .font(.system(size: 9.5))
-                .foregroundStyle(p.sFaint)
+                .foregroundStyle(fg(p).opacity(0.5))
                 .shadow(color: .black.opacity(bgImage != nil ? 0.5 : 0), radius: 3)
         }
     }
@@ -267,6 +294,7 @@ private struct ActionChip: View {
     let sf: String
     let title: String
     let p: HFPalette
+    let fg: Color
     let action: () -> Void
     @State private var hovering = false
 
@@ -274,10 +302,10 @@ private struct ActionChip: View {
         Button(action: action) {
             VStack(spacing: 5) {
                 HFIconView(name: icon, fallback: sf, size: 15,
-                           color: hovering ? p.sAccent : p.sMuted)
+                           color: hovering ? p.sAccent : fg.opacity(0.7))
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(hovering ? p.sText : p.sMuted)
+                    .foregroundStyle(hovering ? fg : fg.opacity(0.7))
             }
             .frame(width: 64, height: 50)
             .background(
@@ -297,6 +325,52 @@ private struct ActionChip: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// Speed-dial tile: favicon + host, frosted glass — pinned tabs.
+private struct SpeedDialTile: View {
+    let tab: HiFiCore.Tab
+    @ObservedObject var store: BrowserStore
+    let fg: Color
+    @State private var hovering = false
+
+    var body: some View {
+        let p = store.theme.palette
+        Button { store.focusTab(tab.id) } label: {
+            VStack(spacing: 7) {
+                if let img = FaviconCache.shared.image(for: tab.url) {
+                    Image(nsImage: img).resizable().frame(width: 22, height: 22)
+                } else {
+                    HFIconView(name: "globe", fallback: "globe", size: 20, color: fg.opacity(0.75))
+                }
+                Text(host(of: tab.url))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(fg.opacity(0.7)).lineLimit(1)
+            }
+            .frame(width: 74, height: 66)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: HFRadius.bubble)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: HFRadius.bubble)
+                .fill(hovering ? p.sAccentWash : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: HFRadius.bubble)
+                .strokeBorder(hovering ? p.sAccent.opacity(0.5)
+                              : Color.white.opacity(p.isDark ? 0.16 : 0.55), lineWidth: 0.75)
+        )
+        .shadow(color: .black.opacity(p.isDark ? 0.3 : 0.08), radius: 8, y: 3)
+        .onHover { hovering = $0 }
+    }
+
+    private func host(of url: String) -> String {
+        URL(string: url)?.host?.replacingOccurrences(of: "www.", with: "") ?? url
     }
 }
 

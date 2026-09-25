@@ -27,6 +27,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     init(store: BrowserStore) {
         self.store = store
         sidebarView = NSHostingView(rootView: SidebarView(store: store))
+        sidebarView.layer?.backgroundColor = NSColor.clear.cgColor // let the frost show
         let w = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -172,7 +173,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case "light": window?.appearance = NSAppearance(named: .aqua)
         default:      window?.appearance = nil // follow system
         }
-        window?.backgroundColor = store.theme.palette.background
+        // Clear window background: the sidebar's .behindWindow material
+        // needs transparency so the desktop wallpaper shows through (cosmos frost).
+        window?.isOpaque = false
+        window?.backgroundColor = .clear
     }
 
     private func syncTitleBar() {
