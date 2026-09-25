@@ -43,6 +43,12 @@ if [ -f Resources/AppIcon.icns ]; then
   cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Solar icon set (Linear, CC BY 4.0 — 480 Design), same set as Cosmos.
+if [ -d Resources/icons ]; then
+  mkdir -p "$APP/Contents/Resources/icons"
+  cp Resources/icons/*.svg "$APP/Contents/Resources/icons/"
+fi
+
 # ad-hoc sign so Gatekeeper lets it launch locally
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 
