@@ -1,0 +1,16 @@
+# SwiftPM
+.build/
+.swiftpm/
+DerivedData/
+
+# Build output
+build/
+
+# macOS
+.DS_Store
+xcuserdata/
+*.xcuserstate
+
+# Local scratch
+*.log
+/tmp/

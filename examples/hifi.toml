@@ -1,0 +1,9 @@
+# Hi-Fi project config — drop this at a repo root (or .hifi.toml).
+
+[worktree]
+# Ignored/local files to copy into every new worktree so it boots fast.
+copy_files = [".env", ".env.local", "hifi.toml"]
+
+[scripts]
+# Run after `hifi worktree create` with HIFI_* env vars set.
+setup = "examples/setup.sh"
