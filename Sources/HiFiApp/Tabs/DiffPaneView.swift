@@ -11,6 +11,7 @@ final class DiffPaneView: PaneHostView {
     private var repoPath: String
     private let fileList = NSTableView()
     private var files: [(status: String, path: String)] = []
+    private var numstat: [String: (Int, Int)] = [:]
     private let diffText = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let pathField = NSTextField()
@@ -49,9 +50,10 @@ final class DiffPaneView: PaneHostView {
         pathField.action = #selector(pathChanged)
         header.addSubview(pathField)
 
-        let refreshBtn = NSButton(title: "⟳", target: self, action: #selector(refresh))
+        let refreshBtn = NSButton(title: "", target: self, action: #selector(refresh))
         refreshBtn.isBordered = false
-        refreshBtn.font = .systemFont(ofSize: 13)
+        refreshBtn.image = HFIcon.image("refresh", fallback: "arrow.clockwise", size: 12)
+        refreshBtn.contentTintColor = p.faint
         refreshBtn.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(refreshBtn)
 
@@ -134,13 +136,18 @@ final class DiffPaneView: PaneHostView {
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let files = Self.gitStatus(path: self?.repoPath ?? "")
+            let stats = Self.gitNumstat(path: self?.repoPath ?? "")
             let branch = Self.git(path: self?.repoPath ?? "", args: ["rev-parse", "--abbrev-ref", "HEAD"])
+            let adds = stats.values.map(\.0).reduce(0, +)
+            let dels = stats.values.map(\.1).reduce(0, +)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.files = files
+                self.numstat = stats
                 self.fileList.reloadData()
-                self.statusLabel.stringValue =
-                    files.isEmpty ? "clean · \(branch.trimmed)" : "\(files.count) changed · \(branch.trimmed)"
+                self.statusLabel.stringValue = files.isEmpty
+                    ? "clean · \(branch.trimmed)"
+                    : "\(files.count) changed · +\(adds) −\(dels) · \(branch.trimmed)"
                 if let first = files.first { self.showDiff(for: first.path) }
                 else { self.diffText.string = "working tree clean\n" }
             }
@@ -195,6 +202,23 @@ final class DiffPaneView: PaneHostView {
         return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     }
 
+    /// path → (adds, dels) from unstaged + staged numstat.
+    static func gitNumstat(path: String) -> [String: (Int, Int)] {
+        var map: [String: (Int, Int)] = [:]
+        for args in [["diff", "--numstat"], ["diff", "--cached", "--numstat"]] {
+            for line in git(path: path, args: args).components(separatedBy: "\n") {
+                let cols = line.components(separatedBy: "\t")
+                guard cols.count >= 3 else { continue }
+                let adds = Int(cols[0]) ?? 0
+                let dels = Int(cols[1]) ?? 0
+                let file = cols[2]
+                let old = map[file] ?? (0, 0)
+                map[file] = (old.0 + adds, old.1 + dels)
+            }
+        }
+        return map
+    }
+
     /// +/- green/red highlighting for unified diffs.
     static func colorize(_ text: String) -> NSAttributedString {
         let attr = NSMutableAttributedString()
@@ -217,10 +241,40 @@ extension DiffPaneView: NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView,
                    viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let f = files[row]
-        let cell = NSTextField(labelWithString: " \(f.status)  \(f.path)")
-        cell.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        cell.textColor = f.status.contains("?") ? .systemOrange : .labelColor
-        cell.lineBreakMode = .byTruncatingMiddle
+        let p = store?.theme.palette ?? HFPalette(isDark: true, accentHex: "#8b7cf6")
+        let cell = NSView()
+        let statusLabel = NSTextField(labelWithString: f.status)
+        statusLabel.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
+        statusLabel.textColor = f.status.contains("?") ? .systemOrange : p.accent
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let pathLabel = NSTextField(labelWithString: f.path)
+        pathLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pathLabel.textColor = p.text
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        cell.addSubview(statusLabel); cell.addSubview(pathLabel)
+        var trailing: NSLayoutXAxisAnchor = cell.trailingAnchor
+        if let (a, d) = numstat[f.path], (a + d) > 0 {
+            let stat = NSTextField(labelWithString: "\(a > 0 ? "+\(a)" : "")\(d > 0 ? "−\(d)" : "")")
+            stat.font = .monospacedSystemFont(ofSize: 9.5, weight: .medium)
+            stat.textColor = p.faint
+            stat.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(stat)
+            stat.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6).isActive = true
+            stat.centerYAnchor.constraint(equalTo: cell.centerYAnchor).isActive = true
+            trailing = stat.leadingAnchor
+        }
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+            statusLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            statusLabel.widthAnchor.constraint(equalToConstant: 16),
+            pathLabel.leadingAnchor.constraint(equalTo: statusLabel.trailingAnchor, constant: 6),
+            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailing, constant: -6),
+            pathLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
         return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {

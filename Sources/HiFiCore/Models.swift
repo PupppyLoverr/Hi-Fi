@@ -11,7 +11,7 @@ public enum TabKindError: Error { case badScheme }
 /// Parse a `hifi://` scheme or plain URL into kind + payload.
 public enum SchemeParser {
     public static let builtinSchemes: Set<String> = [
-        "newtab", "terminal", "agent", "diff", "preview", "settings"
+        "newtab", "terminal", "agent", "chat", "diff", "diffs", "preview", "settings"
     ]
 
     public static func parse(_ raw: String) -> (kind: TabKind, url: String) {
@@ -20,12 +20,12 @@ public enum SchemeParser {
             let host = rest.split(separator: "/", maxSplits: 1).first
                 .flatMap { $0.split(separator: "?", maxSplits: 1).first.map(String.init) } ?? rest
             switch host {
-            case "terminal": return (.terminal, raw)
-            case "agent":    return (.agent, raw)
-            case "diff":     return (.diff, raw)
-            case "preview":  return (.preview, raw)
-            case "settings": return (.settings, raw)
-            default:         return (.newtab, "hifi://newtab")
+            case "terminal":         return (.terminal, raw)
+            case "agent", "chat":    return (.agent, raw)
+            case "diff", "diffs":    return (.diff, raw)
+            case "preview":          return (.preview, raw)
+            case "settings":         return (.settings, raw)
+            default:                 return (.newtab, "hifi://newtab")
             }
         }
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") || raw.hasPrefix("file://") {

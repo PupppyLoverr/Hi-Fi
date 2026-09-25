@@ -42,13 +42,15 @@ struct NewTabView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 0).frame(height: 90)
 
-                // wordmark — Hi-Fi identity (app icon), not the cosmos mark
-                VStack(spacing: 8) {
+                // wordmark — Hi-Fi identity (app icon) in a glass tile
+                VStack(spacing: 10) {
                     if let logo = NSImage(named: "AppIcon") {
                         Image(nsImage: logo).resizable()
-                            .frame(width: 52, height: 52)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 13))
+                            .background(glassTile(p, radius: 15))
+                            .padding(7)
+                            .shadow(color: .black.opacity(0.25), radius: 14, y: 5)
                     } else {
                         Text("Hi-Fi")
                             .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -56,7 +58,8 @@ struct NewTabView: View {
                     }
                     Text(clock, style: .time)
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(p.sFaint)
+                        .foregroundStyle(bgImage != nil ? Color.white.opacity(0.75) : p.sFaint)
+                        .shadow(color: .black.opacity(0.4), radius: 4)
                 }
 
                 // search
@@ -136,18 +139,35 @@ struct NewTabView: View {
         .ignoresSafeArea()
     }
 
+    /// Acrylic card: real backdrop material + glass edge highlight + soft shadow.
     private func cardBackground(_ p: HFPalette) -> some View {
         RoundedRectangle(cornerRadius: HFRadius.bubble)
-            .fill(p.sCard.opacity(bgImage != nil ? 0.72 : 1))
-            .background(
+            .fill(.regularMaterial)
+            .overlay(
                 RoundedRectangle(cornerRadius: HFRadius.bubble)
-                    .fill(.regularMaterial.opacity(0.5))
+                    .fill(p.sCard.opacity(bgImage != nil ? 0.10 : 0.55))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: HFRadius.bubble)
-                    .strokeBorder(p.sBorder, lineWidth: 1)
+                    .strokeBorder(
+                        LinearGradient(colors: [
+                            Color.white.opacity(p.isDark ? 0.22 : 0.7),
+                            p.sBorder
+                        ], startPoint: .top, endPoint: .bottom),
+                        lineWidth: 1)
             )
-            .shadow(color: .black.opacity(p.isDark ? 0.4 : 0.08), radius: 18, y: 6)
+            .shadow(color: .black.opacity(p.isDark ? 0.45 : 0.12), radius: 20, y: 8)
+    }
+
+    /// Small glass tile for chips/kbds.
+    private func glassTile(_ p: HFPalette, radius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: radius)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius)
+                    .strokeBorder(Color.white.opacity(p.isDark ? 0.16 : 0.55), lineWidth: 0.75)
+            )
+            .shadow(color: .black.opacity(p.isDark ? 0.3 : 0.08), radius: 8, y: 3)
     }
 
     private func recents(_ p: HFPalette) -> some View {
@@ -208,11 +228,11 @@ struct NewTabView: View {
                 .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                 .foregroundStyle(p.sMuted)
                 .padding(.horizontal, 5).padding(.vertical, 2.5)
-                .background(p.sHover, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(p.sBorder, lineWidth: 0.5))
+                .background(glassTile(p, radius: 4.5))
             Text(label)
                 .font(.system(size: 9.5))
                 .foregroundStyle(p.sFaint)
+                .shadow(color: .black.opacity(bgImage != nil ? 0.5 : 0), radius: 3)
         }
     }
 
@@ -262,12 +282,18 @@ private struct ActionChip: View {
             .frame(width: 64, height: 50)
             .background(
                 RoundedRectangle(cornerRadius: HFRadius.panel)
-                    .fill(hovering ? p.sAccentWash : p.sCard.opacity(0.85))
+                    .fill(.ultraThinMaterial)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: HFRadius.panel)
-                    .strokeBorder(hovering ? p.sAccent.opacity(0.4) : p.sBorder, lineWidth: 1)
+                    .fill(hovering ? p.sAccentWash : Color.clear)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: HFRadius.panel)
+                    .strokeBorder(hovering ? p.sAccent.opacity(0.5)
+                                  : Color.white.opacity(p.isDark ? 0.16 : 0.55), lineWidth: 0.75)
+            )
+            .shadow(color: .black.opacity(p.isDark ? 0.3 : 0.08), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

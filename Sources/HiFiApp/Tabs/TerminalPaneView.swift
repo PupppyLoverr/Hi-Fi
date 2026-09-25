@@ -12,6 +12,9 @@ final class TerminalPaneView: PaneHostView {
     private let tabID: String
     private weak var store: BrowserStore?
     private var started = false
+    private let dimsLabel = NSTextField(labelWithString: "")
+    private var shellName = ""
+    private var worktreeName = ""
 
     override var firstResponderView: NSView { terminal }
 
@@ -23,11 +26,14 @@ final class TerminalPaneView: PaneHostView {
         wantsLayer = true
 
         let cwd = tab.projectPath ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let (cmd, args, name) = agentMode
             ? Self.detectHarness(fallback: cwd)
-            : (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh", ["-l"], "shell")
+            : (shellPath, ["-l"], URL(fileURLWithPath: shellPath).lastPathComponent)
 
         let p = store.theme.palette
+        shellName = name
+        worktreeName = URL(fileURLWithPath: cwd).lastPathComponent
         let header = makeHeader(tab: tab, cwd: cwd, name: name, agentMode: agentMode)
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
@@ -75,31 +81,50 @@ final class TerminalPaneView: PaneHostView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Radius-style header: mark icon, `name — -shell — cols×rows`.
     private func makeHeader(tab: HiFiCore.Tab, cwd: String, name: String, agentMode: Bool) -> NSView {
         let p = store!.theme.palette
         let bar = NSView()
         bar.wantsLayer = true
         bar.layer?.backgroundColor = p.surfaceCard.cgColor
         bar.layer?.borderWidth = 0
-        let icon = NSTextField(labelWithString: agentMode ? "✦" : "❯")
-        icon.font = .systemFont(ofSize: 11)
-        icon.textColor = agentMode ? p.accent : p.muted
+
+        // Solar mark for the harness (claude/codex/cursor), terminal glyph for shells
+        let iconName = agentMode ? Self.markIcon(for: name) : "terminal"
+        let icon = NSImageView()
+        icon.image = HFIcon.image(iconName, fallback: agentMode ? "sparkles" : "terminal", size: 12)
+        icon.contentTintColor = agentMode ? p.accent : p.muted
         icon.translatesAutoresizingMaskIntoConstraints = false
-        let title = NSTextField(labelWithString:
-            agentMode ? "\(name)  ·  \(cwd)" : "\(cwd)")
+
+        let base = agentMode ? "\(worktreeName) — \(name)" : "\(worktreeName) — -\(name)"
+        let title = NSTextField(labelWithString: base)
         title.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
         title.textColor = p.faint
         title.lineBreakMode = .byTruncatingMiddle
         title.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(icon); bar.addSubview(title)
+        dimsLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        dimsLabel.textColor = p.faint
+        dimsLabel.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(icon); bar.addSubview(title); bar.addSubview(dimsLabel)
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             icon.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
-            title.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            dimsLabel.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 6),
+            dimsLabel.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            dimsLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             title.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
         ])
         return bar
+    }
+
+    static func markIcon(for harness: String) -> String {
+        switch harness {
+        case "claude":       return "claude-mark"
+        case "codex":        return "openai-mark"
+        case "cursor-agent", "cursor": return "cursor-mark"
+        default:             return "bot"
+        }
     }
 
     static func terminalEnv(tab: HiFiCore.Tab, cwd: String) -> [String] {
@@ -131,7 +156,7 @@ final class TerminalPaneView: PaneHostView {
         if let c = exists("cursor-agent")  { return (c, [], "cursor-agent") }
         if let c = exists("cursor")        { return (c, ["agent"], "cursor") }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        return (shell, ["-l"], "shell")
+        return (shell, ["-l"], URL(fileURLWithPath: shell).lastPathComponent)
     }
 
     @objc private func sendLine() {
@@ -149,7 +174,9 @@ extension TerminalPaneView: LocalProcessTerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         if let d = directory { store?.updateTab(tabID, title: URL(fileURLWithPath: d).lastPathComponent) }
     }
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        dimsLabel.stringValue = "— \(newCols)×\(newRows)"
+    }
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         store?.updateTab(tabID, title: title.isEmpty ? "Terminal" : title)
     }

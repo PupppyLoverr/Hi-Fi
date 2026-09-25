@@ -287,7 +287,8 @@ private struct TabRow: View {
         } label: {
             HStack(spacing: 7) {
                 leadingIcon
-                Text(tab.title.isEmpty ? tab.url : tab.title)
+                // Radius-style "Kind/Title" for pane tabs, plain title for web
+                Text(displayTitle)
                     .font(.system(size: 12))
                     .foregroundStyle(focused ? p.sText : p.sMuted)
                     .lineLimit(1)
@@ -333,6 +334,20 @@ private struct TabRow: View {
             Button("Split down") { _ = store.splitTab(anchorID: tab.id, side: .below) }
             Divider()
             Button("Close", role: .destructive) { store.closeTab(tab.id) }
+        }
+    }
+
+    /// "Agent/repo", "Terminal/zsh", "Diff/Hi-Fi" — kind prefix + live title.
+    private var displayTitle: String {
+        let title = tab.title
+        switch tab.kind {
+        case .web:
+            return title.isEmpty ? tab.url : title
+        case .newtab, .settings:
+            return title
+        case .terminal, .agent, .diff, .preview:
+            let kind = tab.kind.rawValue.capitalized
+            return (title.isEmpty || title == kind) ? kind : "\(kind)/\(title)"
         }
     }
 
