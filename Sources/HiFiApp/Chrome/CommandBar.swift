@@ -12,10 +12,19 @@ final class CommandBarModel: ObservableObject {
 
     struct Item: Identifiable {
         let id = UUID()
+        /// Solar icon name; falls back to `sf` system symbol when absent.
         let icon: String
+        let sf: String
         let title: String
         let detail: String
         let run: (BrowserStore) -> Void
+
+        init(icon: String, sf: String = "", title: String, detail: String,
+             run: @escaping (BrowserStore) -> Void) {
+            self.icon = icon
+            self.sf = sf.isEmpty ? icon : sf
+            self.title = title; self.detail = detail; self.run = run
+        }
     }
 
     func items(for store: BrowserStore) -> [Item] {
@@ -24,7 +33,7 @@ final class CommandBarModel: ObservableObject {
 
         if store.commandBarMode == .url {
             let current = store.focusedTab?.url ?? ""
-            out.append(Item(icon: "globe", title: "Go to \(q.isEmpty ? current : q)",
+            out.append(Item(icon: "globe", sf: "globe", title: "Go to \(q.isEmpty ? current : q)",
                             detail: q.isEmpty ? "current page" : "") { s in
                 if q.isEmpty {
                     if let id = s.focusedTabID, let pane = s.windowController?.webPane(for: id) {
@@ -51,18 +60,18 @@ final class CommandBarModel: ObservableObject {
                 let name = parts.count > 2 ? parts[2] : nil
                 switch head {
                 case "worktree":
-                    out.append(Item(icon: "arrow.triangle.branch",
+                    out.append(Item(icon: "git-branch", sf: "arrow.triangle.branch",
                                     title: "New worktree \(name ?? "")",
                                     detail: path) { s in
                         s.worktreeCreate(repoPath: path, name: name)
                     })
                 case "agent":
-                    out.append(Item(icon: "sparkles", title: "New agent",
+                    out.append(Item(icon: "bot", sf: "sparkles", title: "New agent",
                                     detail: path) { s in
                         _ = s.openTab("hifi://agent", projectPath: path)
                     })
                 case "diff":
-                    out.append(Item(icon: "doc.text.magnifyingglass", title: "New diff",
+                    out.append(Item(icon: "document", sf: "doc.text.magnifyingglass", title: "New diff",
                                     detail: path) { s in
                         _ = s.openTab("hifi://diff", projectPath: path)
                     })
@@ -81,7 +90,7 @@ final class CommandBarModel: ObservableObject {
         // default open action
         if !q.isEmpty {
             let (kind, url) = SchemeParser.parse(q)
-            out.append(Item(icon: "globe",
+            out.append(Item(icon: "globe", sf: "globe",
                             title: q.hasPrefix("hifi://") ? "Open \(q)" : "Open \(url)",
                             detail: kind == .web ? "" : "internal") { s in
                 _ = s.openTab(q)
@@ -95,7 +104,7 @@ final class CommandBarModel: ObservableObject {
                     let title = t.title.isEmpty ? t.url : t.title
                     if q.isEmpty || title.lowercased().contains(q.lowercased())
                         || t.url.lowercased().contains(q.lowercased()) {
-                        out.append(Item(icon: "arrow.right.circle", title: "Switch to \(title)",
+                        out.append(Item(icon: "arrow-right", sf: "arrow.right.circle", title: "Switch to \(title)",
                                         detail: "\(sp.name) · \(t.url)") { s in
                             s.focusTab(t.id)
                         })
@@ -106,7 +115,7 @@ final class CommandBarModel: ObservableObject {
 
         // history
         for h in store.historyEntries(matching: q, limit: 8) {
-            out.append(Item(icon: "clock", title: h.title.isEmpty ? h.url : h.title,
+            out.append(Item(icon: "clock-circle", sf: "clock", title: h.title.isEmpty ? h.url : h.title,
                             detail: h.url) { s in
                 _ = s.openTab(h.url)
             })
@@ -115,28 +124,28 @@ final class CommandBarModel: ObservableObject {
     }
 
     static let actions: [Item] = [
-        Item(icon: "plus.square", title: "New Tab", detail: "hifi://newtab") { _ = $0.openTab("hifi://newtab") },
-        Item(icon: "terminal", title: "New Terminal", detail: "hifi://terminal") { _ = $0.openTab("hifi://terminal") },
-        Item(icon: "sparkles", title: "New Agent", detail: "hifi://agent") { _ = $0.openTab("hifi://agent") },
-        Item(icon: "doc.text.magnifyingglass", title: "New Diff", detail: "pick a repo path") { _ = $0.openTab("hifi://diff") },
-        Item(icon: "rectangle.split.2x1", title: "Split Right", detail: "") { s in
+        Item(icon: "add-circle", sf: "plus.square", title: "New Tab", detail: "hifi://newtab") { _ = $0.openTab("hifi://newtab") },
+        Item(icon: "terminal", sf: "terminal", title: "New Terminal", detail: "hifi://terminal") { _ = $0.openTab("hifi://terminal") },
+        Item(icon: "bot", sf: "sparkles", title: "New Agent", detail: "hifi://agent") { _ = $0.openTab("hifi://agent") },
+        Item(icon: "document", sf: "doc.text.magnifyingglass", title: "New Diff", detail: "pick a repo path") { _ = $0.openTab("hifi://diff") },
+        Item(icon: "split-columns", sf: "rectangle.split.2x1", title: "Split Right", detail: "⌘⏎") { s in
             if let id = s.focusedTab?.id { _ = s.splitTab(anchorID: id, side: .right) }
         },
-        Item(icon: "rectangle.split.1x2", title: "Split Down", detail: "") { s in
+        Item(icon: "fold-vertical", sf: "rectangle.split.1x2", title: "Split Down", detail: "") { s in
             if let id = s.focusedTab?.id { _ = s.splitTab(anchorID: id, side: .below) }
         },
-        Item(icon: "sidebar.left", title: "Toggle Sidebar", detail: "") { $0.sidebarCollapsed.toggle() },
-        Item(icon: "xmark.circle", title: "Close Tab", detail: "") { s in
+        Item(icon: "sidebar-minimalistic-left", sf: "sidebar.left", title: "Toggle Sidebar", detail: "⌘\\") { $0.sidebarCollapsed.toggle() },
+        Item(icon: "close-circle", sf: "xmark.circle", title: "Close Tab", detail: "⌘W") { s in
             if let id = s.focusedTab?.id { s.closeTab(id) }
         },
-        Item(icon: "arrow.triangle.branch", title: "New Worktree", detail: "worktree /path [name]") { _ in },
-        Item(icon: "plus.rectangle", title: "New Space", detail: "") { s in
+        Item(icon: "git-branch", sf: "arrow.triangle.branch", title: "New Worktree", detail: "worktree /path [name]") { _ in },
+        Item(icon: "widget", sf: "plus.rectangle", title: "New Space", detail: "") { s in
             _ = s.createSpace(name: "Space \(s.state.spaces.count + 1)")
         },
-        Item(icon: "pin", title: "Pin Tab", detail: "") { s in
+        Item(icon: "pin", sf: "pin", title: "Pin Tab", detail: "") { s in
             if let id = s.focusedTab?.id { s.togglePin(id) }
         },
-        Item(icon: "gear", title: "Open Settings", detail: "") { _ = $0.openTab("hifi://settings") },
+        Item(icon: "settings-minimalistic", sf: "gear", title: "Open Settings", detail: "") { _ = $0.openTab("hifi://settings") },
     ]
 }
 
@@ -146,7 +155,7 @@ final class CommandBarController {
     private let store: BrowserStore
     private let model = CommandBarModel()
     private var hosting: NSHostingView<CommandBarView>?
-    private var container: NSVisualEffectView?
+    private var container: NSView?
     private weak var window: NSWindow?
     private var keyMonitor: Any?
 
@@ -155,16 +164,17 @@ final class CommandBarController {
     func attach(to window: NSWindow) {
         self.window = window
         guard let content = window.contentView else { return }
-        let fx = NSVisualEffectView()
-        fx.material = .popover
-        fx.state = .active
+        // Opaque cosmos dialog card — #161616, hairline, no blur material.
+        let fx = NSView()
         fx.wantsLayer = true
-        fx.layer?.cornerRadius = 12
-        fx.layer?.borderWidth = 0.5
-        fx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.4).cgColor
+        fx.layer?.cornerRadius = HFRadius.bubble
+        fx.layer?.borderWidth = 1
+        fx.layer?.borderColor = store.theme.palette.borderStrong.cgColor
+        fx.layer?.backgroundColor = store.theme.palette.surfaceDialog.cgColor
         fx.layer?.masksToBounds = true
 
         let hv = NSHostingView(rootView: CommandBarView(store: store, model: model))
+        hv.layer?.backgroundColor = NSColor.clear.cgColor // kill windowBackground tint
         hv.translatesAutoresizingMaskIntoConstraints = false
         fx.addSubview(hv)
         NSLayoutConstraint.activate([
@@ -239,49 +249,80 @@ final class CommandBarController {
 struct CommandBarView: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject var model: CommandBarModel
+    @ObservedObject var theme: HiFiTheme
+
+    init(store: BrowserStore, model: CommandBarModel) {
+        self.store = store; self.model = model; self.theme = store.theme
+    }
 
     private var items: [CommandBarModel.Item] { model.items(for: store) }
 
     var body: some View {
+        let p = theme.palette
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: store.commandBarMode == .url ? "globe" : "command")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                HFIconView(name: store.commandBarMode == .url ? "globe" : "command",
+                           fallback: store.commandBarMode == .url ? "globe" : "command",
+                           size: 16, color: p.sAccent)
                 TextField(store.commandBarMode == .url
                           ? "Enter address"
                           : "Type a command, URL, or search",
                           text: $model.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
+                    .foregroundStyle(p.sText)
                     .onSubmit { submit() }
                     .onChange(of: model.query) { _ in model.selected = 0 }
+                if store.commandBarMode == .url {
+                    Text("URL").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(p.sAccent)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(p.sAccentWash, in: Capsule())
+                }
             }
-            .padding(.horizontal, 14).padding(.vertical, 11)
+            .padding(.horizontal, HFSpace.lg).padding(.vertical, 12)
 
-            Divider()
+            if !items.isEmpty {
+                Rectangle().fill(p.sBorder).frame(height: 1)
+            }
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 1) {
                         ForEach(Array(items.prefix(14).enumerated()), id: \.element.id) { idx, item in
                             Button { choose(idx) } label: {
                                 HStack(spacing: 10) {
-                                    Image(systemName: item.icon)
-                                        .frame(width: 16).foregroundStyle(.secondary)
-                                    Text(item.title).font(.system(size: 13)).lineLimit(1)
+                                    HFIconView(name: item.icon, fallback: item.sf, size: 14,
+                                               color: idx == model.selected ? p.sAccent : p.sMuted)
+                                        .frame(width: 18)
+                                    Text(item.title)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(idx == model.selected ? p.sText : p.sMuted)
+                                        .lineLimit(1)
                                     Spacer()
-                                    Text(item.detail).font(.system(size: 11))
-                                        .foregroundStyle(.tertiary).lineLimit(1)
+                                    Text(item.detail)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(p.sFaint).lineLimit(1)
                                 }
-                                .padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(idx == model.selected
-                                            ? Color.accentColor.opacity(0.15) : .clear)
+                                .padding(.horizontal, HFSpace.md).padding(.vertical, 7)
+                                .background(
+                                    RoundedRectangle(cornerRadius: HFRadius.control)
+                                        .fill(idx == model.selected ? p.sAccentWash : Color.clear)
+                                )
+                                .overlay(alignment: .leading) {
+                                    if idx == model.selected {
+                                        RoundedRectangle(cornerRadius: 2).fill(p.sAccent)
+                                            .frame(width: 2.5, height: 16)
+                                    }
+                                }
+                                .padding(.leading, 2)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .id(idx)
                         }
                     }
+                    .padding(.vertical, 4)
                 }
                 .frame(maxHeight: 320)
                 .onChange(of: model.selected) { idx in

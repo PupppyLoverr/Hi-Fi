@@ -38,6 +38,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         w.minSize = NSSize(width: 640, height: 420)
         w.isReleasedWhenClosed = false
         super.init(window: w)
+        applyAppearance()
         w.delegate = self
         layoutViews()
         installKeyMonitor()
@@ -57,6 +58,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
+        splitView.setValue(store.theme.palette.border, forKey: "dividerColor")
         content.addSubview(splitView)
         NSLayoutConstraint.activate([
             splitView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -93,9 +95,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let tv = NSVisualEffectView()
         tv.material = .hudWindow; tv.state = .active
-        tv.wantsLayer = true; tv.layer?.cornerRadius = 10
+        tv.wantsLayer = true
+        tv.layer?.cornerRadius = HFRadius.panel
+        tv.layer?.borderWidth = 1
+        tv.layer?.borderColor = store.theme.palette.border.cgColor
         let label = NSTextField(labelWithString: "")
-        label.textColor = .labelColor
+        label.textColor = store.theme.palette.text
         label.font = .systemFont(ofSize: 12)
         label.translatesAutoresizingMaskIntoConstraints = false
         tv.addSubview(label)
@@ -131,6 +136,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.toastView?.isHidden = (msg == nil)
             }
             .store(in: &cancellables)
+        // re-resolve when theme or active space changes (accent follows space)
+        store.$state.map { $0.activeSpaceID }.removeDuplicates()
+            .sink { [weak self] _ in self?.store.theme.recompute() }
+            .store(in: &cancellables)
+        theme.$palette.dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyAppearance() }
+            .store(in: &cancellables)
         store.$commandBarVisible
             .receive(on: DispatchQueue.main)
             .sink { [weak self] v in v ? self?.commandBar?.show() : self?.commandBar?.hide() }
@@ -148,6 +161,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func restoreFrame() {
         guard let desc = store.state.windowFrame else { return }
         window?.setFrame(NSRectFromString(desc), display: true)
+    }
+
+    private var theme: HiFiTheme { store.theme }
+
+    private func applyAppearance() {
+        let appearance = store.settings.appearance
+        switch appearance {
+        case "dark":  window?.appearance = NSAppearance(named: .darkAqua)
+        case "light": window?.appearance = NSAppearance(named: .aqua)
+        default:      window?.appearance = nil // follow system
+        }
+        window?.backgroundColor = store.theme.palette.background
     }
 
     private func syncTitleBar() {
@@ -228,6 +253,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let sv = FocusSplitView()
             sv.isVertical = (dir == .horizontal)
             sv.dividerStyle = .thin
+            sv.hfDividerColor = store.theme.palette.border
             sv.delegate = sv
             sv.addArrangedSubview(build(first, for: group))
             sv.addArrangedSubview(build(second, for: group))
@@ -370,9 +396,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-/// NSSplitView that reports user drags back up.
+/// NSSplitView that reports user drags back up and draws a cosmos hairline.
 final class FocusSplitView: NSSplitView, NSSplitViewDelegate {
     var onResize: (() -> Void)?
+    var hfDividerColor: NSColor = NSColor.white.withAlphaComponent(0.075)
     func splitViewDidResizeSubviews(_ notification: Notification) { onResize?() }
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
+    override var dividerThickness: CGFloat { 1 }
+    override func drawDivider(in rect: NSRect) {
+        hfDividerColor.setFill()
+        rect.fill()
+    }
+    override func mouseDown(with event: NSEvent) {
+        // subtle drag affordance: cursor follows the split orientation
+        let p = convert(event.locationInWindow, from: nil)
+        let i = dividerIndex(at: p)
+        if i >= 0 { (isVertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push() }
+        super.mouseDown(with: event)
+        if i >= 0 { NSCursor.pop() }
+    }
+    private func dividerIndex(at point: NSPoint) -> Int {
+        for i in 0..<arrangedSubviews.count - 1 {
+            let f = arrangedSubviews[i].frame
+            let hit = isVertical
+                ? NSRect(x: f.maxX, y: f.minY, width: dividerThickness + 6, height: f.height)
+                : NSRect(x: f.minX, y: f.maxY, width: f.width, height: dividerThickness + 6)
+            if hit.contains(point) { return i }
+        }
+        return -1
+    }
 }

@@ -220,6 +220,22 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
 
 // MARK: - Persisted session
 
+/// User-facing preferences, persisted with the session.
+public struct Settings: Codable, Sendable {
+    /// "system" | "dark" | "light"
+    public var appearance: String = "system"
+    /// Accent preset: cosmos|orange|amber|green|cyan|blue|pink, "" = space accent
+    public var accent: String = ""
+    /// POSIX path to a custom new-tab background image, nil = none
+    public var backgroundImage: String?
+    /// Blur applied to the custom background (0-100)
+    public var backgroundBlur: Int = 30
+    /// Dim applied over the custom background (0-100, 0 = no dim)
+    public var backgroundDim: Int = 35
+
+    public init() {}
+}
+
 public struct SessionState: Codable, Sendable {
     public var spaces: [Space]
     public var activeSpaceID: String?
@@ -229,14 +245,33 @@ public struct SessionState: Codable, Sendable {
     public var agentAllowedGroups: Set<String>
     public var sidebarCollapsed: Bool
     public var windowFrame: String? // "x y w h"
+    public var settings: Settings = Settings()
 
     public init(spaces: [Space] = [], activeSpaceID: String? = nil,
                 profiles: [Profile] = [], worktrees: [Worktree] = [],
                 agentAllowedGroups: Set<String> = [], sidebarCollapsed: Bool = false,
-                windowFrame: String? = nil) {
+                windowFrame: String? = nil, settings: Settings = Settings()) {
         self.spaces = spaces; self.activeSpaceID = activeSpaceID
         self.profiles = profiles; self.worktrees = worktrees
         self.agentAllowedGroups = agentAllowedGroups
         self.sidebarCollapsed = sidebarCollapsed; self.windowFrame = windowFrame
+        self.settings = settings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case spaces, activeSpaceID, profiles, worktrees
+        case agentAllowedGroups, sidebarCollapsed, windowFrame, settings
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try c.decode([Space].self, forKey: .spaces)
+        activeSpaceID = try c.decodeIfPresent(String.self, forKey: .activeSpaceID)
+        profiles = try c.decode([Profile].self, forKey: .profiles)
+        worktrees = try c.decodeIfPresent([Worktree].self, forKey: .worktrees) ?? []
+        agentAllowedGroups = try c.decodeIfPresent(Set<String>.self, forKey: .agentAllowedGroups) ?? []
+        sidebarCollapsed = try c.decodeIfPresent(Bool.self, forKey: .sidebarCollapsed) ?? false
+        windowFrame = try c.decodeIfPresent(String.self, forKey: .windowFrame)
+        settings = try c.decodeIfPresent(Settings.self, forKey: .settings) ?? Settings()
     }
 }

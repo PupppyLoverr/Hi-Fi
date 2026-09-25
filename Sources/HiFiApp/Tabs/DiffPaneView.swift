@@ -31,9 +31,10 @@ final class DiffPaneView: PaneHostView {
 
     private func buildUI() {
         // header
+        let p = store?.theme.palette ?? HFPalette(isDark: true, accentHex: "#8b7cf6")
         let header = NSView()
         header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.4).cgColor
+        header.layer?.backgroundColor = p.surfaceCard.cgColor
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
 
@@ -54,8 +55,8 @@ final class DiffPaneView: PaneHostView {
         refreshBtn.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(refreshBtn)
 
-        statusLabel.font = .systemFont(ofSize: 10)
-        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        statusLabel.textColor = p.faint
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(statusLabel)
 
@@ -108,7 +109,7 @@ final class DiffPaneView: PaneHostView {
         diffText.isVerticallyResizable = true
         diffText.isHorizontallyResizable = false
         diffText.textContainer?.widthTracksTextView = true
-        diffText.backgroundColor = .textBackgroundColor
+        diffText.backgroundColor = p.terminalBackground
         rightScroll.documentView = diffText
 
         split.addArrangedSubview(leftScroll)

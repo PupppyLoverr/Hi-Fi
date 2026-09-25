@@ -1,303 +1,435 @@
 import SwiftUI
-import AppKit
 import HiFiCore
 
+// Sidebar — Cosmos shell plane (#0d0d0d dark / #f3f3f5 light) with hairline
+// separators, Solar icons, space-accent focused rows and frosted bottom bar.
 
-/// Vertical sidebar: pinned strip, ungrouped tabs, named groups, space bar.
 struct SidebarView: View {
     @ObservedObject var store: BrowserStore
-    @State private var newSpaceDraft: String?
-    @State private var renamingGroup: String?
-    @State private var renameText = ""
-    @State private var showDownloads = false
+    @ObservedObject var theme: HiFiTheme
 
-    private var space: HiFiCore.Space { store.activeSpace }
+    init(store: BrowserStore) {
+        self.store = store
+        self.theme = store.theme
+    }
 
     var body: some View {
+        let p = theme.palette
         VStack(spacing: 0) {
             trafficLightSpacer
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    pinnedSection
+                VStack(alignment: .leading, spacing: HFSpace.sm) {
+                    pinnedRow
                     todaySection
-                    ForEach(space.groups.filter { !$0.pinnedSection && !$0.name.isEmpty }) { g in
+                    ForEach(store.activeSpace.groups.filter { !$0.pinnedSection && !$0.name.isEmpty }) { g in
                         groupSection(g)
                     }
                     newGroupRow
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, HFSpace.sm)
+                .padding(.top, HFSpace.xs)
             }
-            .scrollIndicators(.hidden)
-            Divider()
+            Divider().overlay(p.sBorder)
             spaceBar
         }
-        .frame(minWidth: 200)
-        .popover(isPresented: $showDownloads) { downloadsPopover }
+        .background(p.sShell)
     }
 
-    /// Room for the traffic lights: window chrome buttons live at top-left.
+    // MARK: header (under traffic lights)
+
     private var trafficLightSpacer: some View {
-        HStack(spacing: 6) {
-            Text(space.name)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 74) // clear traffic lights
+        let p = theme.palette
+        return HStack(spacing: HFSpace.xs) {
+            Color.clear.frame(width: 64) // traffic lights live here
+            Text(store.activeSpace.name)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(p.sFaint)
+                .lineLimit(1)
             Spacer()
-            Button { store.commandBarMode = .command; store.commandBarVisible.toggle() } label: {
-                Image(systemName: "command")
+            SidebarIconButton(icon: "command", fallback: "command", tip: "Command bar (⌘T)", theme: theme) {
+                store.commandBarVisible = true
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
-            Button { _ = store.openTab("hifi://newtab") } label: {
-                Image(systemName: "plus")
+            SidebarIconButton(icon: "plus", fallback: "plus", tip: "New tab (⌘T · URL)", theme: theme) {
+                _ = store.openTab("hifi://newtab")
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 8)
-        .padding(.trailing, 8)
+        .padding(.horizontal, HFSpace.sm)
+        .frame(height: 38)
     }
 
-    // MARK: pinned
+    // MARK: pinned strip
 
-    @ViewBuilder private var pinnedSection: some View {
-        let pinned = space.groups[0].tabs
-        if !pinned.isEmpty {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 4)]) {
-                ForEach(Array(pinned.enumerated()), id: \.element.id) { idx, t in
-                    PinnedCell(tab: t, index: idx,
-                               accent: accent,
-                               focused: isFocused(t))
-                        .onTapGesture { store.focusTab(t.id) }
-                        .contextMenu { tabMenu(t) }
+    private var pinnedRow: some View {
+        let p = theme.palette
+        let pinned = store.activeSpace.groups[0].tabs
+        return Group {
+            if !pinned.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 34), spacing: HFSpace.xs)], spacing: HFSpace.xs) {
+                    ForEach(pinned) { t in
+                        PinnedCell(tab: t, store: store)
+                    }
+                }
+                .padding(.bottom, HFSpace.xs)
+                Rectangle().fill(p.sBorder).frame(height: 1)
+            }
+        }
+    }
+
+    // MARK: today / unnamed
+
+    private var todaySection: some View {
+        Group {
+            if let g = store.activeSpace.groups.first(where: { !$0.pinnedSection && $0.name.isEmpty }) ?? store.activeSpace.groups.dropFirst().first {
+                ForEach(g.tabs) { t in
+                    TabRow(tab: t, group: g, store: store)
                 }
             }
-            .padding(.vertical, 4)
-            Divider()
-        }
-    }
-
-    // MARK: today list
-
-    @ViewBuilder private var todaySection: some View {
-        let g = space.groups.first(where: { !$0.pinnedSection && $0.name.isEmpty })
-        if let g, !g.tabs.isEmpty {
-            ForEach(g.tabs) { t in tabRow(t, group: g) }
         }
     }
 
     // MARK: named groups
 
-    @ViewBuilder private func groupSection(_ g: HiFiCore.Group) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(accent).frame(width: 5, height: 5)
-            if renamingGroup == g.id {
-                TextField("Name", text: $renameText, onCommit: {
-                    store.renameGroup(g.id, name: renameText)
-                    renamingGroup = nil
-                })
-                .textFieldStyle(.plain).font(.system(size: 11, weight: .semibold))
-            } else {
+    private func groupSection(_ g: HiFiCore.Group) -> some View {
+        let p = theme.palette
+        let accent = g.id == store.activeSpace.activeGroupID ? p.sAccent : p.sFaint
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: HFSpace.xs) {
+                Circle().fill(accent).frame(width: 5, height: 5)
                 Text(g.name.uppercased())
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .contextMenu {
-                        Button("Rename") { renamingGroup = g.id; renameText = g.name }
-                        Button("Delete Group") {
-                            g.tabs.forEach { store.closeTab($0.id) }
-                        }
-                    }
-                    .onTapGesture(count: 2) {
-                        renamingGroup = g.id; renameText = g.name
-                    }
+                    .tracking(0.6)
+                    .foregroundStyle(g.id == store.activeSpace.activeGroupID ? p.sMuted : p.sFaint)
+                Spacer()
+                Text("\(g.tabs.count)")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(p.sFaint.opacity(0.8))
             }
-            Spacer()
+            .padding(.top, HFSpace.xs)
+            .padding(.bottom, 2)
+            .contextMenu {
+                Button("Rename…") { renameGroup(g) }
+                Divider()
+                Button("Delete group", role: .destructive) { store.deleteGroup(id: g.id) }
+            }
+            ForEach(g.tabs) { t in
+                TabRow(tab: t, group: g, store: store)
+            }
         }
-        .padding(.top, 10).padding(.bottom, 2)
-        ForEach(g.tabs) { t in tabRow(t, group: g) }
     }
 
     private var newGroupRow: some View {
-        Button {
-            _ = store.createGroup(name: "Group \(space.groups.count - 1)")
+        let p = theme.palette
+        return Button {
+            _ = store.createGroup(name: "New group")
         } label: {
-            Label("New Group", systemImage: "folder.badge.plus")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            HStack(spacing: HFSpace.xs) {
+                HFIconView(name: "add-circle", fallback: "plus.circle", size: 13, color: p.sFaint)
+                Text("New group")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.sFaint)
+                Spacer()
+            }
+            .padding(.horizontal, HFSpace.sm)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.top, 8)
+        .opacity(0.85)
     }
 
-    // MARK: tab rows
-
-    private func isFocused(_ t: HiFiCore.Tab) -> Bool {
-        t.id == (store.focusedTabID ?? space.groups.first(where: {
-            $0.id == space.activeGroupID
-        })?.focusedTabID)
-    }
-
-    private func tabRow(_ t: HiFiCore.Tab, group g: HiFiCore.Group) -> some View {
-        HStack(spacing: 7) {
-            tabIcon(t)
-            Text(t.title.isEmpty ? t.url : t.title)
-                .font(.system(size: 12))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 4)
-            if isFocused(t) {
-                Circle().fill(accent).frame(width: 5, height: 5)
-            }
-            Button { store.closeTab(t.id) } label: {
-                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tertiary)
-            .opacity(0.7)
-        }
-        .padding(.horizontal, 7).padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isFocused(t) ? accent.opacity(0.18) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { store.focusTab(t.id) }
-        .contextMenu { tabMenu(t) }
-    }
-
-    @ViewBuilder private func tabIcon(_ t: HiFiCore.Tab) -> some View {
-        switch t.kind {
-        case .web, .preview:
-            Text(String((t.title.isEmpty ? t.url : t.title).prefix(1)).uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .frame(width: 16, height: 16)
-                .background(RoundedRectangle(cornerRadius: 4).fill(accent.opacity(0.25)))
-        case .terminal: Image(systemName: "terminal").font(.system(size: 11))
-        case .agent:    Image(systemName: "sparkles").font(.system(size: 11))
-        case .diff:     Image(systemName: "doc.text.magnifyingglass").font(.system(size: 11))
-        case .newtab:   Image(systemName: "plus.square").font(.system(size: 11))
-        case .settings: Image(systemName: "gear").font(.system(size: 11))
-        }
-    }
-
-    @ViewBuilder private func tabMenu(_ t: HiFiCore.Tab) -> some View {
-        Button(t.pinned ? "Unpin" : "Pin") { store.togglePin(t.id) }
-        Button("Split Right") { _ = store.splitTab(anchorID: t.id, side: .right) }
-        Button("Split Down")  { _ = store.splitTab(anchorID: t.id, side: .below) }
-        Divider()
-        Button("Close") { store.closeTab(t.id) }
-    }
-
-    // MARK: space bar
+    // MARK: space switcher (bottom bar)
 
     private var spaceBar: some View {
-        HStack(spacing: 6) {
+        let p = theme.palette
+        return HStack(spacing: HFSpace.xs) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: HFSpace.xs) {
                     ForEach(store.state.spaces) { s in
-                        Button { _ = store.switchSpace(s.id) } label: {
-                            HStack(spacing: 4) {
-                                Circle().fill(Color(hex: s.accent) ?? .accentColor)
-                                    .frame(width: 7, height: 7)
-                                Text(s.name).font(.system(size: 11))
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(
-                                Capsule().fill(s.id == space.id
-                                               ? Color(hex: s.accent)?.opacity(0.2) ?? .clear
-                                               : .clear)
-                            )
+                        SpacePill(space: s, active: s.id == store.activeSpace.id, palette: p) {
+                            _ = store.switchSpace(s.id)
                         }
-                        .buttonStyle(.plain)
                     }
+                    Button {
+                        let name = promptText(title: "New space", placeholder: "Space name") ?? ""
+                        if !name.isEmpty { _ = store.createSpace(name: name) }
+                    } label: {
+                        HFIconView(name: "plus", fallback: "plus", size: 11, color: p.sFaint)
+                            .frame(width: 20, height: 20)
+                            .background(p.sHover, in: RoundedRectangle(cornerRadius: HFRadius.control))
+                    }
+                    .buttonStyle(.plain)
+                    .help("New space")
                 }
             }
-            Button {
-                newSpaceDraft = ""
-            } label: { Image(systemName: "plus") }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .popover(isPresented: Binding(
-                    get: { newSpaceDraft != nil },
-                    set: { if !$0 { newSpaceDraft = nil } })) {
-                    HStack {
-                        TextField("Space name", text: Binding(
-                            get: { newSpaceDraft ?? "" },
-                            set: { newSpaceDraft = $0 }),
-                            onCommit: {
-                                if let n = newSpaceDraft, !n.isEmpty {
-                                    _ = store.createSpace(name: n)
-                                }
-                                newSpaceDraft = nil
-                            })
-                        .frame(width: 140)
-                    }.padding(10)
-                }
-            Button { showDownloads.toggle() } label: {
-                Image(systemName: "arrow.down.circle")
+            Spacer(minLength: 0)
+            DownloadsButton(store: store)
+            SidebarIconButton(icon: "settings-minimalistic", fallback: "gearshape", tip: "Settings", theme: theme) {
+                _ = store.openTab("hifi://settings")
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
-            Button { _ = store.openTab("hifi://settings") } label: {
-                Image(systemName: "gear")
-            }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
+        .padding(.horizontal, HFSpace.sm)
+        .padding(.vertical, 7)
+        .background(p.sShell)
     }
 
-    private var accent: Color { Color(hex: space.accent) ?? .accentColor }
+    // MARK: helpers
 
-    private var downloadsPopover: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Downloads").font(.headline)
-            if store.downloads.isEmpty {
-                Text("Nothing yet").foregroundStyle(.secondary).font(.system(size: 12))
-            }
-            ForEach(store.downloads, id: \.id) { d in
-                HStack {
-                    Image(systemName: d.done ? "checkmark.circle.fill" : "arrow.down.circle")
-                    VStack(alignment: .leading) {
-                        Text(d.filename).font(.system(size: 12)).lineLimit(1)
-                        if let dest = d.destination {
-                            Text(dest).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                    }
-                    if !d.done {
-                        ProgressView(value: d.progress).frame(width: 60)
-                    }
-                }
-            }
+    private func renameGroup(_ g: HiFiCore.Group) {
+        if let name = promptText(title: "Rename group", placeholder: g.name), !name.isEmpty {
+            var g2 = g; g2.name = name
+            store.applyGroup(g2)
         }
-        .padding(12).frame(minWidth: 260)
+    }
+
+    private func promptText(title: String, placeholder: String) -> String? {
+        let a = NSAlert()
+        a.messageText = title
+        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        f.placeholderString = placeholder
+        a.accessoryView = f
+        a.addButton(withTitle: "OK"); a.addButton(withTitle: "Cancel")
+        return a.runModal() == .alertFirstButtonReturn ? f.stringValue : nil
     }
 }
 
-struct PinnedCell: View {
-    let tab: HiFiCore.Tab
-    let index: Int
-    let accent: Color
-    let focused: Bool
+// MARK: - pieces
+
+private struct SidebarIconButton: View {
+    let icon: String
+    var fallback: String = "questionmark"
+    var tip: String = ""
+    @ObservedObject var theme: HiFiTheme
+    let action: () -> Void
+    @State private var hovering = false
+
+    init(icon: String, fallback: String = "questionmark", tip: String = "", theme: HiFiTheme, action: @escaping () -> Void) {
+        self.icon = icon; self.fallback = fallback; self.tip = tip; self.theme = theme; self.action = action
+    }
 
     var body: some View {
-        Text(String((tab.title.isEmpty ? "?" : tab.title).prefix(1)).uppercased())
-            .font(.system(size: 12, weight: .semibold))
-            .frame(width: 34, height: 34)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(focused ? accent.opacity(0.35) : Color.secondary.opacity(0.12))
-            )
-            .overlay(alignment: .topLeading) {
-                Text("\(index + 1)").font(.system(size: 7)).foregroundStyle(.secondary)
-                    .padding(2)
+        let p = theme.palette
+        Button(action: action) {
+            HFIconView(name: icon, fallback: fallback, size: 13, color: hovering ? p.sText : p.sMuted)
+                .frame(width: 22, height: 22)
+                .background(hovering ? p.sHover : Color.clear,
+                            in: RoundedRectangle(cornerRadius: HFRadius.control))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(tip)
+    }
+}
+
+private struct PinnedCell: View {
+    let tab: HiFiCore.Tab
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var theme: HiFiTheme
+    @State private var hovering = false
+
+    init(tab: HiFiCore.Tab, store: BrowserStore) {
+        self.tab = tab; self.store = store; self.theme = store.theme
+    }
+
+    var body: some View {
+        let p = theme.palette
+        let focused = store.focusedTabID == tab.id
+        Button {
+            store.focusTab(tab.id)
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: HFRadius.panel)
+                    .fill(focused ? p.sAccentWash : (hovering ? p.sHover : p.sCard))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: HFRadius.panel)
+                            .strokeBorder(p.sBorder, lineWidth: focused ? 0 : 1)
+                    )
+                favicon
             }
-            .help("\(tab.title) — ⌘\(index + 1)")
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(tab.title.isEmpty ? tab.url : tab.title)
+        .contextMenu {
+            Button("Unpin") { store.togglePin(tab.id) }
+            Button("Close", role: .destructive) { store.closeTab(tab.id) }
+        }
+    }
+
+    private var favicon: some View {
+        let p = theme.palette
+        return Group {
+            if let img = FaviconCache.shared.image(for: tab.url) {
+                Image(nsImage: img).resizable().frame(width: 16, height: 16)
+            } else {
+                HFIconView(name: "globe", fallback: "globe", size: 15, color: p.sMuted)
+            }
+        }
+    }
+}
+
+private struct TabRow: View {
+    let tab: HiFiCore.Tab
+    let group: HiFiCore.Group
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var theme: HiFiTheme
+    @State private var hovering = false
+
+    init(tab: HiFiCore.Tab, group: HiFiCore.Group, store: BrowserStore) {
+        self.tab = tab; self.group = group; self.store = store; self.theme = store.theme
+    }
+
+    var body: some View {
+        let p = theme.palette
+        let focused = store.focusedTabID == tab.id
+        Button {
+            store.focusTab(tab.id)
+        } label: {
+            HStack(spacing: 7) {
+                leadingIcon
+                Text(tab.title.isEmpty ? tab.url : tab.title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(focused ? p.sText : p.sMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 4)
+                if hovering {
+                    Button {
+                        store.closeTab(tab.id)
+                    } label: {
+                        HFIconView(name: "close", fallback: "xmark", size: 10,
+                                   color: p.sFaint)
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Circle()
+                        .fill(focused ? p.sAccent : Color.clear)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, HFSpace.sm)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: HFRadius.control)
+                    .fill(focused ? p.sAccentWash : (hovering ? p.sHover : Color.clear))
+            )
+            .overlay(alignment: .leading) {
+                if focused {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(p.sAccent)
+                        .frame(width: 2.5, height: 14)
+                        .offset(x: -2)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button(tab.pinned ? "Unpin" : "Pin") { store.togglePin(tab.id) }
+            Divider()
+            Button("Split right") { _ = store.splitTab(anchorID: tab.id, side: .right) }
+            Button("Split down") { _ = store.splitTab(anchorID: tab.id, side: .below) }
+            Divider()
+            Button("Close", role: .destructive) { store.closeTab(tab.id) }
+        }
+    }
+
+    private var leadingIcon: some View {
+        let p = theme.palette
+        switch tab.kind {
+        case .web:
+            if let img = FaviconCache.shared.image(for: tab.url) {
+                return AnyView(Image(nsImage: img).resizable().frame(width: 14, height: 14))
+            }
+            return AnyView(HFIconView(name: "globe", fallback: "globe", size: 13, color: p.sFaint))
+        case .terminal:
+            return AnyView(HFIconView(name: "terminal", fallback: "terminal", size: 13, color: p.sFaint))
+        case .agent:
+            return AnyView(HFIconView(name: "bot", fallback: "sparkles", size: 13, color: p.sFaint))
+        case .diff:
+            return AnyView(HFIconView(name: "git-branch", fallback: "arrow.triangle.branch", size: 13, color: p.sFaint))
+        case .newtab:
+            return AnyView(HFIconView(name: "home", fallback: "house", size: 13, color: p.sFaint))
+        case .settings:
+            return AnyView(HFIconView(name: "tuning", fallback: "slider.horizontal.3", size: 13, color: p.sFaint))
+        case .preview:
+            return AnyView(HFIconView(name: "eye", fallback: "eye", size: 13, color: p.sFaint))
+        }
+    }
+}
+
+private struct SpacePill: View {
+    let space: HiFiCore.Space
+    let active: Bool
+    let palette: HFPalette
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let p = palette
+        let spaceAccent = HF.rgb(hex: space.accent) ?? p.accent
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle().fill(Color(nsColor: spaceAccent)).frame(width: 5, height: 5)
+                Text(space.name)
+                    .font(.system(size: 11, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? p.sText : p.sMuted)
+            }
+            .padding(.horizontal, HFSpace.sm)
+            .padding(.vertical, 4)
+            .background(
+                active ? p.sActive : (hovering ? p.sHover : Color.clear),
+                in: RoundedRectangle(cornerRadius: HFRadius.control)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: HFRadius.control)
+                    .strokeBorder(active ? Color(nsColor: spaceAccent).opacity(0.35) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct DownloadsButton: View {
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var theme: HiFiTheme
+    @State private var hovering = false
+
+    init(store: BrowserStore) {
+        self.store = store; self.theme = store.theme
+    }
+
+    var body: some View {
+        let p = theme.palette
+        Menu {
+            if store.downloads.isEmpty {
+                Text("No downloads")
+            } else {
+                ForEach(store.downloads, id: \.id) { d in
+                    Text(d.done ? "\(d.filename)" : "\(d.filename) — \(Int(d.progress * 100))%")
+                }
+            }
+        } label: {
+            HFIconView(name: "arrow-down", fallback: "arrow.down.circle", size: 13,
+                       color: hovering ? p.sText : p.sMuted)
+                .frame(width: 22, height: 22)
+                .background(hovering ? p.sHover : Color.clear,
+                            in: RoundedRectangle(cornerRadius: HFRadius.control))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 22)
+        .onHover { hovering = $0 }
+        .help("Downloads")
     }
 }
 
 extension Color {
-    init?(hex: String) {
-        var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        if h.hasPrefix("#") { h.removeFirst() }
-        guard h.count == 6, let v = UInt64(h, radix: 16) else { return nil }
-        self.init(red: Double((v >> 16) & 0xFF) / 255,
-                  green: Double((v >> 8) & 0xFF) / 255,
-                  blue: Double(v & 0xFF) / 255)
+    init(hex: String) {
+        let ns = HF.rgb(hex: hex) ?? .labelColor
+        self.init(nsColor: ns)
     }
 }

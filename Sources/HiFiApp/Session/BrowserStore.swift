@@ -51,9 +51,23 @@ final class BrowserStore: ObservableObject {
     private var persistWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
 
+    /// Resolved cosmos theme (appearance + accent + palette). Views observe this.
+    lazy var theme = HiFiTheme(settings: Settings(), spaceAccent: { [weak self] in
+        self?.activeSpace.accent ?? "#8b7cf6"
+    })
+
     var spaceAccents = ["#5E5CE6", "#E8963C", "#3C9E8F", "#C94F6D", "#4C8DDA", "#8B78E6"]
 
     // MARK: - derived accessors
+
+    var settings: Settings { state.settings }
+
+    /// Update user preferences, persist, and re-resolve the palette.
+    func updateSettings(_ f: (inout Settings) -> Void) {
+        f(&state.settings)
+        theme.update(state.settings)
+        persistSoon()
+    }
 
     var activeSpace: Space {
         state.spaces.first(where: { $0.id == state.activeSpaceID }) ?? state.spaces[0]
@@ -122,6 +136,7 @@ final class BrowserStore: ObservableObject {
         if focusedTabID == nil {
             focusedTabID = activeGroup?.focusedTabID ?? activeGroup?.tabs.first?.id
         }
+        theme.update(state.settings)
     }
 
     func persistSoon() {
@@ -165,6 +180,12 @@ final class BrowserStore: ObservableObject {
         }
         var seen = Set<String>()
         return hits.filter { seen.insert($0.url).inserted }.prefix(limit).map { $0 }
+    }
+
+    func clearHistory() {
+        history = []
+        saveHistory()
+        toast("History cleared")
     }
 
     func toast(_ msg: String) {
@@ -416,6 +437,27 @@ final class BrowserStore: ObservableObject {
         }
     }
 
+    /// Delete a named group: its tabs are closed, focus moves to another group.
+    /// Pinned and unnamed "today" sections cannot be deleted.
+    func deleteGroup(id: String) {
+        for si in state.spaces.indices {
+            guard let gi = state.spaces[si].groups.firstIndex(where: { $0.id == id }),
+                  !state.spaces[si].groups[gi].pinnedSection,
+                  !state.spaces[si].groups[gi].name.isEmpty else { continue }
+            let closedIDs = Set(state.spaces[si].groups[gi].tabs.map { $0.id })
+            state.spaces[si].groups.remove(at: gi)
+            if state.spaces[si].activeGroupID == id {
+                state.spaces[si].activeGroupID =
+                    state.spaces[si].groups.first(where: { !$0.pinnedSection })?.id
+            }
+            if let f = focusedTabID, closedIDs.contains(f) {
+                focusedTabID = activeGroup?.focusedTabID ?? activeGroup?.tabs.first?.id
+            }
+            persistSoon()
+            return
+        }
+    }
+
     // MARK: - spaces / profiles
 
     @discardableResult
@@ -433,6 +475,7 @@ final class BrowserStore: ObservableObject {
         if let s = state.spaces.first(where: { $0.id == idOrName || $0.name == idOrName }) {
             state.activeSpaceID = s.id
             focusedTabID = activeGroup?.focusedTabID
+            theme.recompute() // accent follows the space unless overridden
             persistSoon()
             return true
         }

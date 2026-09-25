@@ -27,12 +27,16 @@ final class TerminalPaneView: PaneHostView {
             ? Self.detectHarness(fallback: cwd)
             : (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh", ["-l"], "shell")
 
+        let p = store.theme.palette
         let header = makeHeader(tab: tab, cwd: cwd, name: name, agentMode: agentMode)
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
 
         terminal.translatesAutoresizingMaskIntoConstraints = false
         terminal.processDelegate = self
+        terminal.nativeBackgroundColor = p.terminalBackground
+        terminal.nativeForegroundColor = p.text
+        layer?.backgroundColor = p.terminalBackground.cgColor
         addSubview(terminal)
 
         inputField.placeholderString = "send a line to stdin…"
@@ -72,17 +76,19 @@ final class TerminalPaneView: PaneHostView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func makeHeader(tab: HiFiCore.Tab, cwd: String, name: String, agentMode: Bool) -> NSView {
+        let p = store!.theme.palette
         let bar = NSView()
         bar.wantsLayer = true
-        bar.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.4).cgColor
+        bar.layer?.backgroundColor = p.surfaceCard.cgColor
+        bar.layer?.borderWidth = 0
         let icon = NSTextField(labelWithString: agentMode ? "✦" : "❯")
         icon.font = .systemFont(ofSize: 11)
-        icon.textColor = .secondaryLabelColor
+        icon.textColor = agentMode ? p.accent : p.muted
         icon.translatesAutoresizingMaskIntoConstraints = false
         let title = NSTextField(labelWithString:
             agentMode ? "\(name)  ·  \(cwd)" : "\(cwd)")
         title.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
-        title.textColor = .secondaryLabelColor
+        title.textColor = p.faint
         title.lineBreakMode = .byTruncatingMiddle
         title.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(icon); bar.addSubview(title)
