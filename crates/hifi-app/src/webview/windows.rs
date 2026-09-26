@@ -184,6 +184,9 @@ impl WebPaneHost {
         inner.apply();
     }
 
+    /// WebView2 already leaves captured GPUI drags alone.
+    pub fn set_input_shield(&self, _on: bool) {}
+
     pub fn hide(&self) {
         let Ok(mut inner) = self.inner.try_borrow_mut() else {
             return;

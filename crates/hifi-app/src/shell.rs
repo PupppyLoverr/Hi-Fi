@@ -725,7 +725,8 @@ impl Shell {
         let host = host.clone();
         gpui::canvas(
             |_, _, _| (),
-            move |bounds, _, window, _cx| {
+            move |bounds, _, window, cx| {
+                host.set_input_shield(cx.has_active_drag());
                 // Native views paint above GPUI, so clip to the content mask.
                 let bounds = bounds.intersect(&window.content_mask().bounds);
                 let host = Rc::downgrade(&host);
@@ -1381,7 +1382,11 @@ impl Shell {
                     min_extent(first, horizontal),
                     min_extent(second, horizontal),
                 );
-                row = row.on_drag_move::<SplitDrag>(move |event, _window, cx| {
+                row = row.on_drag_move::<SplitDrag>(move |event, window, cx| {
+                    if event.event.pressed_button != Some(gpui::MouseButton::Left) {
+                        cx.stop_active_drag(window);
+                        return;
+                    }
                     let (path, horizontal) = {
                         let drag = event.drag(cx);
                         (drag.path.clone(), drag.horizontal)
@@ -2345,11 +2350,19 @@ impl gpui::Render for Shell {
                     .min_h(px(0.))
                     .pt(px(Theme::TITLEBAR_HEIGHT))
                     .relative()
-                    .on_drag_move::<SidebarResize>(move |event, _w, cx| {
+                    .on_drag_move::<SidebarResize>(move |event, w, cx| {
+                        if event.event.pressed_button != Some(gpui::MouseButton::Left) {
+                            cx.stop_active_drag(w);
+                            return;
+                        }
                         let w = f32::from(event.event.position.x - event.bounds.left());
                         store_sb.update(cx, |s, cx| s.set_sidebar_width(w, cx));
                     })
-                    .on_drag_move::<DockResize>(move |event, _w, cx| {
+                    .on_drag_move::<DockResize>(move |event, w, cx| {
+                        if event.event.pressed_button != Some(gpui::MouseButton::Left) {
+                            cx.stop_active_drag(w);
+                            return;
+                        }
                         let w = f32::from(event.bounds.right() - event.event.position.x);
                         let max = (f32::from(event.bounds.size.width) - 300.).max(360.);
                         store_dk.update(cx, |s, cx| {

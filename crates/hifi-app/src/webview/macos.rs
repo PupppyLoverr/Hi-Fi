@@ -204,6 +204,9 @@ pub struct WebPaneHost {
     /// CALayer mask can clip native content to the pane's painted region.
     clip: Retained<NSView>,
     clip_mask: Retained<AnyObject>,
+    /// Plain view over the page, shown during GPUI drags so pointer events
+    /// fall through the responder chain to GPUI instead of the page.
+    shield: Retained<NSView>,
     parent: Retained<NSView>,
     _monitor: Option<Retained<AnyObject>>,
     visible: Cell<bool>,
@@ -282,6 +285,9 @@ impl WebPaneHost {
             }
         }
         clip.addSubview(&view);
+        let shield: Retained<NSView> = unsafe { msg_send![class!(NSView), new] };
+        shield.setHidden(true);
+        clip.addSubview(&shield);
 
         let observer = Observer::new(tab.clone(), tx.clone(), mtm);
         unsafe {
@@ -381,6 +387,7 @@ impl WebPaneHost {
             observer,
             clip,
             clip_mask,
+            shield,
             parent,
             _monitor: monitor,
             visible: Cell::new(false),
@@ -419,6 +426,7 @@ impl WebPaneHost {
             let _: () = msg_send![&*self.clip_mask, setFrame: region];
         }
         self.view.setFrame(region);
+        self.shield.setFrame(region);
         unsafe {
             let _: () = msg_send![class!(CATransaction), setDisableActions: false];
         }
@@ -427,6 +435,12 @@ impl WebPaneHost {
             self.visible.set(show);
             let _ = self.web.set_visible(show);
             self.clip.setHidden(!show);
+        }
+    }
+
+    pub fn set_input_shield(&self, on: bool) {
+        if self.shield.isHidden() == on {
+            self.shield.setHidden(!on);
         }
     }
 

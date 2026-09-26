@@ -43,3 +43,4 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - Read split fractions from `state.json` (`type: split`, `fraction`) to see which split a drag actually changed.
 - After relaunch Finder may be frontmost, and after clicking a web page the webview has focus. Click a GPUI surface before sending shortcuts like Alt+Cmd+B.
 - The dock clamps to at least 360pt, so a rightward gutter drag from minimum width does nothing. Widen it first, then test narrowing.
+- Drag capture over webviews can differ per pane. On 8e1b670, drags tracked over the rightmost web pane but froze over the middle one. Test every web pane a drag crosses, and afterwards start a fresh drag on the *other* divider to catch a stale drag left by a lost mouse-up.
