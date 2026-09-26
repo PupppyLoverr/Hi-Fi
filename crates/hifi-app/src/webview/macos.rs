@@ -80,18 +80,16 @@ fn install_drag_monitor(gpui_view: Retained<NSView>, mtm: MainThreadMarker) {
 /// hit-testing can't tell pages apart.
 fn press_hits_page(gpui_view: &NSView, e: &NSEvent) -> bool {
     let loc = e.locationInWindow();
-    for child in gpui_view.subviews() {
+    let children = gpui_view.subviews();
+    let local = gpui_view.convertPoint_fromView(loc, None);
+    let over_overlay = children
+        .iter()
+        .any(|child| child.class().name() == c"GPUIOverlayView" && child.hitTest(local).is_some());
+    if over_overlay {
+        return false;
+    }
+    for child in children {
         if child.isHidden() {
-            continue;
-        }
-        if child.class().name() == c"GPUIOverlayView" {
-            if let Some(sup) = unsafe { child.superview() }
-                && child
-                    .hitTest(sup.convertPoint_fromView(loc, None))
-                    .is_some()
-            {
-                return false;
-            }
             continue;
         }
         for page in child.subviews() {
