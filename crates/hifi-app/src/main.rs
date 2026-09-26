@@ -3,12 +3,14 @@
 
 mod assets;
 mod command_bar;
+mod frost;
 mod ipc_server;
 mod jsbridge;
 mod notes;
 mod shell;
 mod sidebar;
 mod store;
+mod surface_chrome;
 mod terminal;
 mod text_input;
 mod theme;
@@ -119,7 +121,7 @@ fn install_menus(cx: &mut App) {
         Menu::new("View").items([
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Dock", ToggleDock),
-            MenuItem::action("New Notes", NewNotes),
+            MenuItem::action("New Page", NewNotes),
             MenuItem::action("Reload", ReloadPage),
             MenuItem::action("Command Bar", CommandBar),
         ]),
@@ -230,7 +232,7 @@ fn main() {
                     titlebar: Some(TitlebarOptions {
                         title: cfg!(target_os = "windows").then(|| "Hi-Fi".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(14.), px(17.))),
+                        traffic_light_position: Some(gpui::point(px(14.), px(14.))),
                     }),
                     app_owns_titlebar_drag: true,
                     // Frosted shell — sidebar/new-tab translucency reads the

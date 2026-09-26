@@ -363,6 +363,16 @@ impl Store {
         let _ = std::fs::write(dir.join(format!("{tab_id}.html")), html);
     }
 
+    pub fn set_title(&mut self, tab_id: &str, title: String, cx: &mut Context<Self>) {
+        if let Some(tab) = self.state.tab_mut(tab_id)
+            && tab.title != title
+        {
+            tab.title = title;
+            self.save();
+            cx.notify();
+        }
+    }
+
     pub fn set_active_group(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(space) = self.state.active_space_mut() {
             space.active_group = Some(id.to_string());
@@ -384,6 +394,7 @@ impl Store {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn tab_meta_update(
         &mut self,
         id: &str,

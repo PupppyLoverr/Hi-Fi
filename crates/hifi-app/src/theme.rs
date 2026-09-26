@@ -74,7 +74,69 @@ pub fn accent_value(name: &str, dark: bool) -> Hsla {
     color(if dark { d } else { l })
 }
 
+/// Cosmos `GLASS_ALPHA`: the shell tint over the blurred desktop. Linux has
+/// no compositor blur contract, so the shell stays opaque there.
+pub const GLASS_ALPHA: f32 = if cfg!(any(target_os = "macos", target_os = "windows")) {
+    0.80
+} else {
+    1.0
+};
+const INK_FILL_SCALE: f32 = 0.7;
+const INK_HAIRLINE_SCALE: f32 = 1.4;
+
 impl Palette {
+    /// Translucent fill ink (cosmos `ink`): soft-white on dark, soft-black on
+    /// light, alphas quoted in dark-mode terms.
+    pub fn ink(&self, alpha: f32) -> Hsla {
+        if self.is_dark {
+            hsla(0., 0., 1., alpha)
+        } else {
+            hsla(0., 0., 0., alpha * INK_FILL_SCALE)
+        }
+    }
+
+    /// Hairline ink (cosmos `hairline`).
+    pub fn hairline(&self, alpha: f32) -> Hsla {
+        if self.is_dark {
+            hsla(0., 0., 1., alpha)
+        } else {
+            hsla(0., 0., 0., (alpha * INK_HAIRLINE_SCALE).min(0.5))
+        }
+    }
+
+    /// Interactive-state wash (cosmos `wash`).
+    pub fn wash(&self, alpha: f32) -> Hsla {
+        if self.is_dark {
+            hsla(0., 0., 0.92, alpha)
+        } else {
+            hsla(0., 0., 0.10, alpha * INK_FILL_SCALE)
+        }
+    }
+
+    /// Row hover plate (cosmos `glass_hover`).
+    pub fn glass_hover(&self) -> Hsla {
+        self.wash(0.08)
+    }
+
+    /// Selected row plate (cosmos `glass_selected_bg`).
+    pub fn selected(&self) -> Hsla {
+        self.wash(if self.is_dark { 0.11 } else { 0.06 })
+    }
+
+    /// The frosted window shell tint (cosmos `Theme::glass`).
+    pub fn glass(&self) -> Hsla {
+        self.shell.opacity(GLASS_ALPHA)
+    }
+
+    /// Floating popover card over the frost (cosmos `glass_overlay`).
+    pub fn glass_overlay(&self) -> Hsla {
+        if Theme::is_frost() {
+            self.dialog.opacity(0.86)
+        } else {
+            self.dialog
+        }
+    }
+
     pub fn dark(accent: Hsla) -> Self {
         Self {
             bg: color(0x060606),
@@ -125,6 +187,16 @@ pub struct Theme {
 impl Global for Theme {}
 
 impl Theme {
+    pub const TITLEBAR_HEIGHT: f32 = 38.0;
+    pub const TITLEBAR_TOP_PAD: f32 = 4.0;
+    pub const SPACE_SM: f32 = 8.0;
+    pub const SPACE_MD: f32 = 12.0;
+
+    /// Whether surfaces sit on the compositor-blurred glass shell.
+    pub const fn is_frost() -> bool {
+        GLASS_ALPHA < 1.0
+    }
+
     pub fn of(cx: &App) -> Self {
         cx.global::<Theme>().clone()
     }

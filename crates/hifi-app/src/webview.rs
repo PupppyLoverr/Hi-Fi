@@ -305,11 +305,6 @@ impl WebPaneHost {
             let layer: *mut AnyObject = msg_send![&*clip, layer];
             let _: () = msg_send![layer, setMasksToBounds: true];
             let _: () = msg_send![layer, setMask: &*clip_mask];
-            // Round the page's bottom corners to sit inside the pane card.
-            // CALayer's MinY edge is the bottom unless the parent is flipped.
-            let bottom_corners: usize = if parent.isFlipped() { 0b1100 } else { 0b0011 };
-            let _: () = msg_send![&*clip_mask, setCornerRadius: 9.0f64];
-            let _: () = msg_send![&*clip_mask, setMaskedCorners: bottom_corners];
         }
         clip.setHidden(true);
         parent.addSubview(&clip);

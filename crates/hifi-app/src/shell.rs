@@ -14,9 +14,10 @@ use crate::assets::icons;
 use crate::command_bar::CommandBar;
 use crate::sidebar::{self, Sidebar};
 use crate::store::Store;
+use crate::surface_chrome;
 use crate::terminal::TerminalPane;
 use crate::text_input::{TextField, TextFieldEvent};
-use crate::theme::{Theme, radius};
+use crate::theme::Theme;
 use crate::views::{DiffView, NewTabView, PreviewView, SettingsView, glyph};
 use crate::webview::{WebEvent, WebPaneHost};
 use hifi_core::{SplitNode, TabId, TabKind};
@@ -253,7 +254,14 @@ impl Shell {
                     }
                 }
                 WebEvent::NotesSave { tab, html } => {
-                    self.store.update(cx, |s, _| s.notes_save(&tab, &html));
+                    let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
+                    self.store.update(cx, |s, cx| match page {
+                        Some(page) => {
+                            s.notes_save(&tab, &page.html);
+                            s.set_title(&tab, page.title, cx);
+                        }
+                        None => s.notes_save(&tab, &html),
+                    });
                 }
                 WebEvent::Error { tab, message } => {
                     self.store.update(cx, |s, cx| {
@@ -422,7 +430,7 @@ impl Shell {
                 let host = Rc::new(host);
                 if tab.kind == TabKind::Notes {
                     let body = self.store.read(cx).notes_body(&tab.id);
-                    host.load_html(&crate::notes::editor_html(&body, is_dark));
+                    host.load_html(&crate::notes::editor_html(&body, &tab.title, is_dark));
                 }
                 self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
                 Some(host)
@@ -819,8 +827,8 @@ impl Shell {
             return div().into_any();
         };
         let p = Theme::of(cx).palette;
-        let lead = origin && self.store.read(cx).sidebar_collapsed;
-        let header = self.pane_header(&tab, false, focused, lead, cx);
+        let _ = origin;
+        let header = self.pane_header(&tab, false, focused, cx);
         let body = self.pane_body(&tab, window, cx);
 
         div()
@@ -831,59 +839,30 @@ impl Shell {
             .min_w(px(120.))
             .min_h(px(80.))
             .overflow_hidden()
-            .rounded(radius::CARD)
-            .border_1()
-            .border_color(if focused { p.border_strong } else { p.border })
-            .bg(p.card)
+            .bg(p.bg)
             .child(header)
             .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
             .into_any()
     }
 
-    /// Radius-style pane chrome: navigation, a breadcrumb that doubles as the
-    /// omnibox, and actions revealed on hover. `lead` clears the traffic
-    /// lights when this pane is top-left and the sidebar is hidden.
+    /// Pane chrome: cosmos's browser toolbar (`surface_chrome::toolbar`) —
+    /// back · forward · reload, a rounded address field that doubles as the
+    /// omnibox, then the pane actions.
     fn pane_header(
         &mut self,
         tab: &hifi_core::Tab,
         docked: bool,
         focused: bool,
-        lead: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store = self.store.clone();
         let id = tab.id.clone();
 
-        let mut header = div()
+        let mut header = surface_chrome::toolbar(&p)
             .id(SharedString::from(format!("hdr:{}", tab.id)))
-            .group("pane-hdr")
             .relative()
-            .h(px(34.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .px(px(6.))
-            .border_b_1()
-            .border_color(p.border)
-            .window_control_area(WindowControlArea::Drag);
-
-        if lead {
-            let store = store.clone();
-            header = header.pl(px(78.)).child(header_btn(
-                "hdr-sidebar",
-                icons::SIDEBAR_LEFT,
-                true,
-                p,
-                move |_, cx| {
-                    store.update(cx, |s, cx| {
-                        s.sidebar_collapsed = false;
-                        cx.notify();
-                    });
-                },
-            ));
-        }
+            .when(docked, |d| d.border_t_0());
 
         if tab.kind == TabKind::Web {
             let nav = |name: &'static str,
@@ -892,7 +871,7 @@ impl Shell {
                        op: fn(&mut Store, TabId)| {
                 let store = store.clone();
                 let id = id.clone();
-                header_btn(name, icon, enabled, p, move |_, cx| {
+                toolbar_button(name, icon, enabled, p, move |cx| {
                     store.update(cx, |s, cx| {
                         op(s, id.clone());
                         cx.notify();
@@ -924,14 +903,6 @@ impl Shell {
                 .unwrap_or_default()
                 .to_string()
         };
-        let crumb = |path: &str| {
-            let b = basename(path);
-            if b.is_empty() {
-                String::new()
-            } else {
-                format!(" / {b}")
-            }
-        };
         let (lead_icon, primary, secondary): (&'static str, String, String) = match tab.kind {
             TabKind::Web => {
                 let rest = tab
@@ -948,18 +919,31 @@ impl Shell {
                 };
                 (icon, host, path.to_string())
             }
-            TabKind::Terminal => (sidebar::kind_icon(tab), "Terminal".into(), crumb(&tab.cwd)),
-            TabKind::Agent => (sidebar::kind_icon(tab), "Agent".into(), crumb(&tab.cwd)),
-            TabKind::Diff => (icons::GIT_BRANCH, "Diffs".into(), crumb(&tab.cwd)),
-            TabKind::Preview => (icons::EYE, "Preview".into(), crumb(&tab.url)),
+            TabKind::Terminal => (
+                sidebar::kind_icon(tab),
+                "Terminal".into(),
+                basename(&tab.cwd),
+            ),
+            TabKind::Agent => (sidebar::kind_icon(tab), "Agent".into(), basename(&tab.cwd)),
+            TabKind::Diff => (icons::GIT_BRANCH, "Changes".into(), basename(&tab.cwd)),
+            TabKind::Preview => (icons::EYE, "Preview".into(), basename(&tab.url)),
             TabKind::NewTab => (
                 icons::MAGNIFER,
                 "Search or enter address".into(),
                 String::new(),
             ),
             TabKind::Settings => (icons::SETTINGS, "Settings".into(), String::new()),
-            TabKind::Notes => (icons::PEN_NEW_SQUARE, "Notes".into(), String::new()),
+            TabKind::Notes => (
+                icons::DOCUMENT,
+                if tab.title.is_empty() || tab.title == "Notes" {
+                    "Untitled".into()
+                } else {
+                    tab.title.clone()
+                },
+                String::new(),
+            ),
         };
+        let omnibox = matches!(tab.kind, TabKind::Web | TabKind::NewTab);
         let placeholder = tab.kind == TabKind::NewTab;
         let text_c = if placeholder {
             p.faint
@@ -968,74 +952,78 @@ impl Shell {
         } else {
             p.muted
         };
-        let addr_id = id.clone();
-        header = header.child(
-            div()
-                .id("addr")
-                .flex_1()
-                .min_w(px(0.))
-                .h(px(26.))
-                .flex()
-                .items_center()
-                .gap(px(7.))
-                .px(px(8.))
-                .rounded(px(7.))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.raised.opacity(0.35)))
-                .child(glyph(lead_icon, 12., p.faint))
-                .child(
+        let label = div()
+            .flex_1()
+            .flex()
+            .min_w(px(0.))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(
+                div()
+                    .flex_shrink(1.)
+                    .min_w(px(24.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(text_c)
+                    .child(primary),
+            )
+            .when(!secondary.is_empty(), |d| {
+                let sep = if omnibox { "" } else { "  ·  " };
+                d.child(
                     div()
                         .flex_1()
-                        .flex()
                         .min_w(px(0.))
                         .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(px(12.5))
-                        .child(div().flex_none().text_color(text_c).child(primary))
-                        .when(!secondary.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_color(p.faint)
-                                    .child(secondary),
-                            )
-                        }),
+                        .text_ellipsis()
+                        .text_color(p.faint)
+                        .child(format!("{sep}{secondary}")),
                 )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.open_address(Some(addr_id.clone()), cx);
-                    }),
-                ),
-        );
+            });
+        if omnibox {
+            let addr_id = id.clone();
+            header = header.child(
+                surface_chrome::input(&p)
+                    .id("addr")
+                    .cursor_text()
+                    .hover(|s| s.bg(p.ink(0.06)))
+                    .child(glyph(lead_icon, 12., p.faint))
+                    .child(label)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_address(Some(addr_id.clone()), cx);
+                        }),
+                    ),
+            );
+        } else {
+            header = header.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h(px(surface_chrome::CONTROL_SIZE))
+                    .px(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(glyph(lead_icon, surface_chrome::ICON_SIZE, p.muted))
+                    .child(label),
+            );
+        }
 
         let split = |name: &'static str, icon: &'static str, side: hifi_core::SplitSide| {
             let store = store.clone();
             let id = id.clone();
-            header_btn(name, icon, true, p, move |_, cx| {
+            toolbar_button(name, icon, true, p, move |cx| {
                 store.update(cx, |s, cx| {
                     s.open_tab("hifi://newtab", None, Some((id.clone(), side)), cx);
                 });
             })
         };
-        let mut actions = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right(px(4.))
-            .flex()
-            .items_center()
-            .gap(px(1.))
-            .pl(px(8.))
-            .bg(p.card)
-            .invisible()
-            .group_hover("pane-hdr", |s| s.visible());
-        if !docked {
-            actions = actions
+        if !docked && focused {
+            header = header
                 .child(split(
                     "split-r",
                     icons::SPLIT_COLUMNS,
@@ -1047,73 +1035,57 @@ impl Shell {
                     hifi_core::SplitSide::Below,
                 ));
         }
-        actions = actions
-            .child({
-                let store = store.clone();
-                let id = id.clone();
-                header_btn(
-                    "dock-move",
-                    if docked {
-                        icons::SIDEBAR_LEFT
-                    } else {
-                        icons::SIDEBAR_RIGHT
-                    },
-                    true,
-                    p,
-                    move |_, cx| {
-                        store.update(cx, |s, cx| {
-                            if docked {
-                                s.undock_tab(&id, cx)
-                            } else {
-                                s.dock_tab(&id, cx)
-                            }
-                        });
-                    },
-                )
-            })
-            .child({
-                let store = store.clone();
-                let id = id.clone();
-                header_btn(
-                    "pin",
-                    icons::PIN,
-                    true,
-                    if tab.pinned {
-                        crate::theme::Palette {
-                            muted: p.accent,
-                            ..p
-                        }
-                    } else {
-                        p
-                    },
-                    move |_, cx| store.update(cx, |s, cx| s.toggle_pin(&id, cx)),
-                )
-            })
-            .child({
-                let store = store.clone();
-                let id = id.clone();
-                header_btn("close", icons::CLOSE, true, p, move |_, cx| {
-                    store.update(cx, |s, cx| s.close_tab(&id, cx));
+        if focused {
+            header = header
+                .child({
+                    let store = store.clone();
+                    let id = id.clone();
+                    toolbar_button(
+                        "dock-move",
+                        if docked {
+                            icons::SIDEBAR_LEFT
+                        } else {
+                            icons::SIDEBAR_RIGHT
+                        },
+                        true,
+                        p,
+                        move |cx| {
+                            store.update(cx, |s, cx| {
+                                if docked {
+                                    s.undock_tab(&id, cx)
+                                } else {
+                                    s.dock_tab(&id, cx)
+                                }
+                            });
+                        },
+                    )
                 })
-            });
-        let hint = if cfg!(target_os = "macos") {
-            "⌘L to focus"
-        } else {
-            "Ctrl+L to focus"
-        };
-        header = header
-            .when(focused && !docked, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .pr(px(6.))
-                        .whitespace_nowrap()
-                        .text_size(px(11.))
-                        .text_color(p.faint.opacity(0.75))
-                        .child(hint),
-                )
+                .child({
+                    let store = store.clone();
+                    let id = id.clone();
+                    toolbar_button(
+                        "pin",
+                        icons::PIN,
+                        true,
+                        if tab.pinned {
+                            crate::theme::Palette {
+                                muted: p.accent,
+                                ..p
+                            }
+                        } else {
+                            p
+                        },
+                        move |cx| store.update(cx, |s, cx| s.toggle_pin(&id, cx)),
+                    )
+                });
+        }
+        header = header.child({
+            let store = store.clone();
+            let id = id.clone();
+            toolbar_button("close", icons::CLOSE, true, p, move |cx| {
+                store.update(cx, |s, cx| s.close_tab(&id, cx));
             })
-            .child(actions);
+        });
         if tab.loading {
             header = header.child(
                 div()
@@ -1311,9 +1283,9 @@ impl Shell {
         }
     }
 
-    /// The cosmos-style right surface host: a chip strip (icon · title · ×,
-    /// plus a `+` picker) over the active surface. Surfaces are regular tabs
-    /// kept in `group.dock` instead of the split tree.
+    /// The cosmos right pane: a flush, left-hairlined glass panel. Its
+    /// surface tabs ride a `surface_chrome::toolbar`; with nothing open it
+    /// shows cosmos's surface picker.
     fn render_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store_e = self.store.clone();
@@ -1335,16 +1307,7 @@ impl Shell {
             .unwrap_or((460., vec![], None));
         let width = width.max(360.);
 
-        // ----- chip strip -----
-        let mut strip = div()
-            .h(px(30.))
-            .px(px(4.))
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .border_b_1()
-            .border_color(p.border)
-            .overflow_hidden();
+        let mut strip = surface_chrome::toolbar(&p).overflow_hidden();
         for id in &tabs {
             let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
                 continue;
@@ -1360,21 +1323,24 @@ impl Shell {
             strip = strip.child(
                 div()
                     .id(cid)
-                    .h(px(24.))
-                    .w(px(112.))
-                    .flex_none()
+                    .group("dock-chip")
+                    .h(px(surface_chrome::CONTROL_SIZE))
+                    .max_w(px(160.))
+                    .min_w(px(0.))
+                    .flex_shrink(1.)
                     .flex()
                     .items_center()
-                    .gap(px(5.))
-                    .px(px(7.))
-                    .rounded(px(6.))
+                    .gap(px(6.))
+                    .pl(px(8.))
+                    .pr(px(4.))
+                    .rounded(px(surface_chrome::CONTROL_RADIUS))
                     .cursor_pointer()
-                    .when(is_active, |d| d.bg(p.raised))
-                    .when(!is_active, |d| d.hover(|s| s.bg(p.raised.opacity(0.5))))
+                    .when(is_active, |d| d.bg(p.selected()))
+                    .when(!is_active, |d| d.hover(|s| s.bg(p.glass_hover())))
                     .child(glyph(
                         kind_icon,
                         12.,
-                        if is_active { p.accent } else { p.faint },
+                        if is_active { p.text } else { p.faint },
                     ))
                     .child(
                         div()
@@ -1382,19 +1348,23 @@ impl Shell {
                             .min_w(px(0.))
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(px(11.))
+                            .text_ellipsis()
+                            .text_size(px(11.5))
                             .text_color(if is_active { p.text } else { p.muted })
                             .child(title),
                     )
                     .child(
                         div()
                             .id(SharedString::from(format!("dockchip-x:{id}")))
-                            .size(px(14.))
+                            .size(px(16.))
+                            .flex_none()
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(4.))
-                            .hover(|s| s.bg(p.faint.opacity(0.2)))
+                            .opacity(if is_active { 1. } else { 0. })
+                            .group_hover("dock-chip", |s| s.opacity(1.))
+                            .hover(|s| s.bg(p.wash(0.14)))
                             .child(glyph(icons::CLOSE, 9., p.faint))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 cx.stop_propagation();
@@ -1406,58 +1376,50 @@ impl Shell {
                     }),
             );
         }
-        // "+" picker — toggles the surface menu.
         let store_p = store_e.clone();
-        strip = strip.child(
-            div()
-                .id("dock-plus")
-                .size(px(24.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.raised.opacity(0.5)))
-                .child(glyph(icons::PLUS, 13., p.muted))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    cx.stop_propagation();
+        let store_close = store_e.clone();
+        strip = strip
+            .child(toolbar_button(
+                "dock-plus",
+                icons::PLUS,
+                true,
+                p,
+                move |cx| {
                     store_p.update(cx, |s, cx| {
                         s.dock_menu_open = !s.dock_menu_open;
                         cx.notify();
                     });
-                }),
-        );
+                },
+            ))
+            .child(div().flex_1())
+            .child(toolbar_button(
+                "dock-close",
+                icons::CLOSE,
+                true,
+                p,
+                move |cx| store_close.update(cx, |s, cx| s.toggle_dock(cx)),
+            ));
 
-        // ----- surface body -----
         let body: AnyElement = match active
             .as_ref()
             .and_then(|id| self.store.read(cx).state.tab(id).cloned())
         {
             Some(tab) => {
-                let header = self.pane_header(&tab, true, true, false, cx);
+                let header =
+                    (tab.kind == TabKind::Web).then(|| self.pane_header(&tab, true, true, cx));
                 let body = self.pane_body(&tab, window, cx);
                 div()
                     .flex_1()
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .child(header)
+                    .children(header)
                     .child(div().flex_1().min_h(px(0.)).child(body))
                     .into_any()
             }
-            None => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(p.faint)
-                .text_size(px(12.))
-                .child("No surface — press +")
-                .into_any(),
+            None => self.render_surface_picker(cx),
         };
 
-        // ----- the "+" surface picker (deferred so it floats over panes) -----
         let menu: Option<AnyElement> = self
             .store
             .read(cx)
@@ -1468,19 +1430,20 @@ impl Shell {
             .h_full()
             .w(px(width))
             .flex_none()
-            .pt(px(6.))
-            .pr(px(6.))
-            .pb(px(6.))
+            .relative()
             .child(
                 div()
                     .size_full()
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(radius::CARD)
-                    .border_1()
+                    .border_l_1()
                     .border_color(p.border)
-                    .bg(p.card)
+                    .bg(if Theme::is_frost() {
+                        p.bg.opacity(0.4)
+                    } else {
+                        p.bg
+                    })
                     .child(strip)
                     .child(body),
             )
@@ -1488,112 +1451,401 @@ impl Shell {
             .into_any()
     }
 
+    /// The dock's surfaces, in picker order: (id, icon, label, url).
+    const SURFACES: &'static [(&'static str, &'static str, &'static str, &'static str)] = &[
+        ("agent", icons::BOT, "Agent", "hifi://agent"),
+        ("browser", icons::GLOBE, "Browser", "hifi://newtab"),
+        ("terminal", icons::TERMINAL, "Terminal", "hifi://terminal"),
+        ("page", icons::DOCUMENT, "Page", "hifi://notes"),
+        ("changes", icons::GIT_BRANCH, "Changes", "hifi://diff"),
+    ];
+
+    /// cosmos `render_surface_picker`: a compact vertical list of surface
+    /// rows (icon + label) centred in the empty pane.
+    fn render_surface_picker(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let mut col = div()
+            .w_full()
+            .max_w(px(280.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0));
+        for (id, icon_path, title, url) in Self::SURFACES {
+            let store = self.store.clone();
+            col = col.child(
+                div()
+                    .id(SharedString::from(format!("surface-card-{id}")))
+                    .w_full()
+                    .h(px(44.0))
+                    .px(px(14.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.ink(0.02))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.ink(0.05)).border_color(p.border_strong))
+                    .child(glyph(icon_path, 15.0, p.muted))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child(*title),
+                    )
+                    .on_click(move |_, _, cx| {
+                        store.update(cx, |s, cx| {
+                            s.dock_open(url, cx);
+                        });
+                    }),
+            );
+        }
+        div()
+            .flex_1()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(16.0))
+            .child(col)
+            .into_any()
+    }
+
     /// The `+` menu: open a fresh surface in the dock, or move the active
-    /// leaf tab over — mirrors cosmos's right-pane picker.
+    /// leaf tab over — a frosted cosmos popover.
     fn render_dock_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store = self.store.clone();
         let active = self.store.read(cx).active_tab_id();
 
-        let item = |id: &'static str,
-                    icon: &'static str,
-                    label: &'static str,
-                    on: Box<dyn Fn(&mut App)>| {
+        let item = |id: SharedString, icon: &'static str, label: &'static str| {
             div()
-                .id(SharedString::from(id))
+                .id(id)
                 .h(px(28.))
-                .px(px(10.))
+                .px(px(8.))
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(p.raised))
-                .child(glyph(icon, 13., p.faint))
-                .child(div().text_size(px(12.)).text_color(p.text).child(label))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| on(cx))
+                .hover(|s| s.bg(p.glass_hover()))
+                .child(glyph(icon, 13., p.muted))
+                .child(div().text_size(px(12.5)).text_color(p.text).child(label))
         };
 
         let mut col = div()
-            .w(px(190.))
+            .w(px(200.))
             .p(px(4.))
             .flex()
             .flex_col()
             .gap(px(1.))
             .rounded(px(10.))
-            .bg(p.card)
+            .bg(p.glass_overlay())
             .border_1()
             .border_color(p.border)
-            .child(item("dm-term", icons::TERMINAL, "Terminal", {
-                let store = store.clone();
-                Box::new(move |cx| {
-                    store.update(cx, |s, cx| {
-                        s.dock_menu_open = false;
-                        s.dock_open("hifi://terminal", cx);
-                    });
-                })
-            }))
-            .child(item("dm-notes", icons::PEN_NEW_SQUARE, "Notes", {
-                let store = store.clone();
-                Box::new(move |cx| {
-                    store.update(cx, |s, cx| {
-                        s.dock_menu_open = false;
-                        s.dock_open("hifi://notes", cx);
-                    });
-                })
-            }))
-            .child(item("dm-diff", icons::GIT_BRANCH, "Git Diff", {
-                let store = store.clone();
-                Box::new(move |cx| {
-                    store.update(cx, |s, cx| {
-                        s.dock_menu_open = false;
-                        s.dock_open("hifi://diff", cx);
-                    });
-                })
-            }));
-        if let Some(id) = active {
+            .shadow_lg();
+        for (id, icon_path, label, url) in Self::SURFACES {
             let store = store.clone();
-            col = col
-                .child(div().h(px(1.)).my(px(3.)).bg(p.border))
-                .child(item("dm-move", icons::SIDEBAR_RIGHT, "Move active tab", {
-                    Box::new(move |cx| {
+            col = col.child(
+                item(format!("dm-{id}").into(), icon_path, label).on_mouse_down(
+                    MouseButton::Left,
+                    move |_, _, cx| {
                         store.update(cx, |s, cx| {
                             s.dock_menu_open = false;
-                            s.dock_tab(&id, cx);
+                            s.dock_open(url, cx);
                         });
-                    })
-                }));
+                    },
+                ),
+            );
         }
-        deferred(div().absolute().top(px(40.)).right(px(12.)).child(col)).into_any()
+        if let Some(id) = active {
+            let store = store.clone();
+            col = col.child(div().h(px(1.)).my(px(3.)).bg(p.border)).child(
+                item(
+                    "dm-move".into(),
+                    icons::SIDEBAR_RIGHT,
+                    "Move active tab here",
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    store.update(cx, |s, cx| {
+                        s.dock_menu_open = false;
+                        s.dock_tab(&id, cx);
+                    });
+                }),
+            );
+        }
+        deferred(
+            div()
+                .absolute()
+                .top(px(surface_chrome::HEADER_HEIGHT))
+                .left(px(8.))
+                .child(crate::frost::frosted(10., crate::frost::MENU_BLUR, col)),
+        )
+        .into_any()
+    }
+
+    /// The unified window titlebar (cosmos `render_title_bar` +
+    /// `render_titlebar_cluster`): past the traffic lights, the sidebar
+    /// toggle, history and new-tab controls, then the active tab's identity,
+    /// then the trailing actions — all on the glass shell.
+    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let store = self.store.clone();
+        let (tab, dock_open) = {
+            let s = self.store.read(cx);
+            let tab = s.active_tab_id().and_then(|id| s.state.tab(&id).cloned());
+            let dock_open = s
+                .state
+                .active_space()
+                .and_then(|sp| {
+                    let gid = sp
+                        .active_group
+                        .clone()
+                        .or_else(|| sp.groups.first().map(|g| g.id.clone()))?;
+                    sp.groups.iter().find(|g| g.id == gid).map(|g| g.dock.open)
+                })
+                .unwrap_or(false);
+            (tab, dock_open)
+        };
+        let (can_back, can_fwd) = tab
+            .as_ref()
+            .map_or((false, false), |t| (t.can_go_back, t.can_go_forward));
+        let nav =
+            |id: &'static str, icon: &'static str, enabled: bool, op: fn(&mut Store, TabId)| {
+                let store = store.clone();
+                nav_history_button(id, icon, enabled, p, move |cx| {
+                    store.update(cx, |s, cx| {
+                        if let Some(id) = s.active_tab_id() {
+                            op(s, id);
+                            cx.notify();
+                        }
+                    });
+                })
+            };
+        let spacer = if cfg!(target_os = "macos") {
+            TITLEBAR_CLUSTER_START - TITLEBAR_CLUSTER_PAD
+        } else {
+            0.
+        };
+        let store_sb = store.clone();
+        let store_nt = store.clone();
+        let cluster = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(div().flex_none().w(px(spacer)))
+            .child(window_control_button(
+                "toggle-sidebar",
+                icons::SIDEBAR_LEFT,
+                p,
+                move |cx| {
+                    store_sb.update(cx, |s, cx| {
+                        s.sidebar_collapsed = !s.sidebar_collapsed;
+                        cx.notify();
+                    });
+                },
+            ))
+            .child(
+                div()
+                    .ml(px(Theme::SPACE_SM))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(nav("nav-back", icons::ARROW_LEFT, can_back, |s, id| {
+                        s.pending_back.push(id)
+                    }))
+                    .child(nav("nav-forward", icons::ARROW_RIGHT, can_fwd, |s, id| {
+                        s.pending_forward.push(id)
+                    })),
+            )
+            .child(div().ml(px(Theme::SPACE_SM)).child(window_control_button(
+                "titlebar-new-tab",
+                icons::PLUS,
+                p,
+                move |cx| {
+                    store_nt.update(cx, |s, cx| {
+                        s.open_tab("hifi://newtab", None, None, cx);
+                    });
+                },
+            )));
+
+        let identity = tab.map(|t| {
+            let title = t.display_title();
+            div()
+                .ml(px(Theme::SPACE_MD))
+                .min_w(px(0.))
+                .flex_shrink(1.)
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(sidebar::tab_badge(&t, 13., &p))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(p.text)
+                        .child(title),
+                )
+        });
+
+        let store_ag = store.clone();
+        let store_pg = store.clone();
+        let store_dk = store.clone();
+        let trailing = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+            .child(window_control_button(
+                "tb-agent",
+                icons::BOT,
+                p,
+                move |cx| {
+                    store_ag.update(cx, |s, cx| {
+                        s.dock_open("hifi://agent", cx);
+                    });
+                },
+            ))
+            .child(window_control_button(
+                "tb-page",
+                icons::DOCUMENT_ADD,
+                p,
+                move |cx| {
+                    store_pg.update(cx, |s, cx| {
+                        s.open_tab("hifi://notes", None, None, cx);
+                    });
+                },
+            ))
+            .child(window_control_button(
+                "tb-dock",
+                if dock_open {
+                    icons::SIDEBAR_RIGHT
+                } else {
+                    icons::SIDEBAR
+                },
+                p,
+                move |cx| store_dk.update(cx, |s, cx| s.toggle_dock(cx)),
+            ));
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .pt(px(Theme::TITLEBAR_TOP_PAD))
+            .pl(px(TITLEBAR_CLUSTER_PAD))
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(cluster)
+            .children(identity)
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .child(trailing)
+            .into_any()
     }
 }
 
-fn header_btn(
+/// Where the titlebar control cluster starts on macOS: past the traffic
+/// lights at {14,14} (cosmos `titlebar_cluster_start`).
+const TITLEBAR_CLUSTER_START: f32 = 88.0;
+/// Horizontal inset owned by the titlebar control row itself.
+const TITLEBAR_CLUSTER_PAD: f32 = 10.0;
+const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
+
+/// cosmos `window_control_button`: a 24px glass-hover icon control that
+/// occludes the titlebar drag strip beneath it.
+fn window_control_button(
     id: &'static str,
-    icon: &'static str,
-    enabled: bool,
+    icon_path: &'static str,
     p: crate::theme::Palette,
-    on_click: impl Fn(&gpui::MouseDownEvent, &mut App) + 'static,
+    on_click: impl Fn(&mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     div()
-        .id(SharedString::from(id.to_string()))
-        .size(px(24.))
+        .id(id)
+        .size(px(24.0))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(p.glass_hover()))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            on_click(cx)
+        })
+        .child(glyph(icon_path, 16.0, p.muted))
+}
+
+/// cosmos `nav_history_button`: a disabled history control still occludes
+/// the strip but dims its glyph.
+fn nav_history_button(
+    id: &'static str,
+    icon_path: &'static str,
+    enabled: bool,
+    p: crate::theme::Palette,
+    on_click: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    if !enabled {
+        return div()
+            .size(px(24.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .occlude()
+            .child(glyph(icon_path, 16.0, p.muted.opacity(0.35)))
+            .into_any_element();
+    }
+    window_control_button(id, icon_path, p, on_click).into_any_element()
+}
+
+/// cosmos `files::toolbar_button`: a surface-toolbar icon control.
+fn toolbar_button(
+    id: &'static str,
+    icon: &'static str,
+    enabled: bool,
+    p: crate::theme::Palette,
+    on_click: impl Fn(&mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(id))
+        .size(px(surface_chrome::CONTROL_SIZE))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(surface_chrome::CONTROL_RADIUS))
+        .occlude()
         .when(enabled, |d| {
             d.cursor_pointer()
-                .hover(|s| s.bg(p.raised.opacity(0.5)))
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                .hover(|s| s.bg(p.wash(0.14)))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
-                    on_click(event, cx)
+                    on_click(cx)
                 })
         })
         .child(glyph(
             icon,
-            13.,
+            surface_chrome::ICON_SIZE,
             if enabled {
                 p.muted
             } else {
@@ -1703,10 +1955,19 @@ impl gpui::Render for Shell {
             .unwrap_or(460.)
             .max(360.);
 
+        let sidebar_now = if collapsed {
+            0.
+        } else if sb_compact {
+            sidebar::COMPACT_WIDTH
+        } else {
+            sb_width
+        };
         let mut root = div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
+            .bg(p.glass())
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -1807,6 +2068,21 @@ impl gpui::Render for Shell {
                     s.dock_open("hifi://notes", cx);
                 });
             }))
+            // cosmos sidebar tone: a slightly lighter column spanning the
+            // full window height, hairlined on its right edge.
+            .when(sidebar_now > 0., |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(sidebar_now))
+                        .bg(p.wash(0.03))
+                        .border_r_1()
+                        .border_color(p.border),
+                )
+            })
             .child({
                 // Body row: sidebar · content · dock. The two resize handles
                 // float over this row; its bounds drive the width math
@@ -1819,6 +2095,7 @@ impl gpui::Render for Shell {
                     .flex_row()
                     .flex_1()
                     .min_h(px(0.))
+                    .pt(px(Theme::TITLEBAR_HEIGHT))
                     .relative()
                     .on_drag_move::<SidebarResize>(move |event, _w, cx| {
                         let w = f32::from(event.event.position.x - event.bounds.left());
@@ -1851,18 +2128,7 @@ impl gpui::Render for Shell {
                             }),
                     );
                 }
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .h_full()
-                        .pt(px(6.))
-                        .pb(px(6.))
-                        .pr(px(if dock_open { 0. } else { 6. }))
-                        .pl(px(if collapsed { 6. } else { 0. }))
-                        .flex()
-                        .child(content),
-                );
+                row = row.child(div().flex_1().min_w(px(0.)).h_full().flex().child(content));
                 if dock_open {
                     row = row.child(self.render_dock(window, cx));
                     row = row.child(
@@ -1883,6 +2149,7 @@ impl gpui::Render for Shell {
                 }
                 row
             });
+        root = root.child(self.render_title_bar(cx));
 
         // Find bar — deferred overlay top-right so it floats over webviews.
         if self.store.read(cx).find_bar_open
@@ -1890,40 +2157,44 @@ impl gpui::Render for Shell {
         {
             root = root.child(
                 deferred(
-                    div().absolute().top(px(46.)).right(px(16.)).child(
-                        div()
-                            .w(px(280.))
-                            .h(px(30.))
-                            .rounded(px(10.))
-                            .bg(p.card)
-                            .border_1()
-                            .border_color(p.border)
-                            .flex()
-                            .items_center()
-                            .px(px(8.))
-                            .gap(px(6.))
-                            .child(glyph(icons::MAGNIFER, 12., p.faint))
-                            .child(div().flex_1().child(input.clone()))
-                            .child({
-                                let store = self.store.clone();
-                                div()
-                                    .id("findbar-x")
-                                    .size(px(18.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(p.raised))
-                                    .child(glyph(icons::CLOSE, 10., p.faint))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        store.update(cx, |s, cx| {
-                                            s.find_bar_open = false;
-                                            cx.notify();
-                                        });
-                                    })
-                            }),
-                    ),
+                    div()
+                        .absolute()
+                        .top(px(Theme::TITLEBAR_HEIGHT + 44.))
+                        .right(px(16.))
+                        .child(
+                            div()
+                                .w(px(280.))
+                                .h(px(30.))
+                                .rounded(px(10.))
+                                .bg(p.card)
+                                .border_1()
+                                .border_color(p.border)
+                                .flex()
+                                .items_center()
+                                .px(px(8.))
+                                .gap(px(6.))
+                                .child(glyph(icons::MAGNIFER, 12., p.faint))
+                                .child(div().flex_1().child(input.clone()))
+                                .child({
+                                    let store = self.store.clone();
+                                    div()
+                                        .id("findbar-x")
+                                        .size(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(p.raised))
+                                        .child(glyph(icons::CLOSE, 10., p.faint))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            store.update(cx, |s, cx| {
+                                                s.find_bar_open = false;
+                                                cx.notify();
+                                            });
+                                        })
+                                }),
+                        ),
                 )
                 .into_any(),
             );

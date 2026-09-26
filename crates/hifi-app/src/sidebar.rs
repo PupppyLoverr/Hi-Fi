@@ -1,27 +1,34 @@
-//! Sidebar — the frosted rail, laid out like Radius: window controls row,
-//! pinned tiles, group cards (a split renders as one segmented row), a
-//! New Tab row, and the space switcher at the bottom. Painted translucent
-//! so the window's behind-window blur frosts through.
+//! Sidebar — cosmos's rail on Hi-Fi's model: quick actions, a Pinned
+//! disclosure, one disclosure section per group (a split renders as one
+//! segmented row), and the spaces/settings foot. It paints no fill of its
+//! own; the shell lays the cosmos sidebar tone under it.
+
+use std::collections::HashSet;
 
 use gpui::{
-    Context, Entity, Hsla, MouseButton, ScrollHandle, SharedString, Window, WindowControlArea, div,
-    hsla, prelude::*, px,
+    AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, ScrollHandle, SharedString, Window,
+    div, hsla, prelude::*, px,
 };
 
 use crate::assets::icons;
 use crate::store::Store;
-use crate::theme::{Palette, Theme, radius};
+use crate::theme::{Palette, Theme};
 use crate::views::glyph;
 use hifi_core::{SplitNode, Tab, TabId, TabKind};
 
 /// Width of the rail in compact mode — wide enough to clear the traffic lights.
 pub const COMPACT_WIDTH: f32 = 76.;
-/// Height of the rail's top row; the traffic lights are centred in it.
-pub const TOP_ROW: f32 = 46.;
+/// cosmos `shell/spaces.rs` section metrics.
+const SIDEBAR_SECTION_GAP: f32 = 12.0;
+const SIDEBAR_DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
+const SIDEBAR_DISCLOSURE_BODY_INSET: f32 = 4.0;
+const PINNED_KEY: &str = "__pinned";
 
 pub struct Sidebar {
     store: Entity<Store>,
     scroll: ScrollHandle,
+    /// Disclosure sections the user folded (group ids, or `PINNED_KEY`).
+    collapsed: HashSet<String>,
 }
 
 impl Sidebar {
@@ -30,6 +37,7 @@ impl Sidebar {
         Self {
             store,
             scroll: ScrollHandle::new(),
+            collapsed: HashSet::new(),
         }
     }
 }
@@ -136,14 +144,14 @@ fn icon_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id.into())
-        .size(px(26.))
+        .size(px(24.))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(radius::ROUND)
+        .rounded(px(6.))
         .cursor_pointer()
-        .hover(|s| s.bg(p.raised.opacity(0.45)))
+        .hover(|s| s.bg(p.glass_hover()))
         .child(glyph(icon, 15., p.muted))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
@@ -151,16 +159,30 @@ fn icon_button(
         })
 }
 
-fn section_header(label: &'static str, p: Palette) -> gpui::Div {
+/// A cosmos sidebar action row: icon + label at rest text strength.
+fn action_row(
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    compact: bool,
+    p: Palette,
+) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(id)
+        .h(px(30.))
         .flex()
+        .flex_none()
         .items_center()
-        .h(px(26.))
+        .gap(px(8.))
         .px(px(8.))
-        .text_size(px(11.))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(p.faint.opacity(0.85))
-        .child(div().flex_1().child(label))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .text_size(px(13.))
+        .text_color(p.text.opacity(0.8))
+        .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
+        .when(compact, |d| d.justify_center())
+        .child(glyph(icon, 15., p.muted))
+        .when(!compact, |d| d.child(label))
 }
 
 impl Sidebar {
@@ -172,29 +194,49 @@ impl Sidebar {
         div()
             .id(SharedString::from(format!("tab-{}", tab.id)))
             .group("sb-row")
-            .h(px(30.))
             .flex()
             .flex_none()
             .items_center()
             .gap(px(8.))
             .px(px(8.))
+            .py(px(6.))
+            .min_h(px(30.))
             .rounded(px(8.))
             .cursor_pointer()
             .when(compact, |d| d.justify_center())
-            .when(active, |d| d.bg(p.raised.opacity(0.7)))
-            .when(!active, |d| d.hover(|s| s.bg(p.raised.opacity(0.35))))
+            .when(active, |d| d.bg(p.selected()))
+            .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
             .child(tab_badge(tab, 15., &p))
             .when(!compact, |d| {
+                let sub = row_subtitle(tab);
                 d.child(
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(13.))
-                        .text_color(if active { p.text } else { p.muted })
-                        .child(tab.display_title()),
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(13.))
+                                .line_height(px(17.))
+                                .text_color(if active { p.text } else { p.text.opacity(0.8) })
+                                .child(row_title(tab)),
+                        )
+                        .when_some(sub, |d, sub| {
+                            d.child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(11.))
+                                    .line_height(px(14.))
+                                    .text_color(p.faint)
+                                    .child(sub),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -207,7 +249,7 @@ impl Sidebar {
                         .rounded(px(5.))
                         .opacity(0.)
                         .group_hover("sb-row", |s| s.opacity(1.))
-                        .hover(|s| s.bg(p.raised))
+                        .hover(|s| s.bg(p.wash(0.14)))
                         .child(glyph(icons::CLOSE, 10., p.muted))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -241,9 +283,9 @@ impl Sidebar {
             .p(px(2.))
             .gap(px(2.))
             .rounded(px(8.))
-            .bg(p.raised.opacity(0.22))
+            .bg(p.ink(0.03))
             .border_1()
-            .border_color(p.border);
+            .border_color(p.hairline(0.06));
         for tab in shown {
             let on = active == Some(&tab.id);
             let store = self.store.clone();
@@ -260,8 +302,8 @@ impl Sidebar {
                     .px(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(on, |d| d.bg(p.raised.opacity(0.8)))
-                    .when(!on, |d| d.hover(|s| s.bg(p.raised.opacity(0.4))))
+                    .when(on, |d| d.bg(p.selected()))
+                    .when(!on, |d| d.hover(|s| s.bg(p.glass_hover())))
                     .child(tab_badge(tab, 13., &p))
                     .child(
                         div()
@@ -281,24 +323,119 @@ impl Sidebar {
         }
         row.into_any_element()
     }
+    /// cosmos `sidebar_disclosure_header`: a 28px muted label row with a
+    /// chevron; clicking folds the section.
+    #[allow(clippy::too_many_arguments)]
+    fn disclosure(
+        &self,
+        id: impl Into<SharedString>,
+        key: &str,
+        label: impl Into<SharedString>,
+        open: bool,
+        trailing: Option<AnyElement>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = key.to_string();
+        let chevron = glyph(
+            if open {
+                icons::ALT_ARROW_DOWN
+            } else {
+                icons::ALT_ARROW_RIGHT
+            },
+            12.,
+            p.faint.opacity(0.7),
+        );
+        let store = self.store.clone();
+        div()
+            .id(id.into())
+            .group("sb-disclosure")
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(SIDEBAR_DISCLOSURE_HEADER_HEIGHT))
+            .px(px(Theme::SPACE_SM))
+            .cursor_pointer()
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(p.muted.opacity(0.7))
+                    .child(label.into()),
+            )
+            .child(div().flex_1())
+            .children(trailing)
+            .child(chevron)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                if !this.collapsed.remove(&key) {
+                    this.collapsed.insert(key.clone());
+                }
+                if key != PINNED_KEY {
+                    store.update(cx, |s, cx| s.set_active_group(&key, cx));
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+}
+
+fn basename(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Row title: the page title for web/pages, the harness for sessions.
+fn row_title(tab: &Tab) -> String {
+    match tab.kind {
+        TabKind::Notes if tab.title.is_empty() || tab.title == "Notes" => "Untitled".into(),
+        TabKind::Notes => tab.title.clone(),
+        TabKind::Terminal | TabKind::Agent | TabKind::Diff => {
+            let t = tab.display_title();
+            t.split_once('/').map_or(t.clone(), |(k, _)| k.to_string())
+        }
+        _ => tab.display_title(),
+    }
+}
+
+/// cosmos's two-line session rows carry the workspace underneath.
+fn row_subtitle(tab: &Tab) -> Option<String> {
+    match tab.kind {
+        TabKind::Terminal | TabKind::Agent | TabKind::Diff if !tab.cwd.is_empty() => {
+            let mut s = basename(&tab.cwd);
+            if !tab.branch.is_empty() {
+                s = format!("{s} · {}", tab.branch);
+            }
+            Some(s)
+        }
+        _ => None,
+    }
 }
 
 impl gpui::Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::of(cx).palette;
-        let store = self.store.read(cx);
-        let compact = store.state.settings.compact_sidebar;
+        let active_tab = self.store.read(cx).active_tab_id();
+        let state = self.store.read(cx).state.clone();
+        let compact = state.settings.compact_sidebar;
         let width = if compact {
             COMPACT_WIDTH
         } else {
-            store.state.settings.sidebar_width
+            state.settings.sidebar_width
         };
-        let Some(space) = store.state.active_space() else {
+        let Some(space) = state.active_space() else {
             return div().id("sidebar-empty");
         };
         let space_id = space.id.clone();
-        let spaces: Vec<(String, String)> = store
-            .state
+        let spaces: Vec<(String, String)> = state
             .spaces
             .iter()
             .map(|s| (s.id.clone(), s.name.clone()))
@@ -308,101 +445,15 @@ impl gpui::Render for Sidebar {
             .active_group
             .clone()
             .or_else(|| groups.first().map(|g| g.id.clone()));
-        let tab_of = |id: &TabId| store.state.tab(id).cloned();
+        let tab_of = |id: &TabId| state.tab(id).cloned();
         let pinned: Vec<Tab> = groups
             .iter()
             .flat_map(|g| g.tab_ids())
             .filter_map(|id| tab_of(&id))
             .filter(|t| t.pinned)
             .collect();
-        let active_tab = store.active_tab_id();
 
-        let mut bar = div()
-            .id("sidebar")
-            .w(px(width))
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(p.shell.opacity(if p.is_dark { 0.55 } else { 0.72 }));
-
-        // Window controls row — the traffic lights sit in its left 76px.
-        let store_t = self.store.clone();
-        let store_n = self.store.clone();
-        bar = bar.child(
-            div()
-                .id("sidebar-top")
-                .h(px(TOP_ROW))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .pl(px(COMPACT_WIDTH))
-                .pr(px(8.))
-                .window_control_area(WindowControlArea::Drag)
-                .child(div().flex_1())
-                .when(!compact, |d| {
-                    d.child(icon_button(
-                        "sb-toggle",
-                        icons::SIDEBAR_LEFT,
-                        p,
-                        move |cx| {
-                            store_t.update(cx, |s, cx| {
-                                s.sidebar_collapsed = true;
-                                cx.notify();
-                            });
-                        },
-                    ))
-                    .child(icon_button(
-                        "sb-newtab",
-                        icons::PLUS,
-                        p,
-                        move |cx| {
-                            store_n.update(cx, |s, cx| {
-                                s.open_tab("hifi://newtab", None, None, cx);
-                            });
-                        },
-                    ))
-                }),
-        );
-
-        // Pinned tiles — Radius's favicon grid above the tree.
-        if !pinned.is_empty() {
-            let cols = if compact { 1. } else { 4. };
-            let gap = 6.;
-            let tile_w = ((width - 16. - gap * (cols - 1.)) / cols).floor();
-            let mut grid = div()
-                .flex()
-                .flex_none()
-                .flex_wrap()
-                .gap(px(gap))
-                .px(px(8.))
-                .pb(px(8.));
-            for tab in &pinned {
-                let on = active_tab.as_ref() == Some(&tab.id);
-                let store = self.store.clone();
-                let tid = tab.id.clone();
-                grid = grid.child(
-                    div()
-                        .id(SharedString::from(format!("pin-{}", tab.id)))
-                        .w(px(tile_w))
-                        .h(px(38.))
-                        .rounded(px(10.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .bg(p.raised.opacity(if on { 0.75 } else { 0.3 }))
-                        .border_1()
-                        .border_color(if on { p.border_strong } else { p.border })
-                        .hover(|s| s.bg(p.raised.opacity(0.55)))
-                        .child(tab_badge(tab, 16., &p))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |s, cx| s.focus_tab(&tid, cx));
-                        }),
-                );
-            }
-            bar = bar.child(grid);
-        }
+        let mut bar = div().id("sidebar").w(px(width)).h_full().flex().flex_col();
 
         let mut list = div()
             .id("sidebar-scroll")
@@ -412,21 +463,66 @@ impl gpui::Render for Sidebar {
             .track_scroll(&self.scroll)
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(8.));
+            .px(px(Theme::SPACE_SM))
+            .pt(px(4.));
 
-        if !compact {
-            let store_g = self.store.clone();
-            list = list.child(section_header("Groups", p).child(icon_button(
-                "sb-newgroup",
-                icons::FOLDER_WITH_FILES,
-                p,
-                move |cx| {
-                    store_g.update(cx, |s, cx| {
-                        s.create_group("Group", None, cx);
+        // Quick actions — the browser, a Notion-style page, an agent.
+        let actions: [(&str, &'static str, &'static str, &'static str, bool); 3] = [
+            ("sb-new-tab", icons::PLUS, "New Tab", "hifi://newtab", false),
+            (
+                "sb-new-page",
+                icons::DOCUMENT_ADD,
+                "New Page",
+                "hifi://notes",
+                false,
+            ),
+            (
+                "sb-new-agent",
+                icons::BOT,
+                "New Agent",
+                "hifi://agent",
+                true,
+            ),
+        ];
+        let mut action_col = div().flex().flex_col().flex_none().gap(px(1.));
+        for (id, icon, label, url, dock) in actions {
+            let store = self.store.clone();
+            action_col = action_col.child(action_row(id, icon, label, compact, p).on_mouse_down(
+                MouseButton::Left,
+                move |_, _, cx| {
+                    store.update(cx, |s, cx| {
+                        if dock {
+                            s.dock_open(url, cx);
+                        } else {
+                            s.open_tab(url, None, None, cx);
+                        }
                     });
                 },
-            )));
+            ));
+        }
+        list = list.child(action_col);
+
+        if !pinned.is_empty() {
+            let open = !self.collapsed.contains(PINNED_KEY);
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+            if !compact {
+                list = list.child(self.disclosure(
+                    "sb-pinned",
+                    PINNED_KEY,
+                    "Pinned",
+                    open,
+                    None,
+                    p,
+                    cx,
+                ));
+            }
+            if open || compact {
+                list = list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
+                    pinned.iter().map(|tab| {
+                        self.tab_row(tab, active_tab.as_ref() == Some(&tab.id), compact, p)
+                    }),
+                ));
+            }
         }
 
         for group in &groups {
@@ -480,132 +576,98 @@ impl gpui::Render for Sidebar {
                 rows.push(self.tab_row(&tab, active_in_group.as_ref() == Some(id), compact, p));
             }
 
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
             if compact {
-                list = list.children(rows);
-                list = list.child(div().h(px(1.)).mx(px(10.)).my(px(2.)).bg(p.border));
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .gap(px(1.))
+                        .children(rows),
+                );
                 continue;
             }
-
-            let store_h = self.store.clone();
+            let open = !self.collapsed.contains(&gid);
             let store_plus = self.store.clone();
-            let (gid_h, gid_plus) = (gid.clone(), gid.clone());
-            let count = group.tab_ids().len();
-            let header = div()
-                .id(SharedString::from(format!("group-{gid}")))
-                .group("sb-group")
-                .h(px(28.))
+            let gid_plus = gid.clone();
+            let plus = div()
+                .id(SharedString::from(format!("group-plus-{gid}")))
+                .size(px(18.))
                 .flex()
-                .flex_none()
                 .items_center()
-                .gap(px(8.))
-                .px(px(6.))
-                .rounded(px(7.))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.raised.opacity(0.25)))
-                .child(glyph(
-                    if g_active {
-                        icons::FOLDER_WITH_FILES
-                    } else {
-                        icons::FOLDER
-                    },
-                    14.,
-                    if g_active { p.text } else { p.faint },
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(12.5))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(if g_active { p.text } else { p.muted })
-                        .child(group.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(p.faint.opacity(0.7))
-                        .group_hover("sb-group", |s| s.opacity(0.))
-                        .child(count.to_string()),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("group-plus-{gid}")))
-                        .size(px(18.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .opacity(0.)
-                        .group_hover("sb-group", |s| s.opacity(1.))
-                        .hover(|s| s.bg(p.raised))
-                        .child(glyph(icons::PLUS, 11., p.muted))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            cx.stop_propagation();
-                            store_plus.update(cx, |s, cx| {
-                                s.open_tab("hifi://newtab", Some(gid_plus.clone()), None, cx);
-                            });
-                        }),
-                )
+                .justify_center()
+                .rounded(px(5.))
+                .opacity(0.)
+                .group_hover("sb-disclosure", |s| s.opacity(1.))
+                .hover(|s| s.bg(p.wash(0.14)))
+                .child(glyph(icons::PLUS, 11., p.muted))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    store_h.update(cx, |s, cx| s.set_active_group(&gid_h, cx));
-                });
-
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .gap(px(2.))
-                    .p(px(4.))
-                    .rounded(radius::CARD)
-                    .when(g_active, |d| {
-                        d.bg(p.raised.opacity(if p.is_dark { 0.18 } else { 0.28 }))
-                            .border_1()
-                            .border_color(p.border)
-                    })
-                    .child(header)
-                    .children(rows),
-            );
-        }
-
-        // "+ New Tab" — Radius's trailing row.
-        let store_nt = self.store.clone();
-        list = list.child(
-            div()
-                .id("sb-newtab-row")
-                .h(px(30.))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .when(compact, |d| d.justify_center().px(px(8.)))
-                .text_size(px(13.))
-                .text_color(p.faint)
-                .hover(|s| s.bg(p.raised.opacity(0.3)).text_color(p.muted))
-                .child(glyph(icons::PLUS, 14., p.faint))
-                .when(!compact, |d| d.child("New Tab"))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    store_nt.update(cx, |s, cx| {
-                        s.open_tab("hifi://newtab", None, None, cx);
+                    cx.stop_propagation();
+                    store_plus.update(cx, |s, cx| {
+                        s.open_tab("hifi://newtab", Some(gid_plus.clone()), None, cx);
                     });
-                }),
-        );
+                })
+                .into_any_element();
+            let label = if g_active {
+                group.name.clone()
+            } else {
+                format!("{}  ·  {}", group.name, group.tab_ids().len())
+            };
+            list = list.child(self.disclosure(
+                SharedString::from(format!("group-{gid}")),
+                &gid,
+                label,
+                open,
+                Some(plus),
+                p,
+                cx,
+            ));
+            if open {
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .gap(px(1.))
+                        .pb(px(SIDEBAR_DISCLOSURE_BODY_INSET))
+                        .children(rows),
+                );
+            }
+        }
+        if !compact {
+            let store_g = self.store.clone();
+            list = list
+                .child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none())
+                .child(
+                    action_row(
+                        "sb-newgroup",
+                        icons::FOLDER_WITH_FILES,
+                        "New Group",
+                        false,
+                        p,
+                    )
+                    .text_color(p.faint)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        store_g.update(cx, |s, cx| {
+                            s.create_group("Group", None, cx);
+                        });
+                    }),
+                );
+        }
+        list = list.child(div().h(px(12.)).flex_none());
         bar = bar.child(list);
 
-        // Bottom bar: spaces (Arc-style monograms) + settings.
+        // Footer: spaces + settings, above a hairline (cosmos sidebar foot).
         let mut bottom = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(4.))
-            .px(px(8.))
+            .px(px(Theme::SPACE_SM))
             .h(px(44.))
+            .border_t_1()
+            .border_color(p.hairline(0.05))
             .when(compact, |d| d.flex_col().h_auto().py(px(8.)));
         for (id, name) in &spaces {
             let on = *id == space_id;
@@ -617,22 +679,17 @@ impl gpui::Render for Sidebar {
                     .id(SharedString::from(format!("space-{id}")))
                     .size(px(24.))
                     .flex_none()
-                    .rounded_full()
+                    .rounded(px(6.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_size(px(10.5))
+                    .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .bg(if on {
-                        p.accent.opacity(0.22)
-                    } else {
-                        p.raised.opacity(0.2)
+                    .when(on, |d| d.bg(p.selected()).text_color(p.text))
+                    .when(!on, |d| {
+                        d.text_color(p.faint).hover(|s| s.bg(p.glass_hover()))
                     })
-                    .text_color(if on { p.accent } else { p.faint })
-                    .border_1()
-                    .border_color(if on { p.accent.opacity(0.45) } else { p.border })
-                    .hover(|s| s.bg(p.raised.opacity(0.45)))
                     .child(letter)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         store.update(cx, |s, cx| s.switch_space(&sid, cx));
