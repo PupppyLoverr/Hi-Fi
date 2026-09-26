@@ -1409,23 +1409,26 @@ impl Shell {
                         });
                     }
                 });
+                let min_axis = |d: gpui::Div, m: f32| {
+                    if horizontal {
+                        d.min_w(px(m)).min_h(px(0.))
+                    } else {
+                        d.min_h(px(m)).min_w(px(0.))
+                    }
+                };
                 row.child(
-                    div()
+                    min_axis(div(), min_first)
                         .flex_basis(relative(f))
                         .flex_grow(1.)
-                        .min_h(px(0.))
-                        .min_w(px(0.))
                         .overflow_hidden()
                         .flex()
                         .child(first_el),
                 )
                 .child(handle)
                 .child(
-                    div()
+                    min_axis(div(), min_second)
                         .flex_basis(relative(1. - f))
                         .flex_grow(1.)
-                        .min_h(px(0.))
-                        .min_w(px(0.))
                         .overflow_hidden()
                         .flex()
                         .child(second_el),
@@ -2380,8 +2383,8 @@ impl gpui::Render for Shell {
                             .absolute()
                             .top_0()
                             .bottom_0()
-                            .right(px(dock_width - DOCK_GUTTER))
-                            .w(px(DOCK_GUTTER + 2.))
+                            .right(px(dock_width - DOCK_GUTTER - 4.))
+                            .w(px(DOCK_GUTTER + 8.))
                             .occlude()
                             .cursor_col_resize()
                             .on_drag(DockResize, |_, _point, _, cx| {
