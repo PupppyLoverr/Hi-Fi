@@ -24,72 +24,82 @@ pub fn glyph(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
 pub struct NewTabView {
     store: Entity<Store>,
     input: Entity<TextField>,
-    now: String,
-    _tick: gpui::Task<()>,
+    /// Ask = start an agent task; Search = navigate / web search.
+    ask: bool,
+    harness: usize,
 }
+
+/// Agent harnesses the composer can start: label, command, brand mark.
+const HARNESSES: &[(&str, &str, &str)] = &[
+    ("Claude Code", "claude", icons::CLAUDE_MARK),
+    ("Codex", "codex", icons::OPENAI_MARK),
+    ("Devin", "devin", icons::DEVIN_MARK),
+    ("OpenCode", "opencode", icons::OPENCODE_MARK),
+    ("Amp", "amp", icons::AMP_MARK),
+];
+
+const ASK_PLACEHOLDER: &str = "Ask AI a task, @ for context";
+const SEARCH_PLACEHOLDER: &str = "Search Google or type a URL";
 
 impl NewTabView {
     pub fn new(
         store: Entity<Store>,
-        _tab_id: String,
+        tab_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            let mut t = TextField::new("Search or enter address", cx);
-            t.placeholder_color = None;
-            t
-        });
-        let store_for_submit = store.clone();
-        let own_tab = _tab_id.clone();
-        cx.subscribe(&input, move |_me, _i, event, cx| {
-            if let TextFieldEvent::Submitted(text) = event {
-                let tab = own_tab.clone();
-                store_for_submit.update(cx, |store, cx| {
-                    let url = resolve_input(store, text);
-                    store.navigate(&tab, &url, cx);
-                });
+        let input = cx.new(|cx| TextField::new(ASK_PLACEHOLDER, cx));
+        cx.subscribe(&input, move |me: &mut NewTabView, input, event, cx| {
+            let TextFieldEvent::Submitted(text) = event else {
+                return;
+            };
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return;
             }
+            let tab = tab_id.clone();
+            let (ask, harness) = (me.ask, HARNESSES[me.harness].1);
+            me.store.update(cx, |store, cx| {
+                if ask && !looks_like_address(&text) {
+                    store.open_agent(harness, &text, cx);
+                    store.close_tab(&tab, cx);
+                } else {
+                    let url = resolve_input(store, &text);
+                    store.navigate(&tab, &url, cx);
+                }
+            });
+            input.update(cx, |i, cx| i.reset(cx));
         })
         .detach();
-        let tick = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(30))
-                    .await;
-                if this
-                    .update(cx, |v: &mut NewTabView, cx| {
-                        v.now = now_string();
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         window.focus(&input.read(cx).focus_handle(cx), cx);
         Self {
             store,
             input,
-            now: now_string(),
-            _tick: tick,
+            ask: true,
+            harness: 0,
         }
     }
-}
 
-fn now_string() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
-}
-
-fn greeting() -> &'static str {
-    let h = chrono::Local::now().format("%H").to_string();
-    match h.parse::<u32>().unwrap_or(12) {
-        5..=11 => "Good morning",
-        12..=16 => "Good afternoon",
-        17..=21 => "Good evening",
-        _ => "Good night",
+    fn set_mode(&mut self, ask: bool, cx: &mut Context<Self>) {
+        self.ask = ask;
+        self.input.update(cx, |i, cx| {
+            i.set_placeholder(
+                if ask {
+                    ASK_PLACEHOLDER
+                } else {
+                    SEARCH_PLACEHOLDER
+                },
+                cx,
+            )
+        });
+        cx.notify();
     }
+}
+
+/// A typed URL/host always navigates, even in Ask mode.
+fn looks_like_address(text: &str) -> bool {
+    !text.contains(char::is_whitespace)
+        && (text.contains("://") || text.starts_with("localhost") || text.contains('.'))
 }
 
 fn resolve_input(store: &Store, text: &str) -> String {
@@ -105,14 +115,50 @@ fn resolve_input(store: &Store, text: &str) -> String {
     }
 }
 
-/// Glass tile used by new-tab sections.
-fn glass_tile(p: &Palette) -> gpui::Div {
+fn basename_of(path: &str) -> String {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A compact composer control: icon + label + chevron, text-weight only.
+fn composer_pill(
+    id: impl Into<SharedString>,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    chevron: bool,
+    p: &Palette,
+) -> gpui::Stateful<gpui::Div> {
+    let p = *p;
     div()
-        .bg(gpui::white().opacity(if p.is_dark { 0.05 } else { 0.55 }))
-        .rounded(radius::BUBBLE)
-        .border_1()
-        .border_color(gpui::white().opacity(if p.is_dark { 0.09 } else { 0.4 }))
-        .shadow_sm()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .h(px(24.))
+        .px(px(6.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(p.muted)
+        .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
+        .child(glyph(icon, 13., p.muted))
+        .child(label.into())
+        .when(chevron, |d| {
+            d.child(glyph(icons::ALT_ARROW_DOWN, 10., p.faint))
+        })
+}
+
+struct TaskCard {
+    id: Option<String>,
+    url: String,
+    status: String,
+    title: String,
+    body: String,
+    icon: &'static str,
+    live: bool,
 }
 
 impl gpui::Render for NewTabView {
@@ -120,15 +166,17 @@ impl gpui::Render for NewTabView {
         let p = Theme::of(cx).palette;
         let store = self.store.read(cx);
         let settings = &store.state.settings;
-        let fg = if settings.background_image.is_empty() {
-            p.text
-        } else {
-            gpui::white()
-        };
+        let has_image = !settings.background_image.is_empty();
+        let fg = if has_image { gpui::white() } else { p.text };
 
-        // Background: custom image or accent aurora wash.
-        let mut root = div().size_full().flex().flex_col().items_center();
-        if !settings.background_image.is_empty() {
+        let mut root = div()
+            .id("newtab")
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .overflow_y_scroll();
+        if has_image {
             let path = settings.background_image.clone();
             root = root.child(
                 div()
@@ -146,311 +194,352 @@ impl gpui::Render for NewTabView {
                             .bg(gpui::black().opacity(0.3 + settings.background_dim)),
                     ),
             );
-        } else {
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(p.bg)
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .w(rems(24.))
-                            .h(rems(24.))
-                            .rounded_full()
-                            .bg(p.accent.opacity(0.10)),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left_0()
-                            .w(rems(28.))
-                            .h(rems(28.))
-                            .rounded_full()
-                            .bg(gpui::rgb(0x4a8ef7).opacity(0.08)),
-                    ),
-            );
         }
 
-        let date = chrono::Local::now().format("%A, %B %-d").to_string();
-        let pinned: Vec<_> = store
+        // Recent tasks: agent sessions first (newest last in the model), then
+        // recent pages to fill the row.
+        let mut cards: Vec<TaskCard> = store
             .state
-            .active_space()
-            .map(|s| {
-                s.groups
-                    .iter()
-                    .flat_map(|g| g.tab_ids())
-                    .filter_map(|id| store.state.tab(&id))
-                    .filter(|t| t.pinned)
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>()
+            .tabs
+            .iter()
+            .rev()
+            .filter(|t| {
+                matches!(
+                    t.kind,
+                    hifi_core::TabKind::Agent | hifi_core::TabKind::Terminal
+                )
             })
-            .unwrap_or_default();
-        let recents: Vec<_> = store.history.iter().rev().take(10).cloned().collect();
+            .take(3)
+            .map(|t| {
+                let harness = if t.command.is_empty() {
+                    "claude".to_string()
+                } else {
+                    t.command.clone()
+                };
+                let place = if t.cwd.is_empty() {
+                    "Local".to_string()
+                } else {
+                    basename_of(&t.cwd)
+                };
+                TaskCard {
+                    id: Some(t.id.clone()),
+                    url: String::new(),
+                    status: if t.kind == hifi_core::TabKind::Agent {
+                        format!("Agent · {harness}")
+                    } else {
+                        "Terminal".into()
+                    },
+                    title: if !t.prompt.is_empty() {
+                        t.prompt.clone()
+                    } else if t.title.is_empty() {
+                        t.display_title()
+                    } else {
+                        t.title.clone()
+                    },
+                    body: if t.branch.is_empty() {
+                        place
+                    } else {
+                        format!("{place} · {}", t.branch)
+                    },
+                    icon: crate::sidebar::kind_icon(t),
+                    live: true,
+                }
+            })
+            .collect();
+        for entry in store.history.iter().rev() {
+            if cards.len() >= 3 {
+                break;
+            }
+            if cards.iter().any(|c| c.url == entry.url) {
+                continue;
+            }
+            let host = hifi_core::host_of(&entry.url);
+            cards.push(TaskCard {
+                id: None,
+                url: entry.url.clone(),
+                status: "Recently visited".into(),
+                title: if entry.title.is_empty() {
+                    host.clone()
+                } else {
+                    entry.title.clone()
+                },
+                body: host,
+                icon: icons::GLOBE,
+                live: false,
+            });
+        }
 
-        let store2 = self.store.clone();
-        let store3 = self.store.clone();
-        let store4 = self.store.clone();
-        let mut col = div()
+        let (h_label, _, h_icon) = HARNESSES[self.harness];
+        let ask = self.ask;
+
+        let mode_seg = |label: &'static str, on: bool, id: &'static str| {
+            div()
+                .id(id)
+                .h(px(26.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .rounded(px(7.))
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .when(on, |d| {
+                    d.bg(if p.is_dark { p.raised } else { gpui::white() })
+                        .text_color(p.text)
+                        .shadow_xs()
+                        .border_1()
+                        .border_color(p.hairline(0.06))
+                })
+                .when(!on, |d| {
+                    d.text_color(p.muted).hover(|s| s.text_color(p.text))
+                })
+                .child(label)
+        };
+
+        let composer = div()
+            .id("composer")
+            .w_full()
+            .max_w(px(620.))
+            .h(px(46.))
+            .pl(px(14.))
+            .pr(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(px(12.))
+            .bg(if p.is_dark {
+                p.dialog.opacity(0.9)
+            } else {
+                gpui::white().opacity(0.96)
+            })
+            .border_1()
+            .border_color(p.hairline(0.07))
+            .shadow_md()
+            .capture_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                let k = &e.keystroke;
+                if k.key == "tab" && !k.modifiers.modified() {
+                    this.set_mode(!this.ask, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(14.))
+                    .text_color(p.text)
+                    .child(self.input.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_size(px(11.5))
+                    .text_color(p.faint)
+                    .child(
+                        div()
+                            .px(px(5.))
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.))
+                            .bg(p.ink(0.06))
+                            .text_size(px(10.5))
+                            .text_color(p.muted)
+                            .child("Tab"),
+                    )
+                    .child("to switch"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .p(px(3.))
+                    .gap(px(2.))
+                    .rounded(px(9.))
+                    .bg(p.ink(0.05))
+                    .child(mode_seg("Search", !ask, "mode-search").on_click(
+                        cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.set_mode(false, cx)),
+                    ))
+                    .child(mode_seg("Ask", ask, "mode-ask").on_click(
+                        cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.set_mode(true, cx)),
+                    )),
+            );
+
+        let store_ctx = self.store.clone();
+        let store_term = self.store.clone();
+        let controls = div()
+            .w_full()
+            .max_w(px(620.))
+            .px(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                composer_pill("ctl-add", icons::PAPERCLIP, "", false, &p).on_click(
+                    move |_, _, cx| {
+                        store_ctx.update(cx, |s, cx| s.dock_open("hifi://notes", cx));
+                    },
+                ),
+            )
+            .child(
+                composer_pill("ctl-local", icons::LAPTOP, "Local", false, &p).on_click(
+                    move |_, _, cx| {
+                        store_term.update(cx, |s, cx| {
+                            s.open_tab("hifi://terminal", None, None, cx);
+                        });
+                    },
+                ),
+            )
+            .child(composer_pill(
+                "ctl-guard",
+                icons::SHIELD,
+                "Guard",
+                false,
+                &p,
+            ))
+            .child(div().flex_1())
+            .when(ask, |d| {
+                d.child(
+                    composer_pill("ctl-harness", h_icon, h_label, true, &p).on_click(cx.listener(
+                        |this, _: &gpui::ClickEvent, _, cx| {
+                            this.harness = (this.harness + 1) % HARNESSES.len();
+                            cx.notify();
+                        },
+                    )),
+                )
+            });
+
+        let mut hero = div()
+            .relative()
             .flex()
             .flex_col()
             .items_center()
-            .gap(space::LG)
             .w_full()
-            .max_w(rems(46.))
-            .mx_auto()
-            .mt(rems(9.))
+            .max_w(px(820.))
             .px(space::LG)
-            .text_color(fg);
+            .pt(rems(11.))
+            .gap(px(10.))
+            .child(div().mb(px(18.)).child(glyph(
+                icons::HIFI_MARK,
+                44.,
+                fg.opacity(if has_image { 0.9 } else { 0.28 }),
+            )))
+            .child(composer)
+            .child(controls);
 
-        col = col
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(space::XS)
-                    .child(
-                        div()
-                            .text_size(px(64.))
-                            .font_weight(gpui::FontWeight::EXTRA_LIGHT)
-                            .child(self.now.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(15.))
-                            .text_color(fg.opacity(0.72))
-                            .child(format!("{date} · {}", greeting())),
-                    ),
-            )
-            .child(
-                // Search field — glass
-                glass_tile(&p)
-                    .w_full()
-                    .h(px(52.))
-                    .px(px(18.))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(glyph(icons::MAGNIFER, 18., fg.opacity(0.55)))
-                    .child(div().flex_1().child(self.input.clone())),
-            )
-            .child(
-                // Action chips
-                div().flex().flex_row().gap(space::SM).children(
-                    [
-                        ("New tab", icons::PLUS, "hifi://newtab"),
-                        ("Terminal", icons::TERMINAL, "hifi://terminal"),
-                        ("Agent", icons::BOT, "hifi://agent"),
-                        ("Diff", icons::GIT_BRANCH, "hifi://diff"),
-                        ("Settings", icons::SETTINGS, "hifi://settings"),
-                    ]
-                    .into_iter()
-                    .map(|(label, ic, url)| {
-                        let store = store2.clone();
-                        div()
-                            .id(label)
-                            .flex()
-                            .items_center()
-                            .gap(px(7.))
-                            .px(px(14.))
-                            .h(px(34.))
-                            .rounded_full()
-                            .bg(gpui::white().opacity(if p.is_dark { 0.07 } else { 0.5 }))
-                            .border_1()
-                            .border_color(gpui::white().opacity(if p.is_dark {
-                                0.08
-                            } else {
-                                0.35
-                            }))
-                            .cursor_pointer()
-                            .hover(|s| {
-                                s.bg(gpui::white().opacity(if p.is_dark { 0.12 } else { 0.7 }))
-                            })
-                            .child(glyph(ic, 15., fg.opacity(0.8)))
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .text_color(fg.opacity(0.9))
-                                    .child(label),
-                            )
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                store.update(cx, |store, cx| {
-                                    store.open_tab(url, None, None, cx);
-                                });
-                            })
-                    })
-                    .collect::<Vec<_>>(),
-                ),
-            );
-
-        if !pinned.is_empty() {
-            let mut dial = div()
-                .flex()
-                .flex_row()
-                .gap(space::MD)
-                .flex_wrap()
-                .justify_center();
-            for tab in pinned {
-                let store = store3.clone();
-                let id = tab.id.clone();
-                let host = hifi_core::host_of(&tab.url);
-                let letter = host
-                    .chars()
-                    .next()
-                    .unwrap_or('•')
-                    .to_uppercase()
-                    .to_string();
-                dial = dial.child(
+        if !cards.is_empty() {
+            let mut row = div().w_full().flex().gap(px(10.));
+            for (i, card) in cards.into_iter().enumerate() {
+                let store = self.store.clone();
+                let TaskCard {
+                    id,
+                    url,
+                    status,
+                    title,
+                    body,
+                    icon,
+                    live,
+                } = card;
+                row = row.child(
                     div()
-                        .id(SharedString::from(format!("pin-{id}")))
+                        .id(SharedString::from(format!("task-{i}")))
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(236.))
                         .flex()
                         .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(5.))
-                        .w(px(76.))
-                        .h(px(70.))
-                        .rounded(radius::CARD)
-                        .bg(gpui::white().opacity(if p.is_dark { 0.06 } else { 0.55 }))
+                        .rounded(px(12.))
+                        .overflow_hidden()
+                        .bg(if p.is_dark {
+                            p.dialog.opacity(0.85)
+                        } else {
+                            gpui::white().opacity(0.92)
+                        })
                         .border_1()
-                        .border_color(gpui::white().opacity(if p.is_dark { 0.08 } else { 0.35 }))
+                        .border_color(p.hairline(0.07))
+                        .shadow_sm()
                         .cursor_pointer()
-                        .hover(|s| s.bg(gpui::white().opacity(if p.is_dark { 0.12 } else { 0.75 })))
+                        .hover(|s| s.border_color(p.hairline(0.14)))
                         .child(
                             div()
-                                .size(px(26.))
-                                .rounded(px(7.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .px(px(12.))
+                                .pt(px(10.))
+                                .pb(px(8.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(11.5))
+                                        .text_color(p.faint)
+                                        .child(div().flex_1().min_w_0().truncate().child(status))
+                                        .when(live, |d| {
+                                            d.child(div().size(px(6.)).rounded_full().bg(p.accent))
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(13.5))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(p.text)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .text_color(p.muted)
+                                        .child(body),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .mx(px(8.))
+                                .mb(px(8.))
+                                .rounded(px(8.))
+                                .bg(p.accent.opacity(if p.is_dark { 0.10 } else { 0.07 }))
+                                .border_1()
+                                .border_color(p.hairline(0.04))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .bg(p.accent.opacity(0.25))
-                                .text_color(p.accent)
-                                .text_size(px(12.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(letter),
+                                .child(glyph(icon, 30., p.accent.opacity(0.55))),
                         )
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(fg.opacity(0.75))
-                                .child(host),
-                        )
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |store, cx| store.focus_tab(&id, cx));
-                        }),
-                );
-            }
-            col = col.child(dial);
-        }
-
-        if !recents.is_empty() {
-            let mut strip = div()
-                .flex()
-                .flex_row()
-                .gap(space::SM)
-                .flex_wrap()
-                .justify_center();
-            for entry in recents {
-                let store = store4.clone();
-                let url = entry.url.clone();
-                strip = strip.child(
-                    div()
-                        .id(SharedString::from(format!("rec-{url}")))
-                        .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .px(px(12.))
-                        .h(px(30.))
-                        .rounded_full()
-                        .bg(gpui::white().opacity(if p.is_dark { 0.06 } else { 0.5 }))
-                        .border_1()
-                        .border_color(gpui::white().opacity(if p.is_dark { 0.07 } else { 0.3 }))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::white().opacity(if p.is_dark { 0.11 } else { 0.7 })))
-                        .child(glyph(icons::GLOBE, 13., fg.opacity(0.6)))
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(fg.opacity(0.85))
-                                .child(if entry.title.is_empty() {
-                                    hifi_core::host_of(&entry.url)
-                                } else {
-                                    entry.title.clone()
-                                }),
-                        )
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |s, cx| {
-                                s.open_tab(&url, None, None, cx);
+                        .on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| match &id {
+                                Some(id) => s.focus_tab(id, cx),
+                                None => {
+                                    s.open_tab(&url, None, None, cx);
+                                }
                             });
                         }),
                 );
             }
-            col = col.child(
+            hero = hero.child(
                 div()
+                    .w_full()
+                    .mt(rems(4.5))
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap(space::SM)
+                    .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(fg.opacity(0.5))
-                            .child("JUMP BACK IN"),
+                            .px(px(14.))
+                            .text_size(px(14.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(fg)
+                            .child("Recent tasks"),
                     )
-                    .child(strip),
+                    .child(row),
             );
         }
 
-        root.child(div().flex_1().child(col)).child(
-            // kbd hints
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::LG)
-                .pb(space::LG)
-                .children(
-                    [
-                        ("⌘T", "Command bar"),
-                        ("⌘L", "Address"),
-                        ("⌘W", "Close tab"),
-                    ]
-                    .iter()
-                    .map(|(kbd, label)| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .h(px(20.))
-                                    .rounded(px(5.))
-                                    .bg(gpui::white().opacity(if p.is_dark { 0.08 } else { 0.5 }))
-                                    .border_1()
-                                    .border_color(gpui::white().opacity(if p.is_dark {
-                                        0.1
-                                    } else {
-                                        0.35
-                                    }))
-                                    .text_size(px(10.))
-                                    .text_color(fg.opacity(0.7))
-                                    .child(*kbd),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(fg.opacity(0.5))
-                                    .child(*label),
-                            )
-                    })
-                    .collect::<Vec<_>>(),
-                ),
-        )
+        root.child(hero).child(div().h(px(32.)).flex_none())
     }
 }
 

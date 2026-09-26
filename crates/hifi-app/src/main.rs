@@ -200,6 +200,25 @@ fn main() {
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         );
         Theme::install(&store.read(cx).state.settings.clone(), dark, cx);
+        let mut applied = {
+            let s = &store.read(cx).state.settings;
+            (s.appearance, s.accent.clone())
+        };
+        cx.observe(&store, move |store, cx| {
+            let settings = store.read(cx).state.settings.clone();
+            let next = (settings.appearance, settings.accent.clone());
+            if next == applied {
+                return;
+            }
+            applied = next;
+            let dark = matches!(
+                cx.window_appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            );
+            Theme::install(&settings, dark, cx);
+            cx.refresh_windows();
+        })
+        .detach();
 
         bind_keys(cx);
         install_menus(cx);

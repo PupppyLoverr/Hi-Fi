@@ -15,15 +15,12 @@ pub const FONT_MONO: &str = "Geist Mono";
 pub mod radius {
     use gpui::{Pixels, px};
     pub const BUBBLE: Pixels = px(16.);
-    pub const CARD: Pixels = px(10.);
     pub const ROUND: Pixels = px(6.);
 }
 
 pub mod space {
     use gpui::{Pixels, px};
-    pub const XS: Pixels = px(4.);
     pub const SM: Pixels = px(8.);
-    pub const MD: Pixels = px(12.);
     pub const LG: Pixels = px(16.);
 }
 
@@ -123,6 +120,16 @@ impl Palette {
         self.wash(if self.is_dark { 0.11 } else { 0.06 })
     }
 
+    /// Selected sidebar pill: a white card on light glass, the cosmos plate
+    /// on dark.
+    pub fn pill(&self) -> Hsla {
+        if self.is_dark {
+            self.selected()
+        } else {
+            hsla(0., 0., 1., 0.92)
+        }
+    }
+
     /// The frosted window shell tint (cosmos `Theme::glass`).
     pub fn glass(&self) -> Hsla {
         self.shell.opacity(GLASS_ALPHA)
@@ -160,7 +167,7 @@ impl Palette {
     pub fn light(accent: Hsla) -> Self {
         Self {
             bg: color(0xffffff),
-            shell: color(0xf3f3f5),
+            shell: color(0xeef3f8),
             dialog: color(0xffffff),
             raised: color(0xdadae0),
             card: color(0xffffff),
@@ -190,7 +197,6 @@ impl Theme {
     pub const TITLEBAR_HEIGHT: f32 = 38.0;
     pub const TITLEBAR_TOP_PAD: f32 = 4.0;
     pub const SPACE_SM: f32 = 8.0;
-    pub const SPACE_MD: f32 = 12.0;
 
     /// Whether surfaces sit on the compositor-blurred glass shell.
     pub const fn is_frost() -> bool {

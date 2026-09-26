@@ -74,6 +74,9 @@ pub struct Tab {
     /// Favicon URL resolved by the webview, for sidebar/speed-dial tiles.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub favicon_url: String,
+    /// Agent tabs: the task the harness was started with.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
 }
 
 impl Tab {
@@ -93,6 +96,7 @@ impl Tab {
             can_go_back: false,
             can_go_forward: false,
             favicon_url: String::new(),
+            prompt: String::new(),
         }
     }
 

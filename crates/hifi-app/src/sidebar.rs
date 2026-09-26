@@ -204,7 +204,11 @@ impl Sidebar {
             .rounded(px(8.))
             .cursor_pointer()
             .when(compact, |d| d.justify_center())
-            .when(active, |d| d.bg(p.selected()))
+            .when(active, |d| {
+                d.bg(p.pill()).when(!p.is_dark, |d| {
+                    d.shadow_xs().border_1().border_color(p.hairline(0.04))
+                })
+            })
             .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
             .child(tab_badge(tab, 15., &p))
             .when(!compact, |d| {
@@ -302,7 +306,7 @@ impl Sidebar {
                     .px(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(on, |d| d.bg(p.selected()))
+                    .when(on, |d| d.bg(p.pill()).when(!p.is_dark, |d| d.shadow_xs()))
                     .when(!on, |d| d.hover(|s| s.bg(p.glass_hover())))
                     .child(tab_badge(tab, 13., &p))
                     .child(
@@ -396,6 +400,7 @@ fn basename(path: &str) -> String {
 /// Row title: the page title for web/pages, the harness for sessions.
 fn row_title(tab: &Tab) -> String {
     match tab.kind {
+        TabKind::Agent if !tab.prompt.is_empty() => tab.prompt.clone(),
         TabKind::Notes if tab.title.is_empty() || tab.title == "Notes" => "Untitled".into(),
         TabKind::Notes => tab.title.clone(),
         TabKind::Terminal | TabKind::Agent | TabKind::Diff => {
@@ -466,64 +471,185 @@ impl gpui::Render for Sidebar {
             .px(px(Theme::SPACE_SM))
             .pt(px(4.));
 
-        // Quick actions — the browser, a Notion-style page, an agent.
-        let actions: [(&str, &'static str, &'static str, &'static str, bool); 3] = [
-            ("sb-new-tab", icons::PLUS, "New Tab", "hifi://newtab", false),
+        // Workspace header: the space switcher (cycles spaces).
+        let space_name = space.name.clone();
+        let next_space = spaces
+            .iter()
+            .skip_while(|(id, _)| *id != space_id)
+            .nth(1)
+            .or_else(|| spaces.first())
+            .map(|(id, _)| id.clone());
+        let store_hdr = self.store.clone();
+        let initial: String = space_name
+            .chars()
+            .next()
+            .unwrap_or('S')
+            .to_uppercase()
+            .collect();
+        list = list.child(
+            div()
+                .id("sb-space-header")
+                .h(px(32.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .px(px(6.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .when(compact, |d| d.justify_center())
+                .hover(|s| s.bg(p.glass_hover()))
+                .child(
+                    div()
+                        .size(px(20.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(p.accent)
+                        .text_color(gpui::white())
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(initial),
+                )
+                .when(!compact, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(13.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child(space_name),
+                    )
+                    .child(glyph(icons::ALT_ARROW_DOWN, 11., p.faint))
+                })
+                .on_click(move |_, _, cx| {
+                    if let Some(id) = next_space.clone() {
+                        store_hdr.update(cx, |s, cx| s.switch_space(&id, cx));
+                    }
+                }),
+        );
+
+        // Favorites: pinned tabs as a 3-up tile grid.
+        if !pinned.is_empty() {
+            let mut grid = div().mt(px(8.)).flex().flex_wrap().flex_none().gap(px(6.));
+            for tab in &pinned {
+                let on = active_tab.as_ref() == Some(&tab.id);
+                let store = self.store.clone();
+                let tid = tab.id.clone();
+                grid = grid.child(
+                    div()
+                        .id(SharedString::from(format!("tile-{}", tab.id)))
+                        .h(px(38.))
+                        .when(compact, |d| d.w_full())
+                        .when(!compact, |d| {
+                            d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(10.))
+                        .cursor_pointer()
+                        .bg(if p.is_dark {
+                            p.ink(0.05)
+                        } else {
+                            hsla(0., 0., 1., 0.5)
+                        })
+                        .border_1()
+                        .border_color(if on {
+                            p.accent.opacity(0.6)
+                        } else {
+                            p.hairline(0.04)
+                        })
+                        .hover(|s| s.bg(p.pill()))
+                        .child(tab_badge(tab, 16., &p))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            store.update(cx, |s, cx| s.focus_tab(&tid, cx));
+                        }),
+                );
+            }
+            list = list.child(grid);
+        }
+
+        // Chats (agent sessions) and Pages (Notion-style docs), space-wide.
+        let of_kind = |kind: TabKind| -> Vec<Tab> {
+            groups
+                .iter()
+                .flat_map(|g| g.tab_ids())
+                .filter_map(|id| tab_of(&id))
+                .filter(|t| t.kind == kind && !t.pinned)
+                .collect()
+        };
+        let sections: [(
+            &str,
+            &str,
+            &'static str,
+            &'static str,
+            &'static str,
+            TabKind,
+            bool,
+        ); 2] = [
             (
-                "sb-new-page",
-                icons::DOCUMENT_ADD,
-                "New Page",
-                "hifi://notes",
-                false,
-            ),
-            (
-                "sb-new-agent",
-                icons::BOT,
-                "New Agent",
+                "sb-chats",
+                "Chats",
+                "New Chat",
+                icons::PEN_NEW_SQUARE,
                 "hifi://agent",
+                TabKind::Agent,
                 true,
             ),
+            (
+                "sb-pages",
+                "Pages",
+                "New Page",
+                icons::DOCUMENT_ADD,
+                "hifi://notes",
+                TabKind::Notes,
+                false,
+            ),
         ];
-        let mut action_col = div().flex().flex_col().flex_none().gap(px(1.));
-        for (id, icon, label, url, dock) in actions {
-            let store = self.store.clone();
-            action_col = action_col.child(action_row(id, icon, label, compact, p).on_mouse_down(
-                MouseButton::Left,
-                move |_, _, cx| {
-                    store.update(cx, |s, cx| {
-                        if dock {
-                            s.dock_open(url, cx);
-                        } else {
-                            s.open_tab(url, None, None, cx);
-                        }
-                    });
-                },
-            ));
-        }
-        list = list.child(action_col);
-
-        if !pinned.is_empty() {
-            let open = !self.collapsed.contains(PINNED_KEY);
+        for (id, title, new_label, new_icon, url, kind, dock) in sections {
+            let open = !self.collapsed.contains(id);
             list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
             if !compact {
-                list = list.child(self.disclosure(
-                    "sb-pinned",
-                    PINNED_KEY,
-                    "Pinned",
-                    open,
-                    None,
-                    p,
-                    cx,
-                ));
+                list = list.child(self.disclosure(id, id, title, open, None, p, cx));
             }
-            if open || compact {
-                list = list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
-                    pinned.iter().map(|tab| {
-                        self.tab_row(tab, active_tab.as_ref() == Some(&tab.id), compact, p)
+            if !(open || compact) {
+                continue;
+            }
+            let store = self.store.clone();
+            let mut col = div().flex().flex_col().flex_none().gap(px(1.)).child(
+                action_row(id, new_icon, new_label, compact, p)
+                    .text_color(p.muted)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        store.update(cx, |s, cx| {
+                            if dock {
+                                s.dock_open(url, cx);
+                            } else {
+                                s.open_tab(url, None, None, cx);
+                            }
+                        });
                     }),
-                ));
+            );
+            for tab in of_kind(kind) {
+                col =
+                    col.child(self.tab_row(&tab, active_tab.as_ref() == Some(&tab.id), compact, p));
             }
+            list = list.child(col);
         }
+
+        // Tabs: the browser's own section, then one disclosure per group.
+        list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+        let store_nt = self.store.clone();
+        list = list.child(
+            action_row("sb-new-tab", icons::PLUS, "New Tab", compact, p)
+                .text_color(p.muted)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    store_nt.update(cx, |s, cx| {
+                        s.open_tab("hifi://newtab", None, None, cx);
+                    });
+                }),
+        );
 
         for group in &groups {
             let gid = group.id.clone();
@@ -570,7 +696,7 @@ impl gpui::Render for Sidebar {
                     continue;
                 }
                 let Some(tab) = tab_of(id) else { continue };
-                if tab.pinned {
+                if tab.pinned || matches!(tab.kind, TabKind::Agent | TabKind::Notes) {
                     continue;
                 }
                 rows.push(self.tab_row(&tab, active_in_group.as_ref() == Some(id), compact, p));

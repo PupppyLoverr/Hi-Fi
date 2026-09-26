@@ -77,6 +77,11 @@ impl TextField {
         &self.content
     }
 
+    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = text.into();
+        cx.notify();
+    }
+
     pub fn set_value(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.content = text.into().into();
         self.selected_range = self.content.len()..self.content.len();

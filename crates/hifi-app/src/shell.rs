@@ -843,7 +843,13 @@ impl Shell {
                             (!tab.command.is_empty()).then(|| tab.command.clone())
                         };
                         let cwd = (!tab.cwd.is_empty()).then(|| tab.cwd.clone());
-                        match TerminalPane::spawn_pty(cmd.as_deref(), cwd.as_deref()) {
+                        let spawned = match (&cmd, tab.prompt.is_empty()) {
+                            (Some(c), false) => {
+                                TerminalPane::spawn_pty_with_arg(c, &tab.prompt, cwd.as_deref())
+                            }
+                            _ => TerminalPane::spawn_pty(cmd.as_deref(), cwd.as_deref()),
+                        };
+                        match spawned {
                             Ok(parts) => {
                                 let v = cx.new(|cx| TerminalPane::from_parts(parts, cx));
                                 e.insert(Pane::Term(v.clone()));
@@ -1551,6 +1557,7 @@ impl Shell {
             .w(px(width))
             .flex_none()
             .relative()
+            .pl(px(DOCK_GUTTER))
             .child(
                 div()
                     .size_full()
@@ -1795,15 +1802,37 @@ impl Shell {
             )));
 
         let identity = tab.map(|t| {
-            let title = t.display_title();
+            let new_tab = t.kind == TabKind::NewTab;
+            let title = if new_tab {
+                "Search Google or type a URL".to_string()
+            } else if t.kind == TabKind::Web {
+                format!("{}  ·  {}", t.display_title(), hifi_core::host_of(&t.url))
+            } else {
+                t.display_title()
+            };
+            let tid = t.id.clone();
             div()
-                .ml(px(Theme::SPACE_MD))
+                .id("tb-omnibox")
+                .ml(px(Theme::SPACE_SM))
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(7.))
                 .min_w(px(0.))
                 .flex_shrink(1.)
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(sidebar::tab_badge(&t, 13., &p))
+                .cursor_text()
+                .occlude()
+                .hover(|s| s.bg(p.glass_hover()))
+                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.open_address(Some(tid.clone()), cx);
+                }))
+                .child(if new_tab {
+                    glyph(icons::MAGNIFER, 14., p.muted).into_any_element()
+                } else {
+                    sidebar::tab_badge(&t, 13., &p)
+                })
                 .child(
                     div()
                         .min_w(px(0.))
@@ -1811,8 +1840,12 @@ impl Shell {
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .text_size(px(13.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(p.text)
+                        .font_weight(if new_tab {
+                            gpui::FontWeight::NORMAL
+                        } else {
+                            gpui::FontWeight::MEDIUM
+                        })
+                        .text_color(if new_tab { p.faint } else { p.text })
                         .child(title),
                 )
         });
@@ -1880,6 +1913,10 @@ impl Shell {
             .into_any()
     }
 }
+
+/// GPUI-only strip on the dock's leading edge: native webviews swallow
+/// mouse events, so the resize handle needs painted space of its own.
+const DOCK_GUTTER: f32 = 6.0;
 
 /// Where the titlebar control cluster starts on macOS: past the traffic
 /// lights at {14,14} (cosmos `titlebar_cluster_start`).
@@ -2013,10 +2050,10 @@ impl gpui::Render for Shell {
             match group {
                 Some(g) => {
                     let mut v: HashSet<TabId> = g.tab_ids().into_iter().collect();
-                    if g.dock.open {
-                        for t in &g.dock.tabs {
-                            v.insert(t.clone());
-                        }
+                    if g.dock.open
+                        && let Some(t) = &g.dock.active
+                    {
+                        v.insert(t.clone());
                     }
                     (v, g.dock.open)
                 }
@@ -2272,8 +2309,8 @@ impl gpui::Render for Shell {
                             .absolute()
                             .top_0()
                             .bottom_0()
-                            .right(px(dock_width - 10.))
-                            .w(px(20.))
+                            .right(px(dock_width - DOCK_GUTTER))
+                            .w(px(DOCK_GUTTER + 2.))
                             .occlude()
                             .cursor_col_resize()
                             .on_drag(DockResize, |_, _point, _, cx| {

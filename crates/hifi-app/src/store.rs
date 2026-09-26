@@ -363,6 +363,23 @@ impl Store {
         let _ = std::fs::write(dir.join(format!("{tab_id}.html")), html);
     }
 
+    /// Start an agent session: `harness` runs in a PTY with `prompt` as its
+    /// first argument, and the prompt becomes the chat title.
+    pub fn open_agent(&mut self, harness: &str, prompt: &str, cx: &mut Context<Self>) -> TabId {
+        let id = self.open_tab("hifi://agent", None, None, cx);
+        let prompt = prompt.trim();
+        if let Some(tab) = self.state.tab_mut(&id) {
+            tab.command = harness.to_string();
+            tab.prompt = prompt.to_string();
+            if !prompt.is_empty() {
+                tab.title = prompt.chars().take(80).collect();
+            }
+        }
+        self.save();
+        cx.notify();
+        id
+    }
+
     pub fn set_title(&mut self, tab_id: &str, title: String, cx: &mut Context<Self>) {
         if let Some(tab) = self.state.tab_mut(tab_id)
             && tab.title != title

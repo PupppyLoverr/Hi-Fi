@@ -90,7 +90,16 @@ pub struct TermParts {
 impl TerminalPane {
     /// Fallible half of `spawn` — no view context needed.
     pub fn spawn_pty(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
-        Self::spawn_pty_inner(command, cwd)
+        Self::spawn_pty_inner(command, None, cwd)
+    }
+
+    /// Like `spawn_pty`, passing `arg` to `command` as one extra argv entry.
+    pub fn spawn_pty_with_arg(
+        command: &str,
+        arg: &str,
+        cwd: Option<&str>,
+    ) -> anyhow::Result<TermParts> {
+        Self::spawn_pty_inner(Some(command), Some(arg), cwd)
     }
 
     /// View half of `spawn`.
@@ -110,7 +119,11 @@ impl TerminalPane {
         }
     }
 
-    fn spawn_pty_inner(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
+    fn spawn_pty_inner(
+        command: Option<&str>,
+        arg: Option<&str>,
+        cwd: Option<&str>,
+    ) -> anyhow::Result<TermParts> {
         let dims = TermDims {
             cols: 120,
             rows: 30,
@@ -121,7 +134,11 @@ impl TerminalPane {
 
         let options = PtyOptions {
             shell: command
-                .map(|c| Shell::new(program_of(c), shell_args(c)))
+                .map(|c| {
+                    let mut args = shell_args(c);
+                    args.extend(arg.map(str::to_string));
+                    Shell::new(program_of(c), args)
+                })
                 .or_else(default_shell),
             working_directory: cwd.map(std::path::PathBuf::from),
             drain_on_exit: false,

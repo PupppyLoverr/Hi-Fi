@@ -89,6 +89,7 @@ pub mod icons {
         (HAND, "hand"),
         (HARD_DRIVE, "hard-drive"),
         (HERMES_MARK, "hermes-mark"),
+        (HIFI_MARK, "hifi-mark"),
         (HOME, "home"),
         (INFO_CIRCLE, "info-circle"),
         (KEY_MINIMALISTIC, "key-minimalistic"),
