@@ -46,4 +46,4 @@ until the first navigation finishes and **drops the callback** — so Hi-Fi call
 - `SplitNode` model, spaces/groups/tabs, `state.json` schema.
 - IPC wire protocol + every `hifi` CLI subcommand.
 - Keybindings, command bar actions, `hifi://` scheme handling.
-- Solar icon set, theme tokens, Geist fonts (all bundled assets).
+- Solar icon set, theme tokens, Geist Mono (all bundled assets).

@@ -1,10 +1,7 @@
 //! `⌘T` command bar — Spotlight-style launcher floating above content
 //! (deferred element, so it composites over native webviews).
 
-use gpui::{
-    Context, Entity, KeyDownEvent, MouseButton, SharedString, Window,
-    div, prelude::*, px,
-};
+use gpui::{Context, Entity, KeyDownEvent, MouseButton, SharedString, Window, div, prelude::*, px};
 
 use crate::assets::icons;
 use crate::store::Store;
@@ -14,8 +11,8 @@ use crate::views::glyph;
 
 #[derive(Clone)]
 enum Candidate {
-    OpenUrl(String, String),       // display, url
-    SwitchTab(String, String),     // display, tab id
+    OpenUrl(String, String),   // display, url
+    SwitchTab(String, String), // display, tab id
     Command(String, Command),
 }
 
@@ -52,14 +49,12 @@ impl CommandBar {
                 TextFieldEvent::Changed => cx.notify(),
                 TextFieldEvent::Submitted(text) => {
                     // Enter without selection = open as URL/search.
-                    store_for_events.update(cx, |s, cx| {
-                        s.command_bar_open = false;
-                        s.open_tab_or_navigate(&text, cx);
-                    });
+                    store_for_events.update(cx, |s, cx| s.submit_address(text, cx));
                 }
                 TextFieldEvent::Escaped => {
                     store_for_events.update(cx, |s, cx| {
                         s.command_bar_open = false;
+                        s.address_target = None;
                         cx.notify();
                     });
                 }
@@ -95,10 +90,7 @@ impl CommandBar {
             let url = match hifi_core::route(&query) {
                 hifi_core::RoutedUrl::External(u) => {
                     if let Some(qq) = u.strip_prefix("search:") {
-                        hifi_core::schemes::resolve_search(
-                            &store.state.settings.search_engine,
-                            qq,
-                        )
+                        hifi_core::schemes::resolve_search(&store.state.settings.search_engine, qq)
                     } else {
                         u
                     }
@@ -146,11 +138,14 @@ impl CommandBar {
             return;
         };
         self.store.update(cx, |s, cx| {
+            if let Candidate::OpenUrl(_, url) = &c {
+                s.submit_address(url, cx);
+                return;
+            }
             s.command_bar_open = false;
+            s.address_target = None;
             match c {
-                Candidate::OpenUrl(_, url) => {
-                    s.open_tab(&url, None, None, cx);
-                }
+                Candidate::OpenUrl(..) => {}
                 Candidate::SwitchTab(_, id) => s.focus_tab(&id, cx),
                 Candidate::Command(_, cmd) => match cmd {
                     Command::NewTab => {
@@ -212,11 +207,7 @@ impl gpui::Render for CommandBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh(cx);
         let p = Theme::of(cx).palette;
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .max_h(px(320.))
-            .overflow_y_hidden();
+        let mut list = div().flex().flex_col().max_h(px(320.)).overflow_y_hidden();
         for (i, cand) in self.candidates.iter().enumerate() {
             let (icon, label, sub) = match cand {
                 Candidate::OpenUrl(l, _) => (icons::GLOBE, l.clone(), "open".to_string()),

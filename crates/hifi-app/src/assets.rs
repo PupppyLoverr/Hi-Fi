@@ -1,5 +1,5 @@
 //! Embedded assets: the Solar Icons (Linear weight) set — the same icon
-//! library cosmos ships — plus Geist / Geist Mono fonts.
+//! library cosmos ships — plus Geist Mono for code and terminals.
 
 use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
@@ -160,24 +160,7 @@ pub mod icons {
 
 pub struct Assets;
 
-pub const FONTS: &[&str] = &[
-    "fonts/Geist.ttf",
-    "fonts/Geist-Bold.ttf",
-    "fonts/Geist-BoldItalic.ttf",
-    "fonts/Geist-Italic.ttf",
-    "fonts/Geist-Medium.ttf",
-    "fonts/Geist-MediumItalic.ttf",
-    "fonts/Geist-SemiBold.ttf",
-    "fonts/Geist-SemiBoldItalic.ttf",
-    "fonts/GeistMono.ttf",
-    "fonts/GeistMono-Bold.ttf",
-    "fonts/GeistMono-BoldItalic.ttf",
-    "fonts/GeistMono-Italic.ttf",
-    "fonts/GeistMono-Medium.ttf",
-    "fonts/GeistMono-MediumItalic.ttf",
-    "fonts/GeistMono-SemiBold.ttf",
-    "fonts/GeistMono-SemiBoldItalic.ttf",
-];
+pub const FONTS: &[&str] = &["fonts/GeistMono.ttf", "fonts/GeistMono-Bold.ttf"];
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -185,48 +168,12 @@ impl AssetSource for Assets {
             return Ok(Some(icon));
         }
         Ok(match path {
-            p if FONTS.contains(&p) => Some(Cow::Borrowed(match p {
-                "fonts/Geist.ttf" => include_bytes!("../assets/fonts/Geist.ttf").as_slice(),
-                "fonts/Geist-Bold.ttf" => include_bytes!("../assets/fonts/Geist-Bold.ttf").as_slice(),
-                "fonts/Geist-BoldItalic.ttf" => {
-                    include_bytes!("../assets/fonts/Geist-BoldItalic.ttf").as_slice()
-                }
-                "fonts/Geist-Italic.ttf" => {
-                    include_bytes!("../assets/fonts/Geist-Italic.ttf").as_slice()
-                }
-                "fonts/Geist-Medium.ttf" => {
-                    include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice()
-                }
-                "fonts/Geist-MediumItalic.ttf" => {
-                    include_bytes!("../assets/fonts/Geist-MediumItalic.ttf").as_slice()
-                }
-                "fonts/Geist-SemiBold.ttf" => {
-                    include_bytes!("../assets/fonts/Geist-SemiBold.ttf").as_slice()
-                }
-                "fonts/GeistMono.ttf" => include_bytes!("../assets/fonts/GeistMono.ttf").as_slice(),
-                "fonts/GeistMono-Bold.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-Bold.ttf").as_slice()
-                }
-                "fonts/GeistMono-BoldItalic.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-BoldItalic.ttf").as_slice()
-                }
-                "fonts/GeistMono-Italic.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-Italic.ttf").as_slice()
-                }
-                "fonts/GeistMono-Medium.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-Medium.ttf").as_slice()
-                }
-                "fonts/GeistMono-MediumItalic.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-MediumItalic.ttf").as_slice()
-                }
-                "fonts/GeistMono-SemiBold.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-SemiBold.ttf").as_slice()
-                }
-                "fonts/GeistMono-SemiBoldItalic.ttf" => {
-                    include_bytes!("../assets/fonts/GeistMono-SemiBoldItalic.ttf").as_slice()
-                }
-                _ => return Ok(None),
-            })),
+            "fonts/GeistMono.ttf" => Some(Cow::Borrowed(
+                include_bytes!("../assets/fonts/GeistMono.ttf").as_slice(),
+            )),
+            "fonts/GeistMono-Bold.ttf" => Some(Cow::Borrowed(
+                include_bytes!("../assets/fonts/GeistMono-Bold.ttf").as_slice(),
+            )),
             _ => None,
         })
     }

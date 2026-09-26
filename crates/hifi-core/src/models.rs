@@ -223,7 +223,9 @@ impl SplitNode {
         match self {
             Self::Leaf { tabs } if tabs.iter().any(|t| t == anchor) => {
                 let anchor_leaf = Self::Leaf { tabs: tabs.clone() };
-                let new_leaf = Self::Leaf { tabs: vec![new_tab] };
+                let new_leaf = Self::Leaf {
+                    tabs: vec![new_tab],
+                };
                 let share = new_fraction.clamp(0.05, 0.95);
                 let (first, second, fraction) = if side.places_first() {
                     (new_leaf, anchor_leaf, share)
@@ -345,10 +347,10 @@ impl Group {
                     .active_tab
                     .clone()
                     .or_else(|| root.leaves().first().cloned());
-                if let Some(a) = anchor {
-                    if let Some(tabs) = root.leaf_tabs_mut(&a) {
-                        tabs.push(tab_id.clone());
-                    }
+                if let Some(a) = anchor
+                    && let Some(tabs) = root.leaf_tabs_mut(&a)
+                {
+                    tabs.push(tab_id.clone());
                 }
             }
         }
@@ -414,16 +416,12 @@ impl Space {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Appearance {
     Dark,
     Light,
+    #[default]
     System,
-}
-
-impl Default for Appearance {
-    fn default() -> Self {
-        Self::System
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,7 +502,10 @@ impl WorkspaceState {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
     pub fn group(&self, id: &str) -> Option<&Group> {
-        self.spaces.iter().flat_map(|s| &s.groups).find(|g| g.id == id)
+        self.spaces
+            .iter()
+            .flat_map(|s| &s.groups)
+            .find(|g| g.id == id)
     }
     pub fn group_mut(&mut self, id: &str) -> Option<&mut Group> {
         self.spaces
@@ -520,11 +521,7 @@ impl WorkspaceState {
     }
     pub fn active_space_mut(&mut self) -> Option<&mut Space> {
         let id = self.active_space.clone();
-        if let Some(i) = self
-            .spaces
-            .iter()
-            .position(|s| Some(&s.id) == id.as_ref())
-        {
+        if let Some(i) = self.spaces.iter().position(|s| Some(&s.id) == id.as_ref()) {
             return self.spaces.get_mut(i);
         }
         self.spaces.first_mut()

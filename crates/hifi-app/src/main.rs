@@ -29,11 +29,35 @@ use theme::Theme;
 actions!(
     hifi,
     [
-        NewTab, CloseTab, CommandBar, FocusAddress, ReloadPage, GoBack, GoForward,
-        NextTab, PrevTab, ToggleSidebar, ToggleDock, FindInPage, NewTerminal,
-        NewAgent, NewDiff, NewNotes,
-        OpenSettings, Quit, Hide, HideOthers, Minimize, CloseWindow, NewGroup,
-        Copy, Cut, Paste, SelectAll, Undo, Redo,
+        NewTab,
+        CloseTab,
+        CommandBar,
+        FocusAddress,
+        ReloadPage,
+        GoBack,
+        GoForward,
+        NextTab,
+        PrevTab,
+        ToggleSidebar,
+        ToggleDock,
+        FindInPage,
+        NewTerminal,
+        NewAgent,
+        NewDiff,
+        NewNotes,
+        OpenSettings,
+        Quit,
+        Hide,
+        HideOthers,
+        Minimize,
+        CloseWindow,
+        NewGroup,
+        Copy,
+        Cut,
+        Paste,
+        SelectAll,
+        Undo,
+        Redo,
     ]
 );
 
@@ -115,7 +139,6 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", CommandBar, None),
         KeyBinding::new("cmd-l", FocusAddress, None),
         KeyBinding::new("cmd-w", CloseTab, None),
-
         KeyBinding::new("cmd-r", ReloadPage, None),
         KeyBinding::new("cmd-shift-r", ReloadPage, None),
         KeyBinding::new("cmd-left", GoBack, None),
@@ -155,8 +178,12 @@ fn bind_keys(cx: &mut App) {
 }
 
 fn main() {
-        let app = gpui_platform::application().with_assets(assets::Assets);
-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let app = gpui_platform::application().with_assets(assets::Assets);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     let handle = runtime.handle().clone();
 
     let (ipc_tx, ipc_rx) = channel::<IpcJob>();
@@ -203,7 +230,7 @@ fn main() {
                     titlebar: Some(TitlebarOptions {
                         title: cfg!(target_os = "windows").then(|| "Hi-Fi".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(14.), px(14.))),
+                        traffic_light_position: Some(gpui::point(px(14.), px(17.))),
                     }),
                     app_owns_titlebar_drag: true,
                     // Frosted shell — sidebar/new-tab translucency reads the

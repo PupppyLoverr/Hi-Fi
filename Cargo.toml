@@ -47,3 +47,12 @@ alacritty_terminal = "0.26"
 # gpui is slow unoptimized; match cosmos/zed's approach for deps.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Shipping profile: small + fast. Fat LTO + 1 CGU lets the linker drop the
+# unused parts of gpui/wry/alacritty; panic=abort removes unwind tables.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

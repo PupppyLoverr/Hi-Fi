@@ -15,12 +15,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DeclaredClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSEventModifierFlags, NSEventMask, NSView, NSWindowOrderingMode,
+    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode,
 };
 use objc2_foundation::{
     MainThreadMarker, NSDictionary, NSError, NSJSONSerialization, NSKeyValueChangeKey,
-    NSKeyValueObservingOptions, NSObject, NSObjectNSKeyValueObserverRegistration,
-    NSObjectProtocol, NSString,
+    NSKeyValueObservingOptions, NSObject, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol,
+    NSString,
 };
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
@@ -31,17 +31,40 @@ use wry::{WebViewBuilderExtMacos as _, WebViewExtMacOS as _};
 /// Events a native page pushes to the app (main thread → channel → GPUI task).
 #[derive(Debug)]
 pub enum WebEvent {
-    Title { tab: String, title: String },
-    Url { tab: String, url: String },
-    Loading { tab: String, loading: bool },
-    CanGo { tab: String, back: bool, forward: bool },
+    Title {
+        tab: String,
+        title: String,
+    },
+    Url {
+        tab: String,
+        url: String,
+    },
+    Loading {
+        tab: String,
+        loading: bool,
+    },
+    CanGo {
+        tab: String,
+        back: bool,
+        forward: bool,
+    },
     /// target=_blank / window.open — open a sibling tab.
-    NewTab { url: String },
+    NewTab {
+        url: String,
+    },
     /// Keystroke swallowed while the webview had focus; re-dispatch in GPUI.
-    Keystroke { combo: String },
+    Keystroke {
+        combo: String,
+    },
     /// Editor surface posted its body over `window.ipc` (wry ipc_handler).
-    NotesSave { tab: String, html: String },
-    Error { tab: String, message: String },
+    NotesSave {
+        tab: String,
+        html: String,
+    },
+    Error {
+        tab: String,
+        message: String,
+    },
 }
 
 pub struct HostIvars {
@@ -258,15 +281,11 @@ impl WebPaneHost {
                 });
             });
         }
-        let web = builder
-            .build_as_child(window)
-            .map_err(|e| e.to_string())?;
+        let web = builder.build_as_child(window).map_err(|e| e.to_string())?;
 
         // Overlay must exist before the clip is ordered beneath it, and cosmos
         // enables it after build_as_child (GPUI rebuilds the view hierarchy).
-        window
-            .enable_scene_overlay()
-            .map_err(|e| e.to_string())?;
+        window.enable_scene_overlay().map_err(|e| e.to_string())?;
 
         let view: Retained<WKWebView> = Retained::into_super(web.webview());
         view.setWantsLayer(true);
@@ -286,6 +305,11 @@ impl WebPaneHost {
             let layer: *mut AnyObject = msg_send![&*clip, layer];
             let _: () = msg_send![layer, setMasksToBounds: true];
             let _: () = msg_send![layer, setMask: &*clip_mask];
+            // Round the page's bottom corners to sit inside the pane card.
+            // CALayer's MinY edge is the bottom unless the parent is flipped.
+            let bottom_corners: usize = if parent.isFlipped() { 0b1100 } else { 0b0011 };
+            let _: () = msg_send![&*clip_mask, setCornerRadius: 9.0f64];
+            let _: () = msg_send![&*clip_mask, setMaskedCorners: bottom_corners];
         }
         clip.setHidden(true);
         parent.addSubview(&clip);
@@ -322,8 +346,8 @@ impl WebPaneHost {
         let monitor_view = view.clone();
         let monitor_tx = tx.clone();
         let monitor_tab = tab.clone();
-        let callback = block2::RcBlock::new(
-            move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        let callback =
+            block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
                 let e = unsafe { event.as_ref() };
                 if monitor_view.isHidden()
                     || !has_focus(&monitor_view)
@@ -352,9 +376,21 @@ impl WebPaneHost {
                 combo.push_str(&key);
                 let mut browser_key = matches!(
                     combo.as_str(),
-                    "cmd-t" | "cmd-w" | "cmd-l" | "cmd-[" | "cmd-]" | "cmd-r" | "cmd-shift-r"
-                        | "cmd-," | "cmd-f" | "cmd-b" | "cmd-shift-\\" | "ctrl-tab"
-                        | "ctrl-shift-tab" | "cmd-shift-[" | "cmd-shift-]"
+                    "cmd-t"
+                        | "cmd-w"
+                        | "cmd-l"
+                        | "cmd-["
+                        | "cmd-]"
+                        | "cmd-r"
+                        | "cmd-shift-r"
+                        | "cmd-,"
+                        | "cmd-f"
+                        | "cmd-b"
+                        | "cmd-shift-\\"
+                        | "ctrl-tab"
+                        | "ctrl-shift-tab"
+                        | "cmd-shift-["
+                        | "cmd-shift-]"
                 );
                 // Editing chords stay in the page on editor surfaces —
                 // contenteditable's native bold (cmd-b) beats the sidebar
@@ -377,8 +413,7 @@ impl WebPaneHost {
                 } else {
                     event.as_ptr()
                 }
-            },
-        );
+            });
         let monitor = unsafe {
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &callback)
         };
@@ -446,6 +481,29 @@ impl WebPaneHost {
         }
     }
 
+    /// Hand keyboard focus back to the GPUI view if this page holds it, so
+    /// GPUI overlays (command bar, find bar) receive typed text.
+    pub fn release_focus(&self) {
+        unsafe {
+            let win: *mut AnyObject = msg_send![&*self.parent, window];
+            if win.is_null() {
+                return;
+            }
+            let responder: *mut AnyObject = msg_send![win, firstResponder];
+            if responder.is_null() {
+                return;
+            }
+            let is_view: bool = msg_send![responder, isKindOfClass: class!(NSView)];
+            if !is_view {
+                return;
+            }
+            let inside: bool = msg_send![responder, isDescendantOf: &*self.clip];
+            if inside {
+                let _: bool = msg_send![win, makeFirstResponder: &*self.parent];
+            }
+        }
+    }
+
     #[allow(dead_code)] // focus cycling API for pane focus handoff
     pub fn focus(&self) {
         let _ = self.web.focus();
@@ -484,38 +542,33 @@ impl WebPaneHost {
     pub fn eval(&self, js: String, cb: impl FnOnce(Option<String>) + Send + 'static) {
         use objc2::AllocAnyThread as _;
         let cb = std::sync::Mutex::new(Some(cb));
-        let handler = block2::RcBlock::new(
-            move |val: *mut AnyObject, _err: *mut NSError| {
-                let mut result = String::new();
-                unsafe {
-                    if !val.is_null()
-                        && let Ok(data) =
-                            NSJSONSerialization::dataWithJSONObject_options_error(
-                                &*val,
-                                objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
-                            )
-                    {
-                        let s = NSString::alloc();
-                        let s = NSString::initWithData_encoding(
-                            s,
-                            &data,
-                            objc2_foundation::NSUTF8StringEncoding,
-                        );
-                        if let Some(s) = s {
-                            result = s.to_string();
-                        }
+        let handler = block2::RcBlock::new(move |val: *mut AnyObject, _err: *mut NSError| {
+            let mut result = String::new();
+            unsafe {
+                if !val.is_null()
+                    && let Ok(data) = NSJSONSerialization::dataWithJSONObject_options_error(
+                        &*val,
+                        objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
+                    )
+                {
+                    let s = NSString::alloc();
+                    let s = NSString::initWithData_encoding(
+                        s,
+                        &data,
+                        objc2_foundation::NSUTF8StringEncoding,
+                    );
+                    if let Some(s) = s {
+                        result = s.to_string();
                     }
                 }
-                if let Some(cb) = cb.lock().unwrap().take() {
-                    cb(Some(result));
-                }
-            },
-        );
+            }
+            if let Some(cb) = cb.lock().unwrap().take() {
+                cb(Some(result));
+            }
+        });
         unsafe {
-            self.view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(&js),
-                Some(&handler),
-            );
+            self.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(&js), Some(&handler));
         }
     }
 
@@ -525,30 +578,27 @@ impl WebPaneHost {
         use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
         let mtm = MainThreadMarker::new().expect("main thread");
         let conf = unsafe { objc2_web_kit::WKSnapshotConfiguration::new(mtm) };
-        let completion = block2::RcBlock::new(
-            move |image: *mut NSImage, _error: *mut NSError| {
-                if image.is_null() {
+        let completion = block2::RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+            if image.is_null() {
+                return;
+            }
+            unsafe {
+                let image = &*image;
+                let Some(tiff) = image.TIFFRepresentation() else {
                     return;
+                };
+                let Some(rep) = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &tiff)
+                else {
+                    return;
+                };
+                if let Some(png) = rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::new(),
+                ) {
+                    let _ = png.writeToFile_atomically(&NSString::from_str(&path), true);
                 }
-                unsafe {
-                    let image = &*image;
-                    let Some(tiff) = image.TIFFRepresentation() else {
-                        return;
-                    };
-                    let Some(rep) =
-                        NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &tiff)
-                    else {
-                        return;
-                    };
-                    if let Some(png) = rep.representationUsingType_properties(
-                        NSBitmapImageFileType::PNG,
-                        &NSDictionary::new(),
-                    ) {
-                        let _ = png.writeToFile_atomically(&NSString::from_str(&path), true);
-                    }
-                }
-            },
-        );
+            }
+        });
         unsafe {
             self.view
                 .takeSnapshotWithConfiguration_completionHandler(Some(&conf), &completion);

@@ -62,11 +62,23 @@ cargo build --release
 ./target/release/hifi         # the CLI — put it on your PATH
 ```
 
+Package a macOS app bundle (release build, stripped, ad-hoc signed):
+
+```sh
+./scripts/bundle.sh           # → build/Hi-Fi.app
+```
+
+Measured on Apple silicon (macOS 14, three restored tabs): `Hi-Fi.app` is
+~10 MB on disk (8.4 MB app binary, 0.7 MB CLI). The app process's
+`phys_footprint` is ~41–43 MB; WebKit's page, GPU and network helpers are
+separate system processes (~100 MB RSS combined with one live page).
+
 ## Run
 
 | Key | Action |
 |-----|--------|
 | `⌘T` | command bar — URLs, open tabs across spaces, actions |
+| `⌘L` | omnibox — edit the focused tab's address in place |
 | `⌘W` | close tab |
 | `⌘⇧]` / `⌘⇧[` | next / previous tab |
 | `⌘1…9` | jump to tab N |

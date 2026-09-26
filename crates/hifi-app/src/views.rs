@@ -2,8 +2,8 @@
 //! preview — pure GPUI, no native views.
 
 use gpui::{
-    Context, Entity, Focusable, Hsla, MouseButton, ScrollHandle, SharedString,
-    Window, div, img, prelude::*, px, rems, svg,
+    Context, Entity, Focusable, Hsla, MouseButton, ScrollHandle, SharedString, Window, div, img,
+    prelude::*, px, rems, svg,
 };
 use std::path::PathBuf;
 
@@ -14,10 +14,7 @@ use crate::theme::{Palette, Theme, radius, space};
 
 /// Render a Solar icon sized + tinted.
 pub fn glyph(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
-    svg()
-        .path(path)
-        .size(px(size))
-        .text_color(color)
+    svg().path(path).size(px(size)).text_color(color)
 }
 
 // ---------------------------------------------------------------------------
@@ -28,11 +25,16 @@ pub struct NewTabView {
     store: Entity<Store>,
     input: Entity<TextField>,
     now: String,
-    _tick: gpui::Task<()>, 
+    _tick: gpui::Task<()>,
 }
 
 impl NewTabView {
-    pub fn new(store: Entity<Store>, _tab_id: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<Store>,
+        _tab_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| {
             let mut t = TextField::new("Search or enter address", cx);
             t.placeholder_color = None;
@@ -44,7 +46,7 @@ impl NewTabView {
             if let TextFieldEvent::Submitted(text) = event {
                 let tab = own_tab.clone();
                 store_for_submit.update(cx, |store, cx| {
-                    let url = resolve_input(store, &text);
+                    let url = resolve_input(store, text);
                     store.navigate(&tab, &url, cx);
                 });
             }
@@ -121,7 +123,7 @@ impl gpui::Render for NewTabView {
         let fg = if settings.background_image.is_empty() {
             p.text
         } else {
-            gpui::white().into()
+            gpui::white()
         };
 
         // Background: custom image or accent aurora wash.
@@ -145,33 +147,32 @@ impl gpui::Render for NewTabView {
                     ),
             );
         } else {
-            root = root
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(p.bg)
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .w(rems(24.))
-                                .h(rems(24.))
-                                .rounded_full()
-                                .bg(p.accent.opacity(0.10)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left_0()
-                                .w(rems(28.))
-                                .h(rems(28.))
-                                .rounded_full()
-                                .bg(gpui::rgb(0x4a8ef7).opacity(0.08)),
-                        ),
-                );
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(p.bg)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .w(rems(24.))
+                            .h(rems(24.))
+                            .rounded_full()
+                            .bg(p.accent.opacity(0.10)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .w(rems(28.))
+                            .h(rems(28.))
+                            .rounded_full()
+                            .bg(gpui::rgb(0x4a8ef7).opacity(0.08)),
+                    ),
+            );
         }
 
         let date = chrono::Local::now().format("%A, %B %-d").to_string();
@@ -240,11 +241,8 @@ impl gpui::Render for NewTabView {
             )
             .child(
                 // Action chips
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(space::SM)
-                    .children([
+                div().flex().flex_row().gap(space::SM).children(
+                    [
                         ("New tab", icons::PLUS, "hifi://newtab"),
                         ("Terminal", icons::TERMINAL, "hifi://terminal"),
                         ("Agent", icons::BOT, "hifi://agent"),
@@ -264,9 +262,15 @@ impl gpui::Render for NewTabView {
                             .rounded_full()
                             .bg(gpui::white().opacity(if p.is_dark { 0.07 } else { 0.5 }))
                             .border_1()
-                            .border_color(gpui::white().opacity(if p.is_dark { 0.08 } else { 0.35 }))
+                            .border_color(gpui::white().opacity(if p.is_dark {
+                                0.08
+                            } else {
+                                0.35
+                            }))
                             .cursor_pointer()
-                            .hover(|s| s.bg(gpui::white().opacity(if p.is_dark { 0.12 } else { 0.7 })))
+                            .hover(|s| {
+                                s.bg(gpui::white().opacity(if p.is_dark { 0.12 } else { 0.7 }))
+                            })
                             .child(glyph(ic, 15., fg.opacity(0.8)))
                             .child(
                                 div()
@@ -280,16 +284,27 @@ impl gpui::Render for NewTabView {
                                 });
                             })
                     })
-                    .collect::<Vec<_>>()),
+                    .collect::<Vec<_>>(),
+                ),
             );
 
         if !pinned.is_empty() {
-            let mut dial = div().flex().flex_row().gap(space::MD).flex_wrap().justify_center();
+            let mut dial = div()
+                .flex()
+                .flex_row()
+                .gap(space::MD)
+                .flex_wrap()
+                .justify_center();
             for tab in pinned {
                 let store = store3.clone();
                 let id = tab.id.clone();
                 let host = hifi_core::host_of(&tab.url);
-                let letter = host.chars().next().unwrap_or('•').to_uppercase().to_string();
+                let letter = host
+                    .chars()
+                    .next()
+                    .unwrap_or('•')
+                    .to_uppercase()
+                    .to_string();
                 dial = dial.child(
                     div()
                         .id(SharedString::from(format!("pin-{id}")))
@@ -399,37 +414,41 @@ impl gpui::Render for NewTabView {
                 .gap(space::LG)
                 .pb(space::LG)
                 .children(
-                    [("⌘T", "Command bar"), ("⌘L", "Address"), ("⌘W", "Close tab")]
-                        .iter()
-                        .map(|(kbd, label)| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .px(px(6.))
-                                        .h(px(20.))
-                                        .rounded(px(5.))
-                                        .bg(gpui::white().opacity(if p.is_dark { 0.08 } else { 0.5 }))
-                                        .border_1()
-                                        .border_color(gpui::white().opacity(if p.is_dark {
-                                            0.1
-                                        } else {
-                                            0.35
-                                        }))
-                                        .text_size(px(10.))
-                                        .text_color(fg.opacity(0.7))
-                                        .child(*kbd),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.5))
-                                        .text_color(fg.opacity(0.5))
-                                        .child(*label),
-                                )
-                        })
-                        .collect::<Vec<_>>(),
+                    [
+                        ("⌘T", "Command bar"),
+                        ("⌘L", "Address"),
+                        ("⌘W", "Close tab"),
+                    ]
+                    .iter()
+                    .map(|(kbd, label)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .h(px(20.))
+                                    .rounded(px(5.))
+                                    .bg(gpui::white().opacity(if p.is_dark { 0.08 } else { 0.5 }))
+                                    .border_1()
+                                    .border_color(gpui::white().opacity(if p.is_dark {
+                                        0.1
+                                    } else {
+                                        0.35
+                                    }))
+                                    .text_size(px(10.))
+                                    .text_color(fg.opacity(0.7))
+                                    .child(*kbd),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(fg.opacity(0.5))
+                                    .child(*label),
+                            )
+                    })
+                    .collect::<Vec<_>>(),
                 ),
         )
     }
@@ -445,7 +464,12 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(store: Entity<Store>, _tab: String, _w: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<Store>,
+        _tab: String,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let initial = store.read(cx).state.settings.background_image.clone();
         let bg_field = cx.new(|cx| TextField::new("~/Pictures/…", cx));
         bg_field.update(cx, |f, cx| f.set_value(initial, cx));
@@ -467,17 +491,13 @@ impl SettingsView {
 }
 
 fn section(title: &str, p: &Palette) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::SM)
-        .child(
-            div()
-                .text_size(px(11.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(p.faint)
-                .child(title.to_uppercase()),
-        )
+    div().flex().flex_col().gap(space::SM).child(
+        div()
+            .text_size(px(11.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(p.faint)
+            .child(title.to_uppercase()),
+    )
 }
 
 fn row() -> gpui::Div {
@@ -490,7 +510,10 @@ fn row() -> gpui::Div {
 }
 
 fn label(p: &Palette, text: &str) -> gpui::Div {
-    div().text_size(px(13.)).text_color(p.text).child(text.to_string())
+    div()
+        .text_size(px(13.))
+        .text_color(p.text)
+        .child(text.to_string())
 }
 
 fn sub(p: &Palette, text: &str) -> gpui::Div {
@@ -517,7 +540,11 @@ fn chip_button(id: &str, text: &str, active: bool, p: &Palette) -> gpui::Statefu
         })
         .text_color(if active { p.accent } else { p.muted })
         .border_1()
-        .border_color(if active { p.accent.opacity(0.5) } else { p.border })
+        .border_color(if active {
+            p.accent.opacity(0.5)
+        } else {
+            p.border
+        })
         .child(text.to_string())
 }
 
@@ -541,15 +568,25 @@ impl gpui::Render for SettingsView {
                     .items_center()
                     .gap(space::SM)
                     .child(glyph(icons::SETTINGS, 18., p.accent))
-                    .child(div().text_size(px(20.)).font_weight(gpui::FontWeight::SEMIBOLD).child("Settings")),
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Settings"),
+                    ),
             );
 
         // Appearance
         let appearance = settings.appearance;
         let store_a = store.clone();
-        page = page.child(section("Appearance", &p).child(
-            div().flex().gap(space::SM).children(
-                [("System", hifi_core::Appearance::System), ("Light", hifi_core::Appearance::Light), ("Dark", hifi_core::Appearance::Dark)]
+        page = page.child(
+            section("Appearance", &p).child(
+                div().flex().gap(space::SM).children(
+                    [
+                        ("System", hifi_core::Appearance::System),
+                        ("Light", hifi_core::Appearance::Light),
+                        ("Dark", hifi_core::Appearance::Dark),
+                    ]
                     .into_iter()
                     .map(|(name, value)| {
                         let store = store_a.clone();
@@ -562,14 +599,15 @@ impl gpui::Render for SettingsView {
                             },
                         )
                     }),
+                ),
             ),
-        ));
+        );
 
         // Accent
         let accent = settings.accent.clone();
         let store_b = store.clone();
-        page = page.child(section("Accent", &p).child(
-            div().flex().gap(space::SM).flex_wrap().children(
+        page = page.child(
+            section("Accent", &p).child(div().flex().gap(space::SM).flex_wrap().children(
                 crate::theme::ACCENTS.iter().map(|(name, dark_v, light_v)| {
                     let store = store_b.clone();
                     let on = accent == *name;
@@ -581,15 +619,19 @@ impl gpui::Render for SettingsView {
                         .bg(swatch)
                         .cursor_pointer()
                         .border_2()
-                        .border_color(if on { p.text } else { gpui::transparent_white() })
+                        .border_color(if on {
+                            p.text
+                        } else {
+                            gpui::transparent_white()
+                        })
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             store.update(cx, |s, cx| {
                                 s.update_settings(|st| st.accent = name.to_string(), cx)
                             })
                         })
                 }),
-            ),
-        ));
+            )),
+        );
 
         // Background
         let store_c = store.clone();
@@ -628,7 +670,10 @@ impl gpui::Render for SettingsView {
                             chip_button("bg-hint", "Enter applies", false, &p)
                         }),
                 )
-                .child(sub(&p, "Local file — rendered behind the glass cards with a dim overlay.")),
+                .child(sub(
+                    &p,
+                    "Local file — rendered behind the glass cards with a dim overlay.",
+                )),
         );
 
         // Sidebar / session
@@ -637,32 +682,24 @@ impl gpui::Render for SettingsView {
         let restore = settings.restore_session;
         page = page.child(
             section("Behavior", &p)
-                .child(
-                    row()
-                        .child(label(&p, "Compact sidebar"))
-                        .child({
-                            let store = store_d.clone();
-                            chip_button("compact", if compact { "On" } else { "Off" }, compact, &p)
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    store.update(cx, |s, cx| {
-                                        s.update_settings(|st| st.compact_sidebar = !st.compact_sidebar, cx)
-                                    })
-                                })
-                        }),
-                )
-                .child(
-                    row()
-                        .child(label(&p, "Restore session on launch"))
-                        .child({
-                            let store = store_d.clone();
-                            chip_button("restore", if restore { "On" } else { "Off" }, restore, &p)
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    store.update(cx, |s, cx| {
-                                        s.update_settings(|st| st.restore_session = !st.restore_session, cx)
-                                    })
-                                })
-                        }),
-                ),
+                .child(row().child(label(&p, "Compact sidebar")).child({
+                    let store = store_d.clone();
+                    chip_button("compact", if compact { "On" } else { "Off" }, compact, &p)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            store.update(cx, |s, cx| {
+                                s.update_settings(|st| st.compact_sidebar = !st.compact_sidebar, cx)
+                            })
+                        })
+                }))
+                .child(row().child(label(&p, "Restore session on launch")).child({
+                    let store = store_d.clone();
+                    chip_button("restore", if restore { "On" } else { "Off" }, restore, &p)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            store.update(cx, |s, cx| {
+                                s.update_settings(|st| st.restore_session = !st.restore_session, cx)
+                            })
+                        })
+                })),
         );
 
         // Data + CLI
@@ -684,12 +721,10 @@ impl gpui::Render for SettingsView {
                 )),
         );
 
-        page.child(
-            div().mt(px(6.)).child(sub(
-                &p,
-                "Hi-Fi — GPUI shell · WKWebView engine · Solar Icons (CC BY 4.0, 480 Design)",
-            )),
-        )
+        page.child(div().mt(px(6.)).child(sub(
+            &p,
+            "Hi-Fi — GPUI shell · WKWebView engine · Solar Icons (CC BY 4.0, 480 Design)",
+        )))
     }
 }
 
@@ -818,9 +853,12 @@ impl gpui::Render for DiffView {
                             .id("diff-refresh")
                             .cursor_pointer()
                             .child(glyph(icons::REFRESH, 14., p.muted))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|v, _, _, cx| {
-                                v.refresh(cx);
-                            })),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|v, _, _, cx| {
+                                    v.refresh(cx);
+                                }),
+                            ),
                     ),
             )
             .child(
@@ -834,12 +872,12 @@ impl gpui::Render for DiffView {
                     .flex_col()
                     .font_family(crate::theme::FONT_MONO)
                     .text_size(px(11.5))
-                    .children(self.lines.iter().cloned().map(|(c, l)| {
-                        div()
-                            .text_color(c)
-                            .whitespace_nowrap()
-                            .child(l)
-                    })),
+                    .children(
+                        self.lines
+                            .iter()
+                            .cloned()
+                            .map(|(c, l)| div().text_color(c).whitespace_nowrap().child(l)),
+                    ),
             )
     }
 }

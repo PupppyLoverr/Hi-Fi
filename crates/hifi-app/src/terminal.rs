@@ -111,7 +111,10 @@ impl TerminalPane {
     }
 
     fn spawn_pty_inner(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
-        let dims = TermDims { cols: 120, rows: 30 };
+        let dims = TermDims {
+            cols: 120,
+            rows: 30,
+        };
         let (tx, rx) = mpsc::channel::<TermEvent>();
         let proxy = Proxy { tx: tx.clone() };
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &dims, proxy)));
@@ -230,7 +233,7 @@ impl TerminalPane {
         let runs = [TextRun {
             len: 1,
             font: gpui::font(SharedString::from(FONT_MONO)),
-            color: gpui::white().into(),
+            color: gpui::white(),
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -293,12 +296,12 @@ impl TerminalPane {
                 underline: cell.flags.contains(Flags::UNDERLINE),
                 wide: cell.flags.contains(Flags::WIDE_CHAR),
             });
-            if cursor_on
-                && point.column == cursor.point.column
-                && point.line == cursor.point.line
-            {
+            if cursor_on && point.column == cursor.point.column && point.line == cursor.point.line {
                 row.cursor_col = Some(point.column.0);
-                row.cursor_block = matches!(cursor.shape, CursorShape::Block | CursorShape::Underline | CursorShape::Beam);
+                row.cursor_block = matches!(
+                    cursor.shape,
+                    CursorShape::Block | CursorShape::Underline | CursorShape::Beam
+                );
             }
         }
         if let Some(r) = current {
@@ -311,7 +314,7 @@ impl TerminalPane {
 fn blank() -> GCell {
     GCell {
         ch: ' ',
-        fg: gpui::white().into(),
+        fg: gpui::white(),
         bg: None,
         bold: false,
         underline: false,
@@ -336,10 +339,18 @@ impl Dimensions for TermDims {
 }
 
 fn program_of(command: &str) -> String {
-    command.split_whitespace().next().unwrap_or(command).to_string()
+    command
+        .split_whitespace()
+        .next()
+        .unwrap_or(command)
+        .to_string()
 }
 fn shell_args(command: &str) -> Vec<String> {
-    command.split_whitespace().skip(1).map(|s| s.to_string()).collect()
+    command
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect()
 }
 fn default_shell() -> Option<Shell> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
@@ -432,7 +443,9 @@ fn keystroke_to_bytes(ks: &Keystroke) -> Option<Vec<u8>> {
         _ => {
             let ch = ks.key_char.as_ref()?;
             let mut s = ch.clone().into_bytes();
-            if m.control && let Some(&b) = s.first() {
+            if m.control
+                && let Some(&b) = s.first()
+            {
                 if b.is_ascii_lowercase() {
                     s = vec![b - b'a' + 1];
                 } else if b == b'[' {
@@ -507,12 +520,7 @@ impl gpui::Render for TerminalPane {
     }
 }
 
-fn paint_grid(
-    bounds: Bounds<Pixels>,
-    grid: GridPaint,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn paint_grid(bounds: Bounds<Pixels>, grid: GridPaint, window: &mut Window, cx: &mut App) {
     let cell = grid.cell;
     for row in grid.rows {
         let top = bounds.top() + cell.height * row.line as f32;
@@ -524,10 +532,7 @@ fn paint_grid(
         for c in &row.cells {
             let w = cell.width * if c.wide { 2. } else { 1. };
             if let Some(bg) = c.bg {
-                window.paint_quad(fill(
-                    Bounds::new(point(x, top), size(w, cell.height)),
-                    bg,
-                ));
+                window.paint_quad(fill(Bounds::new(point(x, top), size(w, cell.height)), bg));
             }
             x += w;
         }
@@ -538,7 +543,8 @@ fn paint_grid(
         while i < row.cells.len() {
             let mut j = i;
             let style_of = |c: &GCell| (c.fg, c.bold, c.underline);
-            while j + 1 < row.cells.len() && style_of(&row.cells[j + 1]) == style_of(&row.cells[i]) {
+            while j + 1 < row.cells.len() && style_of(&row.cells[j + 1]) == style_of(&row.cells[i])
+            {
                 j += 1;
             }
             let text: String = row.cells[i..=j].iter().map(|c| c.ch).collect();

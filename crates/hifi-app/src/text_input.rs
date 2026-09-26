@@ -6,9 +6,9 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyDownEvent, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla,
-    point, prelude::*, px, relative, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, hsla, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -83,6 +83,14 @@ impl TextField {
         cx.notify();
     }
 
+    /// Replace the text and select all of it (omnibox prefill).
+    pub fn set_value_selected(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.content = text.into().into();
+        self.selected_range = 0..self.content.len();
+        self.selection_reversed = false;
+        cx.notify();
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -152,7 +160,12 @@ impl TextField {
         cx.emit(TextFieldEvent::Escaped);
     }
 
-    fn on_key_down(&mut self, _event: &KeyDownEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_key_down(
+        &mut self,
+        _event: &KeyDownEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
     }
 
     fn on_mouse_down(
@@ -546,7 +559,10 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(bounds.left() + cursor_pos, bounds.top() + px(2.)),
-                        size(px(2.), (bounds.bottom() - bounds.top() - px(4.)).max(px(4.))),
+                        size(
+                            px(2.),
+                            (bounds.bottom() - bounds.top() - px(4.)).max(px(4.)),
+                        ),
                     ),
                     accent,
                 )),
@@ -587,7 +603,11 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
-        window.handle_input(&focus_handle, ElementInputHandler::new(bounds, self.input.clone()), cx);
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.input.clone()),
+            cx,
+        );
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection)
         }
@@ -601,7 +621,9 @@ impl Element for TextElement {
             cx,
         )
         .unwrap();
-        if focus_handle.is_focused(window) && let Some(cursor) = prepaint.cursor.take() {
+        if focus_handle.is_focused(window)
+            && let Some(cursor) = prepaint.cursor.take()
+        {
             window.paint_quad(cursor);
         }
         self.input.update(cx, |input, _cx| {

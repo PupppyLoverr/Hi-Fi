@@ -20,6 +20,9 @@ pub struct Store {
     pub state: WorkspaceState,
     pub paths: HifiPaths,
     pub command_bar_open: bool,
+    /// When set, the command bar is acting as this tab's omnibox (⌘L):
+    /// submitting navigates the tab instead of opening a new one.
+    pub address_target: Option<TabId>,
     pub find_bar_open: bool,
     pub sidebar_collapsed: bool,
     /// The dock `+` surface picker popup.
@@ -57,6 +60,7 @@ impl Store {
             state,
             paths,
             command_bar_open: false,
+            address_target: None,
             find_bar_open: false,
             sidebar_collapsed: false,
             dock_menu_open: false,
@@ -107,9 +111,11 @@ impl Store {
         };
         let group_id = group_id
             .or_else(|| {
-                self.state
-                    .active_space()
-                    .and_then(|s| s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone())))
+                self.state.active_space().and_then(|s| {
+                    s.active_group
+                        .clone()
+                        .or_else(|| s.groups.first().map(|g| g.id.clone()))
+                })
             })
             .or_else(|| Some(self.create_group("Tabs", None, cx)));
         let Some(group_id) = group_id else {
@@ -170,7 +176,9 @@ impl Store {
     }
 
     pub fn focus_tab(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(tab) = self.state.tab(id) else { return };
+        let Some(tab) = self.state.tab(id) else {
+            return;
+        };
         let gid = tab.group_id.clone();
         // Docked tab: focus means activate its chip and open the dock.
         if let Some(group) = self.state.group_mut(&gid)
@@ -221,7 +229,11 @@ impl Store {
         let gid = self
             .state
             .active_space()
-            .and_then(|s| s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone())))
+            .and_then(|s| {
+                s.active_group
+                    .clone()
+                    .or_else(|| s.groups.first().map(|g| g.id.clone()))
+            })
             .unwrap_or_default();
         let (kind, url) = match hifi_core::route(url_or_kind) {
             RoutedUrl::Internal(kind) => (kind, url_or_kind.to_string()),
@@ -275,7 +287,11 @@ impl Store {
         let gid = self
             .state
             .active_space()
-            .and_then(|s| s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone())))
+            .and_then(|s| {
+                s.active_group
+                    .clone()
+                    .or_else(|| s.groups.first().map(|g| g.id.clone()))
+            })
             .unwrap_or_default();
         if let Some(d) = self.active_dock_mut() {
             d.tabs.retain(|t| t != id);
@@ -468,6 +484,7 @@ impl Store {
 
     pub fn toggle_command_bar(&mut self, cx: &mut Context<Self>) {
         self.command_bar_open = !self.command_bar_open;
+        self.address_target = None;
         cx.notify();
     }
 
@@ -494,7 +511,9 @@ impl Store {
 
     /// Cycle the active group's selection by ±1 (wraps around all tabs in the group).
     pub fn cycle_tab(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let Some(space) = self.state.active_space() else { return };
+        let Some(space) = self.state.active_space() else {
+            return;
+        };
         let Some(gid) = space
             .active_group
             .clone()
@@ -519,13 +538,27 @@ impl Store {
         self.focus_tab(&id, cx);
     }
 
-    /// Open a typed string: internal schemes open their pane; anything else
-    /// becomes a web tab (URL or search via the configured engine).
-    pub fn open_tab_or_navigate(&mut self, text: &str, cx: &mut Context<Self>) -> TabId {
-        let url = match crate::resolve_for_open(self, text) {
-            Some(u) => u,
-            None => text.to_string(),
-        };
-        self.open_tab(&url, None, None, cx)
+    /// Open the command bar as `tab`'s omnibox.
+    pub fn open_address(&mut self, tab: Option<TabId>, cx: &mut Context<Self>) {
+        self.address_target = tab;
+        self.command_bar_open = true;
+        cx.notify();
+    }
+
+    /// Submit omnibox text: web URLs/searches navigate the target tab in
+    /// place; internal pages (or no target) open a new tab.
+    pub fn submit_address(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.command_bar_open = false;
+        let target = self
+            .address_target
+            .take()
+            .filter(|id| self.state.tab(id).is_some());
+        let url = crate::resolve_for_open(self, text).unwrap_or_else(|| text.to_string());
+        match (target, route(&url)) {
+            (Some(id), RoutedUrl::External(u)) => self.navigate(&id, &u, cx),
+            _ => {
+                self.open_tab(&url, None, None, cx);
+            }
+        }
     }
 }

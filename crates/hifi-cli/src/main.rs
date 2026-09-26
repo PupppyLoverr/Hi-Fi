@@ -93,22 +93,40 @@ enum TabCommand {
         background: bool,
     },
     /// Close a tab.
-    Close { id: String },
+    Close {
+        id: String,
+    },
     /// List all tabs (JSON).
     List,
     /// Focus a tab.
-    Focus { id: String },
+    Focus {
+        id: String,
+    },
     /// Reload a web tab.
-    Reload { id: String },
+    Reload {
+        id: String,
+    },
     /// Navigate a web tab to a new URL.
-    Navigate { id: String, url: String },
+    Navigate {
+        id: String,
+        url: String,
+    },
     /// Navigate back/forward.
-    Back { id: String },
-    Forward { id: String },
+    Back {
+        id: String,
+    },
+    Forward {
+        id: String,
+    },
     /// Toggle pinned.
-    Pin { id: String },
+    Pin {
+        id: String,
+    },
     /// Evaluate JS in a web tab (returns JSON result).
-    Exec { id: String, js: String },
+    Exec {
+        id: String,
+        js: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -149,7 +167,11 @@ enum BrowserCommand {
     /// Click an element by snapshot ref or CSS selector.
     Click { id: String, target: String },
     /// Type text into an element.
-    Type { id: String, target: String, text: String },
+    Type {
+        id: String,
+        target: String,
+        text: String,
+    },
     /// PNG screenshot of a web tab → path printed.
     Screenshot { id: String },
 }
@@ -238,15 +260,16 @@ fn main() -> Result<()> {
             BrowserCommand::Click { id, target } => {
                 (methods::TAB_CLICK, json!({"id": id, "target": target}))
             }
-            BrowserCommand::Type { id, target, text } => {
-                (methods::TAB_TYPE, json!({"id": id, "target": target, "text": text}))
-            }
+            BrowserCommand::Type { id, target, text } => (
+                methods::TAB_TYPE,
+                json!({"id": id, "target": target, "text": text}),
+            ),
             BrowserCommand::Screenshot { id } => (methods::TAB_SCREENSHOT, json!({"id": id})),
         },
     };
 
-    let response = client::call(&socket, method, params, t)
-        .with_context(|| format!("calling {method}"))?;
+    let response =
+        client::call(&socket, method, params, t).with_context(|| format!("calling {method}"))?;
     if !response.ok {
         anyhow::bail!(response.error.unwrap_or_else(|| "unknown error".into()));
     }

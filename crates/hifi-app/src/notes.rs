@@ -8,9 +8,21 @@
 /// `dark` matches the app theme so the page doesn't flash white.
 pub fn editor_html(body: &str, dark: bool) -> String {
     let (bg, text, muted, accent, border) = if dark {
-        ("#0a0a0a", "#e8e8ea", "#85858a", "#8b7cf6", "rgba(255,255,255,0.08)")
+        (
+            "#0a0a0a",
+            "#e8e8ea",
+            "#85858a",
+            "#8b7cf6",
+            "rgba(255,255,255,0.08)",
+        )
     } else {
-        ("#ffffff", "#303035", "#797981", "#5b43e8", "rgba(0,0,0,0.08)")
+        (
+            "#ffffff",
+            "#303035",
+            "#797981",
+            "#5b43e8",
+            "rgba(0,0,0,0.08)",
+        )
     };
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><style>

@@ -4,13 +4,11 @@
 //!        card #0e0e0e / text #e8e8ea / muted #a9a9ae / faint #85858a
 //! Light: bg #ffffff / shell #f3f3f5 / card #ffffff / text #303035 /
 //!        muted #62626a / faint #797981
-//! Radii: 16 / 10 / 6. Fonts: Geist (UI) + Geist Mono (code/terminal).
+//! Radii: 16 / 10 / 6. Fonts: platform UI font + Geist Mono (code/terminal).
 
 use gpui::{App, Global, Hsla, hsla};
 use hifi_core::{Appearance, Settings};
 
-#[allow(dead_code)] // UI font is GPUI's default; kept for explicit styling later
-pub const FONT_UI: &str = "Geist";
 pub const FONT_MONO: &str = "Geist Mono";
 
 /// Corner radii.
