@@ -501,6 +501,10 @@ impl gpui::Render for TerminalPane {
             .key_context("TerminalPane")
             .track_focus(&self.focus_handle(cx))
             .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| window.focus(&this.focus_handle(cx), cx)),
+            )
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .size_full()
             .bg(gpui::hsla(240., 0.06, 0.05, 0.96))

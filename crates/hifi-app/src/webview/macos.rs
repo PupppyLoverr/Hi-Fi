@@ -485,11 +485,11 @@ impl WebPaneHost {
     }
 
     pub fn back(&self) {
-        let _ = self.web.evaluate_script("history.back()");
+        unsafe { self.view.goBack() };
     }
 
     pub fn forward(&self) {
-        let _ = self.web.evaluate_script("history.forward()");
+        unsafe { self.view.goForward() };
     }
 
     /// Evaluate JS directly on the WKWebView (wry's eval queues into

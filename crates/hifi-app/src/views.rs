@@ -754,17 +754,23 @@ impl DiffView {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
-            let out = tokio::process::Command::new("git")
-                .args(["-C", &path, "diff", "HEAD", "--", "."])
-                .output()
-                .await;
-            let numstat = tokio::process::Command::new("git")
-                .args(["-C", &path, "diff", "--numstat", "HEAD"])
-                .output()
-                .await;
-            let branch = tokio::process::Command::new("git")
-                .args(["-C", &path, "branch", "--show-current"])
-                .output()
+            let git = move |args: Vec<&'static str>| {
+                let path = path.clone();
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(path)
+                    .args(args)
+                    .output()
+            };
+            let (out, numstat, branch) = cx
+                .background_executor()
+                .spawn(async move {
+                    (
+                        git(vec!["diff", "HEAD", "--", "."]),
+                        git(vec!["diff", "--numstat", "HEAD"]),
+                        git(vec!["branch", "--show-current"]),
+                    )
+                })
                 .await;
             let _ = this.update(cx, |v: &mut DiffView, cx| {
                 let branch = branch
