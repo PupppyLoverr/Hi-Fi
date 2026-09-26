@@ -4,38 +4,34 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-HIFI=build/Hi-Fi.app/Contents/MacOS/hifi
+HIFI=target/debug/hifi
 
 if [[ ! -x "$HIFI" ]]; then
-  echo "no build yet — running scripts/bundle.sh"
-  ./scripts/bundle.sh
+  echo "no build yet — running cargo build"
+  cargo build
 fi
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
-step "ping (launches the app if needed)"
+step "ping"
 "$HIFI" ping
 
 step "open a docs page"
-"$HIFI" tab open https://developer.mozilla.org --json
-
-step "grab its id"
-TAB=$("$HIFI" tab list --window --json | python3 -c '
-import json,sys
-r=json.load(sys.stdin)["result"]["rows"]
-print([t for t in r if "mozilla" in (t.get("url") or "")][-1]["id"])')
+OUT=$("$HIFI" tab open https://developer.mozilla.org)
+echo "$OUT"
+TAB=$(echo "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 echo "tab: $TAB"
 
 step "split a terminal 40% to the right"
-"$HIFI" tab open hifi://terminal --right-of "$TAB" --size 40% --json
+"$HIFI" tab open hifi://terminal --right-of "$TAB" --size 40%
 
 step "make a group around it"
-"$HIFI" group create "docs + terminal" --tab "$TAB" --json
+"$HIFI" group create "docs + terminal"
 
 step "list tabs"
-"$HIFI" tab list --window
+"$HIFI" tab list
 
 step "page snapshot (first 600 chars)"
-"$HIFI" page snapshot --tab "$TAB" | head -c 600; echo
+"$HIFI" browser snapshot "$TAB" | head -c 600; echo
 
 step "done — the app is left running so you can poke at it"
