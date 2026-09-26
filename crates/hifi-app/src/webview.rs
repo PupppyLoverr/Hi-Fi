@@ -93,7 +93,7 @@ define_class!(
             _context: *mut std::ffi::c_void,
         ) {
             if let Some(view) = object.and_then(|o| o.downcast_ref::<WKWebView>()) {
-                self.push_state(view, !unsafe { view.isLoading() });
+                self.push_state(view, unsafe { view.isLoading() });
             }
         }
     }
