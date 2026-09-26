@@ -511,27 +511,30 @@ impl gpui::Render for TerminalPane {
             .p(px(8.))
             .font_family(FONT_MONO)
             .text_size(px(13.))
-            .child(canvas(
-                move |bounds, window, cx| {
-                    let mut grid = GridPaint {
-                        rows: Vec::new(),
-                        cell: size(px(8.), px(16.)),
-                        cursor_bg: accent,
-                    };
-                    entity.update(cx, |pane, _| {
-                        let cell = pane.cell;
-                        let cols = (bounds.size.width / cell.width).floor() as usize;
-                        let rows = (bounds.size.height / cell.height).floor() as usize;
-                        pane.resize(cols, rows, window);
-                        grid.cell = cell;
-                        grid.rows = pane.snapshot(rows.max(1));
-                    });
-                    grid
-                },
-                move |bounds, grid, window, cx| {
-                    paint_grid(bounds, grid, window, cx);
-                },
-            ))
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let mut grid = GridPaint {
+                            rows: Vec::new(),
+                            cell: size(px(8.), px(16.)),
+                            cursor_bg: accent,
+                        };
+                        entity.update(cx, |pane, _| {
+                            let cell = pane.cell;
+                            let cols = (bounds.size.width / cell.width).floor() as usize;
+                            let rows = (bounds.size.height / cell.height).floor() as usize;
+                            pane.resize(cols, rows, window);
+                            grid.cell = cell;
+                            grid.rows = pane.snapshot(rows.max(1));
+                        });
+                        grid
+                    },
+                    move |bounds, grid, window, cx| {
+                        paint_grid(bounds, grid, window, cx);
+                    },
+                )
+                .size_full(),
+            )
     }
 }
 
@@ -623,5 +626,29 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: GridPaint, window: &mut Window, cx: 
                 grid.cursor_bg.opacity(0.85),
             ));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn screen(parts: &TermParts) -> String {
+        let term = parts.term.lock();
+        let content = term.renderable_content();
+        content.display_iter.map(|c| c.cell.c).collect()
+    }
+
+    #[test]
+    fn pty_runs_successive_commands() {
+        let parts = TerminalPane::spawn_pty(Some("/bin/sh"), None).unwrap();
+        for cmd in ["echo one-$((1+1))\r", "echo three-$((1+2))\r"] {
+            let _ = parts
+                .sender
+                .send(Msg::Input(cmd.as_bytes().to_vec().into()));
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        let s = screen(&parts);
+        assert!(s.contains("one-2") && s.contains("three-3"), "{s}");
     }
 }
