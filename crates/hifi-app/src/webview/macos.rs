@@ -75,18 +75,34 @@ fn install_drag_monitor(gpui_view: Retained<NSView>, mtm: MainThreadMarker) {
     DRAG_MONITOR.with(|m| *m.borrow_mut() = monitor);
 }
 
-/// Whether AppKit will deliver this press to a native page.
+/// Whether this press lands on a visible native page (and not on a GPUI
+/// overlay floating above it). Clip views span the whole window, so plain
+/// hit-testing can't tell pages apart.
 fn press_hits_page(gpui_view: &NSView, e: &NSEvent) -> bool {
-    let Some(sup) = (unsafe { gpui_view.superview() }) else {
-        return false;
-    };
-    let point = sup.convertPoint_fromView(e.locationInWindow(), None);
-    let mut hit = gpui_view.hitTest(point);
-    while let Some(view) = hit {
-        if view.isKindOfClass(class!(WKWebView)) {
-            return true;
+    let loc = e.locationInWindow();
+    for child in gpui_view.subviews() {
+        if child.isHidden() {
+            continue;
         }
-        hit = unsafe { view.superview() };
+        if child.class().name() == c"GPUIOverlayView" {
+            if let Some(sup) = unsafe { child.superview() }
+                && child
+                    .hitTest(sup.convertPoint_fromView(loc, None))
+                    .is_some()
+            {
+                return false;
+            }
+            continue;
+        }
+        for page in child.subviews() {
+            if page.isHidden() || !page.isKindOfClass(class!(WKWebView)) {
+                continue;
+            }
+            let p = page.convertPoint_fromView(loc, None);
+            if page.mouse_inRect(p, page.bounds()) {
+                return true;
+            }
+        }
     }
     false
 }
