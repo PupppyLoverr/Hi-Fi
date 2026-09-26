@@ -326,12 +326,6 @@ impl WebPaneHost {
         let _ = self.worker.send(self.id, value);
     }
 
-    /// Resize the offscreen page to the pane and show/hide it.
-    pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
-        self.bounds.set(bounds);
-        self.set_visible(visible);
-    }
-
     fn set_visible(&self, visible: bool) {
         if self.visible.replace(visible) != visible {
             self.command(json!({"cmd": "visible", "value": u8::from(visible)}));
@@ -432,7 +426,9 @@ impl WebPaneHost {
             return;
         };
         let rgba: Vec<u8> = bgra
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[2], p[1], p[0], p[3]])
             .collect();
         let _ = image::save_buffer(

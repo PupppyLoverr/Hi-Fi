@@ -42,6 +42,7 @@ pub enum WebEvent {
         url: String,
     },
     /// Keystroke swallowed while the webview had focus; re-dispatch in GPUI.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Keystroke {
         combo: String,
     },
