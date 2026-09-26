@@ -5,7 +5,7 @@
 //!
 //! The same compositing boundary cosmos uses on macOS.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc::Sender;
 
 use gpui::{Bounds, Pixels};
@@ -27,6 +27,42 @@ use objc2_web_kit::{
 use wry::{WebViewBuilderExtMacos as _, WebViewExtMacOS as _};
 
 use super::WebEvent;
+
+thread_local! {
+    /// Set while a GPUI drag (split/dock/sidebar resize) is in flight.
+    static DRAG_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static DRAG_MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+/// Route left-drag/up events straight to the GPUI view while a GPUI drag is
+/// active, so a native page under the cursor can never swallow them.
+fn install_drag_monitor(gpui_view: Retained<NSView>, mtm: MainThreadMarker) {
+    if DRAG_MONITOR.with(|m| m.borrow().is_some()) {
+        return;
+    }
+    let callback = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        let e = unsafe { event.as_ref() };
+        if !DRAG_ACTIVE.with(Cell::get) || e.window(mtm) != gpui_view.window() {
+            return event.as_ptr();
+        }
+        unsafe {
+            if e.r#type() == objc2_app_kit::NSEventType::LeftMouseUp {
+                DRAG_ACTIVE.with(|d| d.set(false));
+                let _: () = msg_send![&*gpui_view, mouseUp: e];
+            } else {
+                let _: () = msg_send![&*gpui_view, mouseDragged: e];
+            }
+        }
+        std::ptr::null_mut()
+    });
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+            &callback,
+        )
+    };
+    DRAG_MONITOR.with(|m| *m.borrow_mut() = monitor);
+}
 
 pub struct HostIvars {
     tab: String,
@@ -258,6 +294,7 @@ impl WebPaneHost {
         // Reparent into a clip view kept below GPUI's overlay plane so the
         // native page paints under chrome/overlays (cosmos's compositing).
         let parent = unsafe { view.superview() }.ok_or("webview parent missing")?;
+        install_drag_monitor(parent.clone(), mtm);
         let clip: Retained<NSView> = unsafe { msg_send![class!(NSView), new] };
         clip.setWantsLayer(true);
         clip.setAutoresizesSubviews(false);
@@ -439,6 +476,7 @@ impl WebPaneHost {
     }
 
     pub fn set_input_shield(&self, on: bool) {
+        DRAG_ACTIVE.with(|d| d.set(on));
         if self.shield.isHidden() == on {
             self.shield.setHidden(!on);
         }
