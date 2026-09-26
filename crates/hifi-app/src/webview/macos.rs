@@ -5,8 +5,6 @@
 //!
 //! The same compositing boundary cosmos uses on macOS.
 
-#![cfg(target_os = "macos")]
-
 use std::cell::Cell;
 use std::sync::mpsc::Sender;
 
@@ -28,44 +26,7 @@ use objc2_web_kit::{
 };
 use wry::{WebViewBuilderExtMacos as _, WebViewExtMacOS as _};
 
-/// Events a native page pushes to the app (main thread → channel → GPUI task).
-#[derive(Debug)]
-pub enum WebEvent {
-    Title {
-        tab: String,
-        title: String,
-    },
-    Url {
-        tab: String,
-        url: String,
-    },
-    Loading {
-        tab: String,
-        loading: bool,
-    },
-    CanGo {
-        tab: String,
-        back: bool,
-        forward: bool,
-    },
-    /// target=_blank / window.open — open a sibling tab.
-    NewTab {
-        url: String,
-    },
-    /// Keystroke swallowed while the webview had focus; re-dispatch in GPUI.
-    Keystroke {
-        combo: String,
-    },
-    /// Editor surface posted its body over `window.ipc` (wry ipc_handler).
-    NotesSave {
-        tab: String,
-        html: String,
-    },
-    Error {
-        tab: String,
-        message: String,
-    },
-}
+use super::WebEvent;
 
 pub struct HostIvars {
     tab: String,
@@ -251,6 +212,7 @@ pub struct WebPaneHost {
 impl WebPaneHost {
     pub fn new(
         window: &gpui::Window,
+        _cx: &gpui::App,
         tab: String,
         url: &str,
         tx: Sender<WebEvent>,

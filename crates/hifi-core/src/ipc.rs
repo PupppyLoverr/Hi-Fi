@@ -76,13 +76,27 @@ pub mod methods {
     pub const DOCK_LIST: &str = "dock.list";
 }
 
-#[cfg(unix)]
 pub mod client {
-    //! Blocking client used by the `hifi` CLI.
+    //! Blocking client used by the `hifi` CLI. Unix-domain socket on macOS
+    //! and Linux; loopback TCP on Windows (port published next to the socket
+    //! path, see [`port_file`]).
     use super::*;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
     use std::path::Path;
+
+    #[cfg(unix)]
+    fn connect(socket: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+        std::os::unix::net::UnixStream::connect(socket)
+    }
+
+    #[cfg(not(unix))]
+    fn connect(socket: &Path) -> std::io::Result<std::net::TcpStream> {
+        let port: u16 = std::fs::read_to_string(port_file(socket))?
+            .trim()
+            .parse()
+            .map_err(std::io::Error::other)?;
+        std::net::TcpStream::connect(("127.0.0.1", port))
+    }
 
     pub fn call(
         socket: &Path,
@@ -90,7 +104,7 @@ pub mod client {
         params: Value,
         timeout_secs: u64,
     ) -> anyhow::Result<IpcResponse> {
-        let stream = UnixStream::connect(socket)
+        let stream = connect(socket)
             .map_err(|e| anyhow::anyhow!("cannot reach Hi-Fi (is it running?): {e}"))?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(timeout_secs)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
@@ -110,4 +124,9 @@ pub mod client {
         }
         Ok(serde_json::from_str(&buf)?)
     }
+}
+
+/// Where the Windows IPC server publishes its loopback port.
+pub fn port_file(socket: &std::path::Path) -> std::path::PathBuf {
+    socket.with_extension("port")
 }

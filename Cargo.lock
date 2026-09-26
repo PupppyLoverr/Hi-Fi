@@ -2995,6 +2995,7 @@ dependencies = [
  "gpui_platform",
  "gpui_tokio",
  "hifi-core",
+ "image",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -3010,6 +3011,9 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "uuid",
+ "webview2-com",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
  "wry",
 ]
 

@@ -263,6 +263,12 @@ impl Shell {
                         None => s.notes_save(&tab, &html),
                     });
                 }
+                #[cfg(target_os = "linux")]
+                WebEvent::Redraw => {}
+                #[cfg(target_os = "linux")]
+                WebEvent::Clipboard { text } => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                }
                 WebEvent::Error { tab, message } => {
                     self.store.update(cx, |s, cx| {
                         s.tab_meta_update(
@@ -425,7 +431,14 @@ impl Shell {
         } else {
             &tab.url
         };
-        match WebPaneHost::new(window, tab.id.clone(), load_url, self.web_tx.clone(), ipc) {
+        match WebPaneHost::new(
+            window,
+            cx,
+            tab.id.clone(),
+            load_url,
+            self.web_tx.clone(),
+            ipc,
+        ) {
             Ok(host) => {
                 let host = Rc::new(host);
                 if tab.kind == TabKind::Notes {
@@ -672,13 +685,42 @@ impl Shell {
 
     // ----- layout -----
 
-    /// A webview canvas bound to `host` — syncs the native clip to the
+    /// Route a keystroke to the focused offscreen page unless the app keymap
+    /// owns it. No-op where pages take native keyboard focus.
+    fn forward_key(
+        &mut self,
+        stroke: &gpui::Keystroke,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(target_os = "linux")]
+        if self.focus.is_focused(window)
+            && let Some(page) = self.focused_page()
+        {
+            let combo = stroke.unparse();
+            if down && crate::webview::is_browser_chord(&combo) {
+                page.release_focus();
+                return;
+            }
+            page.key(stroke, down, cx);
+            cx.stop_propagation();
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (stroke, down, window, cx);
+    }
+
+    /// A webview canvas bound to `host` — syncs the native view to the
     /// painted bounds each frame. Shared by leaves and the dock.
+    #[cfg(not(target_os = "linux"))]
     fn web_canvas(host: &Rc<WebPaneHost>) -> gpui::Canvas<()> {
         let host = host.clone();
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, _cx| {
+                // Windows child HWNDs paint above GPUI, so clip to the mask.
+                #[cfg(target_os = "windows")]
+                let bounds = bounds.intersect(&window.content_mask().bounds);
                 let host = Rc::downgrade(&host);
                 window.on_present(move || {
                     if let Some(host) = host.upgrade() {
@@ -687,6 +729,70 @@ impl Shell {
                 });
             },
         )
+    }
+
+    /// Linux pages render offscreen: composite the latest frame directly.
+    #[cfg(target_os = "linux")]
+    fn web_canvas(host: &Rc<WebPaneHost>) -> gpui::Canvas<()> {
+        let host = host.clone();
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _cx| host.paint(bounds, window),
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn web_surface(host: &Rc<WebPaneHost>, _focus: &gpui::FocusHandle) -> gpui::Div {
+        div()
+            .size_full()
+            .relative()
+            .child(Self::web_canvas(host).absolute().inset_0())
+    }
+
+    /// Offscreen pages receive input as synthesized events from GPUI.
+    #[cfg(target_os = "linux")]
+    fn web_surface(host: &Rc<WebPaneHost>, focus: &gpui::FocusHandle) -> gpui::Div {
+        use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent};
+        let mut surface = div()
+            .size_full()
+            .relative()
+            .child(Self::web_canvas(host).absolute().inset_0());
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            let (down, up, focus) = (host.clone(), host.clone(), focus.clone());
+            surface = surface
+                .on_mouse_down(button, move |e: &MouseDownEvent, w, cx| {
+                    w.focus(&focus, cx);
+                    down.pointer("down", e.position, Some(e.button), e.modifiers);
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(button, move |e: &MouseUpEvent, _, cx| {
+                    up.pointer("up", e.position, Some(e.button), e.modifiers);
+                    cx.stop_propagation();
+                });
+        }
+        let (moved, released, scrolled) = (host.clone(), host.clone(), host.clone());
+        surface
+            .on_mouse_up_out(MouseButton::Left, move |e: &MouseUpEvent, _, _| {
+                released.pointer("up", e.position, Some(e.button), e.modifiers);
+            })
+            .on_mouse_move(move |e: &MouseMoveEvent, _, cx| {
+                if !cx.has_active_drag() {
+                    moved.pointer("move", e.position, e.pressed_button, e.modifiers);
+                }
+            })
+            .on_scroll_wheel(move |e: &ScrollWheelEvent, _, cx| {
+                scrolled.scroll(e);
+                cx.stop_propagation();
+            })
+    }
+
+    /// The page that owns keyboard input (Linux forwards keys itself).
+    #[cfg(target_os = "linux")]
+    fn focused_page(&self) -> Option<Rc<WebPaneHost>> {
+        self.panes.values().find_map(|p| match p {
+            Pane::Web(h) if h.is_focused() => Some(h.clone()),
+            _ => None,
+        })
     }
 
     /// The kind-specific body of a pane (no header, no card). Shared by the
@@ -700,11 +806,7 @@ impl Shell {
         let p = Theme::of(cx).palette;
         match tab.kind {
             TabKind::Web | TabKind::Notes => match self.web_host(tab, p.is_dark, window, cx) {
-                Some(host) => div()
-                    .size_full()
-                    .relative()
-                    .child(Self::web_canvas(&host).absolute().inset_0())
-                    .into_any(),
+                Some(host) => Self::web_surface(&host, &self.focus).into_any(),
                 None => {
                     let err = self
                         .pane_errors
@@ -795,7 +897,11 @@ impl Shell {
                 let view = self.view_pane(
                     tab.id.clone(),
                     |tab_id, w, cx| {
-                        let path = std::env::var("HOME").unwrap_or_default() + "/repos";
+                        let path = dirs::home_dir()
+                            .unwrap_or_default()
+                            .join("repos")
+                            .to_string_lossy()
+                            .into_owned();
                         DiffView::new(path, tab_id, w, cx)
                     },
                     window,
@@ -1971,6 +2077,21 @@ impl gpui::Render for Shell {
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
+            .when(cfg!(target_os = "linux"), |root| {
+                root.capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, _| {
+                    for pane in this.panes.values() {
+                        if let Pane::Web(h) = pane {
+                            h.release_focus();
+                        }
+                    }
+                }))
+                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, w, cx| {
+                    this.forward_key(&e.keystroke, true, w, cx);
+                }))
+                .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, w, cx| {
+                    this.forward_key(&e.keystroke, false, w, cx);
+                }))
+            })
             .on_action(cx.listener(|this, _: &crate::NewTab, _w, cx| {
                 this.store.update(cx, |s, cx| {
                     s.open_tab("hifi://newtab", None, None, cx);

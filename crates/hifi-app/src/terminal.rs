@@ -352,9 +352,20 @@ fn shell_args(command: &str) -> Vec<String> {
         .map(|s| s.to_string())
         .collect()
 }
+#[cfg(not(windows))]
 fn default_shell() -> Option<Shell> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let fallback = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/sh"
+    };
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
     Some(Shell::new(shell, vec!["-l".into()]))
+}
+
+#[cfg(windows)]
+fn default_shell() -> Option<Shell> {
+    Some(Shell::new("powershell.exe".into(), vec!["-NoLogo".into()]))
 }
 
 fn map_color(c: Color) -> Hsla {
