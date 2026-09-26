@@ -1,24 +1,21 @@
-#!/bin/bash
-# bundle.sh — build Hi-Fi.app from the SwiftPM binaries.
-# Usage: scripts/bundle.sh [release]
+#!/usr/bin/env bash
+# Build a release Hi-Fi.app bundle (macOS) into build/.
+# Run from anywhere:  ./scripts/bundle.sh
 set -euo pipefail
+
 cd "$(dirname "$0")/.."
+cargo build --release --workspace
 
-CONFIG=debug
-[ "${1:-}" = "release" ] && CONFIG=release
-
-swift build -c "$CONFIG" --product HiFiApp
-swift build -c "$CONFIG" --product hifi
-
-BIN_DIR=".build/$CONFIG"
-APP="build/Hi-Fi.app"
+APP=build/Hi-Fi.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp target/release/hifi-app "$APP/Contents/MacOS/Hi-Fi"
+cp target/release/hifi "$APP/Contents/MacOS/hifi"
+# Cargo's own strip step can fail on some toolchains; strip locally too.
+strip -x "$APP/Contents/MacOS/Hi-Fi" "$APP/Contents/MacOS/hifi"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-cp "$BIN_DIR/HiFiApp" "$APP/Contents/MacOS/HiFiApp"
-cp "$BIN_DIR/hifi" "$APP/Contents/MacOS/hifi"
-
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -26,25 +23,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Hi-Fi</string>
   <key>CFBundleDisplayName</key><string>Hi-Fi</string>
   <key>CFBundleIdentifier</key><string>com.hifi.browser</string>
-  <key>CFBundleExecutable</key><string>HiFiApp</string>
+  <key>CFBundleExecutable</key><string>Hi-Fi</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSSupportsAutomaticTermination</key><false/>
-  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
 </dict>
 </plist>
 PLIST
 
-if [ -f Resources/AppIcon.icns ]; then
-  cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-fi
-
-# ad-hoc sign so Gatekeeper lets it launch locally
-codesign --force --deep --sign - "$APP" 2>/dev/null || true
-
-echo "built: $APP"
-echo "run:   open $APP"
+codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+du -sh "$APP"

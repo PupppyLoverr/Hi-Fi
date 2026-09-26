@@ -1,0 +1,55 @@
+[package]
+name = "hifi-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Hi-Fi — a fast native browser. GPUI shell + WKWebView (macOS) / WebView2 (Windows) / WebKitGTK (Linux) panes."
+
+[dependencies]
+hifi-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui_tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+url.workspace = true
+dirs.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+alacritty_terminal.workspace = true
+unicode-segmentation = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+webview2-com = "0.38"
+windows-core = "0.61"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKNavigationDelegate", "WKNavigationAction", "WKSnapshotConfiguration"] }
+objc2-quartz-core = "0.3"
+block2 = "0.6"
+raw-window-handle = "0.6"
+
+[package.metadata.bundle]
+identifier = "com.hifi.browser"

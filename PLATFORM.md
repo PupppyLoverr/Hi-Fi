@@ -1,82 +1,49 @@
-# Platform map — how Hi-Fi ships on macOS, Linux, and Windows
+# Platform port map
 
-Hi-Fi's rule: **the domain layer never imports an engine**. `HiFiCore` is
-pure Swift (Foundation only) — no WebKit, no AppKit, no UIKit — and compiles
-with the official Swift toolchains on all three OSes. Each platform supplies
-exactly one **host**: a view layer plus an `EngineHost` implementation.
-
-## The port boundary
-
-`Sources/HiFiCore/EngineHost.swift` defines what "a web page" means to the
-rest of the app:
-
-- create/destroy a page (per-profile data store)
-- navigate, go back/forward, reload, stop
-- evaluate JavaScript (`evalJS`) — powers `hifi page snapshot|click|type|press|html`
-- snapshot to PNG — powers `hifi page screenshot`
-- find in page, set UA string, popup→tab policy, download events
-
-A host implements that protocol over the platform engine and renders it into
-the platform's view type. Everything else — sidebar, spaces, groups, split
-trees, command bar, IPC, persistence, the `hifi` CLI, the `hifi://` scheme —
-is shared.
+Hi-Fi's platform surface is thin by construction: `hifi-core` is pure Rust
+(models, split trees, IPC protocol, the `hifi` CLI — zero UI or engine deps)
+and `hifi-app` is a GPUI shell. GPUI itself is cross-platform, and wry ships a
+system-webview per OS — so a port is a host, not a rewrite.
 
 ## macOS (shipping)
 
-| Piece | Implementation |
-|-------|----------------|
-| Engine | `WKWebView` + `WKProcessPool` + per-profile `WKWebsiteDataStore` |
-| Chrome | AppKit `NSWindow` + SwiftUI sidebar/command bar/find bar |
-| Splits | `NSSplitViewController` tree driven by `SplitNode` |
-| Terminal | `SwiftTerm` `LocalProcessTerminalView` (real PTY) |
-| IPC | `UnixSocketServer` on `~/Library/Application Support/HiFi/ipc.sock` |
-| Persist | `~/Library/Application Support/HiFi/state.json` |
+- **UI**: GPUI (`zui` fork, same pin as cosmos) → Metal.
+- **Engine**: `wry 0.56` → `WKWebView` via `build_as_child`.
+- **Compositing**: `window.enable_scene_overlay()` creates `GPUIOverlayView`;
+  each webview is reparented into a clip `NSView` positioned *below* the
+  overlay, sized by a `CALayer` mask whose frame is the pane's painted rect
+  (`crates/hifi-app/src/webview.rs::sync_bounds`). Chrome drawn by GPUI always
+  sits above native page content.
+- **Terminal**: `alacritty_terminal` grid → `gpui::canvas`.
+- **Persistence/IPC**: `~/Library/Application Support/HiFi/` (`state.json`,
+  `ipc.sock`).
 
-Entry: `Sources/HiFiApp/main.swift` → `AppDelegate` → `MainWindowController`.
-Single instance enforced at launch (a second process exits if the socket
-already answers `ping`).
+Known wry quirk handled here: `WebView::eval` queues into `pending_scripts`
+until the first navigation finishes and **drops the callback** — so Hi-Fi calls
+`WKWebView::evaluateJavaScript` on the view directly (`WebPaneHost::eval`).
 
-## Linux (next host)
+## Linux
 
-- Engine: **WebKitGTK** (`WebKitWebView`, `WebKitWebsiteDataManager` per
-  profile, `webkit_web_view_run_javascript`, `webkit_web_view_get_snapshot`).
-- UI: GTK4 via Swift GTK bindings (or Adwaita). Sidebar/command-bar models
-  reuse `HiFiCore` wholesale.
-- Terminal: same PTY story — `forkpty`/`openpty` + a GTK terminal widget
-  (VTE or SwiftTerm-compatible shim).
-- IPC: identical unix-socket protocol — path becomes
-  `~/.local/share/hifi/ipc.sock`; state file `~/.local/share/hifi/state.json`.
-- New target name: `Sources/HiFiLinux` (executable `HiFiApp`), same
-  `HiFiCore` dependency.
+- **UI**: same GPUI shell (Wayland/X11, Vulkan).
+- **Engine**: wry → WebKitGTK (`WebViewBuilder::build_gtk`). The clip/mask
+  dance is unnecessary — WebKitGTK embeds as a GTK widget inside the GPUI
+  window via a fixed container; hide/show by widget visibility, no
+  overlay-ordering needed.
+- **Deps**: `libwebkit2gtk-4.1`, `libgtk-3`, `libsoup-3`.
 
 ## Windows
 
-- Engine: WebKit (preferred, e.g. WebKitWindows port) or **Gecko** via
-  embedding — **never WebView2** (it is Chromium).
-- UI: WinUI/Win32 shell; the same `HiFiCore` models drive the chrome.
-- Terminal: ConPTY (already a PTY API) + a VT widget.
-- IPC: the same JSON-lines protocol over a unix-domain socket (Windows has
-  AF_UNIX since 2018) or a named pipe shim behind `UnixSocket`.
-- State: `%LOCALAPPDATA%\HiFi\state.json`.
+- **UI**: same GPUI shell (Direct3D11).
+- **Engine**: **WebKit or Gecko — never WebView2/Chromium.** Practical path:
+  `wry` is WebView2-only, so the host is a small native child-window hosting a
+  WebKit/Gecko build (e.g. `playwright-webkit` runtime or `GeckoView`
+  embedding), synced to pane bounds with `SetWindowPos` from the same
+  `sync_bounds` call site (GPUI `on_present` gives the rect; Windows doesn't
+  need the mask trick — child windows are clipped by their parent).
 
-## What does NOT change across platforms
+## What does NOT change per platform
 
-- `hifi` CLI — one binary, same flags, same wire protocol everywhere.
-- `hifi.toml` project config — `[worktree] copy_files`, `[scripts] setup`.
-- `HIFI_*` env contract — `HIFI_GROUP_ID`, `HIFI_TAB_ID`,
-  `HIFI_WORKSPACE_NAME`, `HIFI_WORKSPACE_PATH`, `HIFI_SOCKET`.
-- Tab/group/space/split semantics and the `hifi://` scheme.
-
-## Measuring "light" (README claim)
-
-Methodology for the RSS-vs-Safari comparison:
-
-1. Fresh launch, one `hifi://newtab`, idle 10s → record app RSS.
-2. Open `apple.com`, `github.com`, `developer.mozilla.org` in three tabs,
-   idle 10s → record app + web-content RSS.
-3. Repeat in Safari with the same three tabs.
-
-Capture via `ps -o rss -p <pid>` (and `footprint` for the WKWebView process
-tree). The measurement belongs in CI once the runner image supports it —
-until then it's a manual number, so it's stated as a method here rather than
-a claim with made-up figures.
+- `SplitNode` model, spaces/groups/tabs, `state.json` schema.
+- IPC wire protocol + every `hifi` CLI subcommand.
+- Keybindings, command bar actions, `hifi://` scheme handling.
+- Solar icon set, theme tokens, Geist Mono (all bundled assets).
