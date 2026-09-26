@@ -1374,11 +1374,20 @@ impl Shell {
                 } else {
                     row.flex_col()
                 };
+                let row_path = my_path.clone();
+                let (min_first, min_second) = (
+                    min_extent(first, horizontal),
+                    min_extent(second, horizontal),
+                );
                 row = row.on_drag_move::<SplitDrag>(move |event, _window, cx| {
                     let (path, horizontal) = {
                         let drag = event.drag(cx);
                         (drag.path.clone(), drag.horizontal)
                     };
+                    // Every split row sees the drag; only the dragged one resizes.
+                    if path != row_path {
+                        return;
+                    }
                     let bounds = event.bounds;
                     let pos = event.event.position;
                     let (frac, span) = if horizontal {
@@ -1393,9 +1402,10 @@ impl Shell {
                         )
                     };
                     if span > 1.0 {
-                        let min = (MIN_PANE / span).min(0.5);
+                        let lo = (min_first / span).min(0.5);
+                        let hi = (1. - min_second / span).max(lo);
                         store.update(cx, |s, cx| {
-                            s.resize_split(&path, (frac / span).clamp(min, 1. - min), cx);
+                            s.resize_split(&path, (frac / span).clamp(lo, hi), cx);
                         });
                     }
                 });
@@ -1941,6 +1951,29 @@ const DOCK_GUTTER: f32 = 6.0;
 /// Narrowest a split pane can be dragged to; pages lay out badly below it.
 const MIN_PANE: f32 = 220.0;
 
+/// The smallest extent a split subtree needs along one axis.
+fn min_extent(node: &SplitNode, horizontal: bool) -> f32 {
+    match node {
+        SplitNode::Leaf { .. } => MIN_PANE,
+        SplitNode::Split {
+            direction,
+            first,
+            second,
+            ..
+        } => {
+            let (a, b) = (
+                min_extent(first, horizontal),
+                min_extent(second, horizontal),
+            );
+            if (*direction == hifi_core::SplitDirection::Horizontal) == horizontal {
+                a + b + 6.
+            } else {
+                a.max(b)
+            }
+        }
+    }
+}
+
 /// Where the titlebar control cluster starts on macOS: past the traffic
 /// lights at {14,14} (cosmos `titlebar_cluster_start`).
 const TITLEBAR_CLUSTER_START: f32 = 88.0;
@@ -2103,9 +2136,9 @@ impl gpui::Render for Shell {
         });
 
         let content: AnyElement = match root_node {
-            Some(node) => {
+            Some(ref node) => {
                 let active = self.store.read(cx).active_tab_id();
-                self.render_node(&node, active.as_ref(), &[], window, cx)
+                self.render_node(node, active.as_ref(), &[], window, cx)
             }
             None => div()
                 .size_full()
@@ -2140,7 +2173,10 @@ impl gpui::Render for Shell {
         } else {
             sb_width
         };
-        let dock_max = (f32::from(window.viewport_size().width) - sidebar_now - 320.).max(280.);
+        let main_min = root_node
+            .as_ref()
+            .map_or(320., |n| min_extent(n, true).max(320.));
+        let dock_max = (f32::from(window.viewport_size().width) - sidebar_now - main_min).max(280.);
         let dock_width = dock_width.max(360.).min(dock_max);
         let mut root = div()
             .relative()
