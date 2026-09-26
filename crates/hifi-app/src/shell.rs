@@ -250,7 +250,9 @@ impl Shell {
                 WebEvent::Keystroke { combo } => {
                     let (key, _tab) = combo.rsplit_once('|').unwrap_or((&combo, ""));
                     if let Ok(ks) = gpui::Keystroke::parse(key) {
-                        window.dispatch_keystroke(ks, cx);
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_keystroke(ks, cx);
+                        });
                     }
                 }
                 WebEvent::NotesSave { tab, html } => {
@@ -894,16 +896,28 @@ impl Shell {
                 div().size_full().child(view).into_any()
             }
             TabKind::Diff => {
+                let project = self
+                    .store
+                    .read(cx)
+                    .state
+                    .spaces
+                    .iter()
+                    .flat_map(|s| &s.groups)
+                    .find(|g| g.id == tab.group_id)
+                    .map(|g| g.project_path.clone())
+                    .unwrap_or_default();
+                let path = [tab.cwd.clone(), project]
+                    .into_iter()
+                    .find(|p| !p.is_empty())
+                    .or_else(|| {
+                        std::env::current_dir()
+                            .ok()
+                            .map(|d| d.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_default();
                 let view = self.view_pane(
                     tab.id.clone(),
-                    |tab_id, w, cx| {
-                        let path = dirs::home_dir()
-                            .unwrap_or_default()
-                            .join("repos")
-                            .to_string_lossy()
-                            .into_owned();
-                        DiffView::new(path, tab_id, w, cx)
-                    },
+                    move |tab_id, w, cx| DiffView::new(path, tab_id, w, cx),
                     window,
                     cx,
                 );
@@ -2077,15 +2091,15 @@ impl gpui::Render for Shell {
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
-            .when(cfg!(target_os = "linux"), |root| {
-                root.capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, _| {
-                    for pane in this.panes.values() {
-                        if let Pane::Web(h) = pane {
-                            h.release_focus();
-                        }
+            .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, _| {
+                for pane in this.panes.values() {
+                    if let Pane::Web(h) = pane {
+                        h.release_focus();
                     }
-                }))
-                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, w, cx| {
+                }
+            }))
+            .when(cfg!(target_os = "linux"), |root| {
+                root.on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, w, cx| {
                     this.forward_key(&e.keystroke, true, w, cx);
                 }))
                 .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, w, cx| {
