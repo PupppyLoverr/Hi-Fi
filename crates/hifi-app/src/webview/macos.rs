@@ -31,23 +31,34 @@ use super::WebEvent;
 thread_local! {
     /// Set while a GPUI drag (split/dock/sidebar resize) is in flight.
     static DRAG_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// The current left press started on GPUI content rather than a page.
+    static PRESS_ON_GPUI: Cell<bool> = const { Cell::new(false) };
     static DRAG_MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
 }
 
-/// Route left-drag/up events straight to the GPUI view while a GPUI drag is
-/// active, so a native page under the cursor can never swallow them.
+/// Route left-drag/up events straight to the GPUI view while a press that
+/// began on GPUI content (or a GPUI drag) is in flight, so a native page
+/// under the cursor can never swallow them.
 fn install_drag_monitor(gpui_view: Retained<NSView>, mtm: MainThreadMarker) {
     if DRAG_MONITOR.with(|m| m.borrow().is_some()) {
         return;
     }
     let callback = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
         let e = unsafe { event.as_ref() };
-        if !DRAG_ACTIVE.with(Cell::get) || e.window(mtm) != gpui_view.window() {
+        if e.window(mtm) != gpui_view.window() {
+            return event.as_ptr();
+        }
+        if e.r#type() == objc2_app_kit::NSEventType::LeftMouseDown {
+            PRESS_ON_GPUI.with(|p| p.set(!press_hits_page(&gpui_view, e)));
+            return event.as_ptr();
+        }
+        if !DRAG_ACTIVE.with(Cell::get) && !PRESS_ON_GPUI.with(Cell::get) {
             return event.as_ptr();
         }
         unsafe {
             if e.r#type() == objc2_app_kit::NSEventType::LeftMouseUp {
                 DRAG_ACTIVE.with(|d| d.set(false));
+                PRESS_ON_GPUI.with(|p| p.set(false));
                 let _: () = msg_send![&*gpui_view, mouseUp: e];
             } else {
                 let _: () = msg_send![&*gpui_view, mouseDragged: e];
@@ -57,11 +68,27 @@ fn install_drag_monitor(gpui_view: Retained<NSView>, mtm: MainThreadMarker) {
     });
     let monitor = unsafe {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-            NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+            NSEventMask::LeftMouseDown | NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
             &callback,
         )
     };
     DRAG_MONITOR.with(|m| *m.borrow_mut() = monitor);
+}
+
+/// Whether AppKit will deliver this press to a native page.
+fn press_hits_page(gpui_view: &NSView, e: &NSEvent) -> bool {
+    let Some(sup) = (unsafe { gpui_view.superview() }) else {
+        return false;
+    };
+    let point = sup.convertPoint_fromView(e.locationInWindow(), None);
+    let mut hit = gpui_view.hitTest(point);
+    while let Some(view) = hit {
+        if view.isKindOfClass(class!(WKWebView)) {
+            return true;
+        }
+        hit = unsafe { view.superview() };
+    }
+    false
 }
 
 pub struct HostIvars {
