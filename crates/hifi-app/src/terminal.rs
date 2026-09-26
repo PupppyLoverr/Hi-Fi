@@ -74,12 +74,43 @@ pub enum TerminalEvent {
 
 impl gpui::EventEmitter<TerminalEvent> for TerminalPane {}
 
+/// Everything a TerminalPane needs that can be built off the view context —
+/// split out so callers can surface spawn errors instead of panicking
+/// inside `cx.new`.
+pub struct TermParts {
+    term: Arc<FairMutex<Term<Proxy>>>,
+    sender: alacritty_terminal::event_loop::EventLoopSender,
+    join: std::thread::JoinHandle<(EventLoop<Pty, Proxy>, alacritty_terminal::event_loop::State)>,
+    cell: Size<Pixels>,
+    cols: usize,
+    rows: usize,
+    rx: Receiver<TermEvent>,
+}
+
 impl TerminalPane {
-    pub fn spawn(
-        command: Option<&str>,
-        cwd: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<Self> {
+    /// Fallible half of `spawn` — no view context needed.
+    pub fn spawn_pty(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
+        Self::spawn_pty_inner(command, cwd)
+    }
+
+    /// View half of `spawn`.
+    pub fn from_parts(parts: TermParts, cx: &mut Context<Self>) -> Self {
+        Self {
+            term: parts.term,
+            sender: parts.sender,
+            _join: parts.join,
+            focus: cx.focus_handle(),
+            cell: parts.cell,
+            scroll: 0,
+            title: "Terminal".into(),
+            exit_status: None,
+            cols: parts.cols,
+            rows: parts.rows,
+            rx: PMutex::new(parts.rx),
+        }
+    }
+
+    fn spawn_pty_inner(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
         let dims = TermDims { cols: 120, rows: 30 };
         let (tx, rx) = mpsc::channel::<TermEvent>();
         let proxy = Proxy { tx: tx.clone() };
@@ -107,18 +138,14 @@ impl TerminalPane {
         let sender = event_loop.channel();
         let join = event_loop.spawn();
 
-        Ok(Self {
+        Ok(TermParts {
             term,
             sender,
-            _join: join,
-            focus: cx.focus_handle(),
+            join,
             cell: size(px(8.), px(16.)),
-            scroll: 0,
-            title: "Terminal".into(),
-            exit_status: None,
             cols: dims.cols,
             rows: dims.rows,
-            rx: PMutex::new(rx),
+            rx,
         })
     }
 

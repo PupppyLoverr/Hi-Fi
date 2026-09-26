@@ -39,6 +39,8 @@ pub enum WebEvent {
     NewTab { url: String },
     /// Keystroke swallowed while the webview had focus; re-dispatch in GPUI.
     Keystroke { combo: String },
+    /// Editor surface posted its body over `window.ipc` (wry ipc_handler).
+    NotesSave { tab: String, html: String },
     Error { tab: String, message: String },
 }
 
@@ -229,12 +231,13 @@ impl WebPaneHost {
         tab: String,
         url: &str,
         tx: Sender<WebEvent>,
+        ipc_enabled: bool,
     ) -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("must run on main thread")?;
 
         let new_tab_tx = tx.clone();
         let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
-        let web = wry::WebViewBuilder::new()
+        let mut builder = wry::WebViewBuilder::new()
             .with_webview_configuration(configuration)
             .with_visible(false)
             .with_focused(false)
@@ -242,7 +245,20 @@ impl WebPaneHost {
                 let _ = new_tab_tx.send(WebEvent::NewTab { url });
                 wry::NewWindowResponse::Deny
             })
-            .with_download_started_handler(|_, _| false)
+            .with_download_started_handler(|_, _| false);
+        if ipc_enabled {
+            // `window.ipc.postMessage(str)` → WebEvent::NotesSave (editor
+            // surfaces persist their body through this channel).
+            let ipc_tab = tab.clone();
+            let ipc_tx = tx.clone();
+            builder = builder.with_ipc_handler(move |req| {
+                let _ = ipc_tx.send(WebEvent::NotesSave {
+                    tab: ipc_tab.clone(),
+                    html: req.body().clone(),
+                });
+            });
+        }
+        let web = builder
             .build_as_child(window)
             .map_err(|e| e.to_string())?;
 
@@ -334,12 +350,18 @@ impl WebPaneHost {
                     combo.push_str("shift-");
                 }
                 combo.push_str(&key);
-                let browser_key = matches!(
+                let mut browser_key = matches!(
                     combo.as_str(),
                     "cmd-t" | "cmd-w" | "cmd-l" | "cmd-[" | "cmd-]" | "cmd-r" | "cmd-shift-r"
                         | "cmd-," | "cmd-f" | "cmd-b" | "cmd-shift-\\" | "ctrl-tab"
                         | "ctrl-shift-tab" | "cmd-shift-[" | "cmd-shift-]"
                 );
+                // Editing chords stay in the page on editor surfaces —
+                // contenteditable's native bold (cmd-b) beats the sidebar
+                // toggle there.
+                if ipc_enabled && combo == "cmd-b" {
+                    browser_key = false;
+                }
                 if browser_key && gpui::Keystroke::parse(&combo).is_ok() {
                     if monitor_tx
                         .send(WebEvent::Keystroke {
@@ -432,6 +454,11 @@ impl WebPaneHost {
     #[allow(dead_code)]
     pub fn focus_parent(&self) {
         let _ = self.web.focus_parent();
+    }
+
+    /// Replace the page with an HTML string (editor surfaces).
+    pub fn load_html(&self, html: &str) {
+        let _ = self.web.load_html(html);
     }
 
     pub fn load(&self, url: &str) {

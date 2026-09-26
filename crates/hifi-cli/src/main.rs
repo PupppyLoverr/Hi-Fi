@@ -47,6 +47,11 @@ enum Command {
     },
     /// Open a new window.
     Window,
+    /// Right-dock surfaces (cosmos right-pane).
+    Dock {
+        #[command(subcommand)]
+        command: DockCommand,
+    },
     /// Automation helpers (snapshot/click/type/screenshot).
     Browser {
         #[command(subcommand)]
@@ -121,6 +126,20 @@ enum SpaceCommand {
     List,
     Create { name: String },
     Switch { id: String },
+}
+
+#[derive(Subcommand)]
+enum DockCommand {
+    /// Open a surface in the dock (hifi://terminal|notes|diff or a URL).
+    Open { url: Option<String> },
+    /// Move an existing tab into the dock.
+    Tab { id: String },
+    /// Move a docked tab back into the split tree.
+    Undock { id: String },
+    /// Show/hide the dock.
+    Toggle,
+    /// List docked tabs (JSON).
+    List,
 }
 
 #[derive(Subcommand)]
@@ -204,6 +223,16 @@ fn main() -> Result<()> {
             json!({"branch": branch, "projectPath": project_path}),
         ),
         Command::Window => (methods::WINDOW_NEW, json!({})),
+        Command::Dock { command } => match command {
+            DockCommand::Open { url } => (
+                methods::DOCK_OPEN,
+                json!({"url": url.unwrap_or_else(|| "hifi://terminal".into())}),
+            ),
+            DockCommand::Tab { id } => (methods::DOCK_TAB, json!({"id": id})),
+            DockCommand::Undock { id } => (methods::DOCK_UNDOCK, json!({"id": id})),
+            DockCommand::Toggle => (methods::DOCK_TOGGLE, json!({})),
+            DockCommand::List => (methods::DOCK_LIST, json!({})),
+        },
         Command::Browser { command } => match command {
             BrowserCommand::Snapshot { id } => (methods::TAB_SNAPSHOT, json!({"id": id})),
             BrowserCommand::Click { id, target } => {

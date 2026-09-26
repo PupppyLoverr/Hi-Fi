@@ -21,6 +21,7 @@ pub enum TabKind {
     Diff,
     Preview,
     Settings,
+    Notes,
 }
 
 impl TabKind {
@@ -33,6 +34,7 @@ impl TabKind {
             Self::Diff => "diff",
             Self::Preview => "preview",
             Self::Settings => "settings",
+            Self::Notes => "notes",
         }
     }
 }
@@ -97,11 +99,12 @@ impl Tab {
     /// Sidebar label: Radius-style `Kind/Title` for pane tabs.
     pub fn display_title(&self) -> String {
         match self.kind {
-            TabKind::Web | TabKind::NewTab | TabKind::Settings => {
+            TabKind::Web | TabKind::NewTab | TabKind::Settings | TabKind::Notes => {
                 if self.title.is_empty() {
                     match self.kind {
                         TabKind::NewTab => "New Tab".into(),
                         TabKind::Settings => "Settings".into(),
+                        TabKind::Notes => "Notes".into(),
                         _ => host_of(&self.url),
                     }
                 } else {
@@ -208,20 +211,28 @@ impl SplitNode {
     }
 
     /// Split the leaf holding `anchor`, placing `new_tab` as its own leaf on
-    /// `side`. The anchor leaf keeps its whole stack.
-    pub fn split(&mut self, anchor: &TabId, new_tab: TabId, side: SplitSide) -> bool {
+    /// `side`. The anchor leaf keeps its whole stack. `new_fraction` is the
+    /// share of the region the NEW leaf takes (clamped to 5–95%).
+    pub fn split(
+        &mut self,
+        anchor: &TabId,
+        new_tab: TabId,
+        side: SplitSide,
+        new_fraction: f32,
+    ) -> bool {
         match self {
             Self::Leaf { tabs } if tabs.iter().any(|t| t == anchor) => {
                 let anchor_leaf = Self::Leaf { tabs: tabs.clone() };
                 let new_leaf = Self::Leaf { tabs: vec![new_tab] };
-                let (first, second) = if side.places_first() {
-                    (new_leaf, anchor_leaf)
+                let share = new_fraction.clamp(0.05, 0.95);
+                let (first, second, fraction) = if side.places_first() {
+                    (new_leaf, anchor_leaf, share)
                 } else {
-                    (anchor_leaf, new_leaf)
+                    (anchor_leaf, new_leaf, 1.0 - share)
                 };
                 *self = Self::Split {
                     direction: side.direction(),
-                    fraction: 0.5,
+                    fraction,
                     first: Box::new(first),
                     second: Box::new(second),
                 };
@@ -229,9 +240,27 @@ impl SplitNode {
             }
             Self::Leaf { .. } => false,
             Self::Split { first, second, .. } => {
-                first.split(anchor, new_tab.clone(), side)
-                    || second.split(anchor, new_tab, side)
+                first.split(anchor, new_tab.clone(), side, new_fraction)
+                    || second.split(anchor, new_tab, side, new_fraction)
             }
+        }
+    }
+
+    /// The fraction field of the Split node reached by `path`
+    /// (0 = descend into `first`, 1 = into `second`).
+    pub fn split_at_path<'a>(&'a mut self, path: &[u8]) -> Option<&'a mut f32> {
+        match self {
+            Self::Split {
+                fraction,
+                first,
+                second,
+                ..
+            } if path.is_empty() => Some(fraction),
+            Self::Split { first, second, .. } => match path[0] {
+                0 => first.split_at_path(&path[1..]),
+                _ => second.split_at_path(&path[1..]),
+            },
+            Self::Leaf { .. } => None,
         }
     }
 
@@ -276,6 +305,10 @@ pub struct Group {
     /// Root of the split tree. `None` when empty.
     #[serde(default)]
     pub root: Option<SplitNode>,
+    /// The cosmos-style right surface host: its own tab stack behind a chip
+    /// strip, hidden by default. Per-group like cosmos's per-session panes.
+    #[serde(default)]
+    pub dock: RightDock,
     /// The pane tab currently focused in this group.
     #[serde(default)]
     pub active_tab: Option<TabId>,
@@ -292,6 +325,7 @@ impl Group {
             color: String::new(),
             project_path: String::new(),
             root: None,
+            dock: RightDock::default(),
             active_tab: None,
             automation_granted: false,
         }
@@ -319,6 +353,38 @@ impl Group {
             }
         }
         self.active_tab = Some(tab_id);
+    }
+}
+
+/// Right surface dock — cosmos's RightPanelTabs model: a stack of surface
+/// tabs (terminal, notes, diff, …) rendered in a resizable right column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RightDock {
+    #[serde(default)]
+    pub open: bool,
+    /// Column width in px (clamped at layout to 360..viewport-300).
+    #[serde(default = "default_dock_width")]
+    pub width: f32,
+    /// Surface tab ids, chip order.
+    #[serde(default)]
+    pub tabs: Vec<TabId>,
+    #[serde(default)]
+    pub active: Option<TabId>,
+}
+
+fn default_dock_width() -> f32 {
+    460.0
+}
+
+impl Default for RightDock {
+    fn default() -> Self {
+        Self {
+            open: false,
+            width: default_dock_width(),
+            tabs: Vec::new(),
+            active: None,
+        }
     }
 }
 
@@ -375,6 +441,9 @@ pub struct Settings {
     pub background_dim: f32,
     #[serde(default)]
     pub compact_sidebar: bool,
+    /// Sidebar width in px (cosmos: 224–400, default 256).
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
     /// Restore the previous session on launch.
     #[serde(default = "default_true")]
     pub restore_session: bool,
@@ -389,6 +458,9 @@ fn default_blur() -> f32 {
 fn default_true() -> bool {
     true
 }
+fn default_sidebar_width() -> f32 {
+    256.0
+}
 fn default_search() -> String {
     "https://duckduckgo.com/?q={q}".into()
 }
@@ -402,6 +474,7 @@ impl Default for Settings {
             background_blur: default_blur(),
             background_dim: 0.0,
             compact_sidebar: false,
+            sidebar_width: default_sidebar_width(),
             restore_session: true,
             search_engine: default_search(),
         }

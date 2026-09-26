@@ -22,6 +22,8 @@ pub struct Store {
     pub command_bar_open: bool,
     pub find_bar_open: bool,
     pub sidebar_collapsed: bool,
+    /// The dock `+` surface picker popup.
+    pub dock_menu_open: bool,
     pub history: Vec<HistoryEntry>,
     /// Pending navigations the webview layer picks up (drained by WebPaneView).
     pub pending_navs: Vec<(TabId, String)>,
@@ -57,6 +59,7 @@ impl Store {
             command_bar_open: false,
             find_bar_open: false,
             sidebar_collapsed: false,
+            dock_menu_open: false,
             history: Vec::new(),
             pending_navs: Vec::new(),
             pending_reload: Vec::new(),
@@ -84,6 +87,19 @@ impl Store {
         split_anchor: Option<(TabId, SplitSide)>,
         cx: &mut Context<Self>,
     ) -> TabId {
+        self.open_tab_sized(url_or_kind, group_id, split_anchor, None, cx)
+    }
+
+    /// `split_share` = fraction of the region the new leaf takes (from
+    /// `--size 40%`); `None` = even split.
+    pub fn open_tab_sized(
+        &mut self,
+        url_or_kind: &str,
+        group_id: Option<GroupId>,
+        split_anchor: Option<(TabId, SplitSide)>,
+        split_share: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> TabId {
         let (kind, url) = match route(url_or_kind) {
             RoutedUrl::Internal(kind) => (kind, url_or_kind.to_string()),
             RoutedUrl::Preview(path) => (TabKind::Preview, path),
@@ -106,7 +122,7 @@ impl Store {
             match split_anchor {
                 Some((anchor, side)) => {
                     if let Some(root) = group.root.as_mut() {
-                        root.split(&anchor, id.clone(), side);
+                        root.split(&anchor, id.clone(), side, split_share.unwrap_or(0.5));
                     } else {
                         group.add_tab(id.clone());
                     }
@@ -137,6 +153,16 @@ impl Store {
                         .as_ref()
                         .and_then(|r| r.leaves().into_iter().next());
                 }
+                // Surface dock: drop the chip; auto-open closes with its last.
+                if group.dock.tabs.iter().any(|t| t == id) {
+                    group.dock.tabs.retain(|t| t != id);
+                    if group.dock.active.as_deref() == Some(id) {
+                        group.dock.active = group.dock.tabs.last().cloned();
+                    }
+                    if group.dock.tabs.is_empty() {
+                        group.dock.open = false;
+                    }
+                }
             }
         }
         self.save();
@@ -146,11 +172,179 @@ impl Store {
     pub fn focus_tab(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(tab) = self.state.tab(id) else { return };
         let gid = tab.group_id.clone();
+        // Docked tab: focus means activate its chip and open the dock.
+        if let Some(group) = self.state.group_mut(&gid)
+            && group.dock.tabs.iter().any(|t| t == id)
+        {
+            group.dock.active = Some(id.to_string());
+            group.dock.open = true;
+            self.save();
+            cx.notify();
+            return;
+        }
         if let Some(group) = self.state.group_mut(&gid) {
             group.active_tab = Some(id.to_string());
         }
         self.save();
         cx.notify();
+    }
+
+    // ----- right dock (cosmos RightPanelTabs) -----
+
+    /// The dock of the active group of the active space.
+    fn active_dock_mut(&mut self) -> Option<&mut hifi_core::RightDock> {
+        self.state
+            .active_space_mut()
+            .and_then(|s| {
+                let gid = s
+                    .active_group
+                    .clone()
+                    .or_else(|| s.groups.first().map(|g| g.id.clone()))?;
+                s.groups.iter_mut().find(|g| g.id == gid)
+            })
+            .map(|g| &mut g.dock)
+    }
+
+    pub fn toggle_dock(&mut self, cx: &mut Context<Self>) {
+        if let Some(d) = self.active_dock_mut() {
+            d.open = !d.open;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Open a surface tab in the dock and activate it. Reuses `open_tab`
+    /// routing so `hifi://terminal`, `hifi://notes`, URLs etc. all work.
+    pub fn dock_open(&mut self, url_or_kind: &str, cx: &mut Context<Self>) -> TabId {
+        // Create the tab outside the split tree — group_id points at the
+        // active group for ownership but membership is the dock stack.
+        let gid = self
+            .state
+            .active_space()
+            .and_then(|s| s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone())))
+            .unwrap_or_default();
+        let (kind, url) = match hifi_core::route(url_or_kind) {
+            RoutedUrl::Internal(kind) => (kind, url_or_kind.to_string()),
+            RoutedUrl::Preview(path) => (TabKind::Preview, path),
+            RoutedUrl::External(url) => (TabKind::Web, url),
+        };
+        let tab = Tab::new(kind, url, gid);
+        let id = tab.id.clone();
+        self.state.tabs.push(tab);
+        if let Some(d) = self.active_dock_mut() {
+            d.tabs.push(id.clone());
+            d.active = Some(id.clone());
+            d.open = true;
+        }
+        self.save();
+        cx.notify();
+        id
+    }
+
+    /// Move an existing tab out of the split tree into the dock.
+    pub fn dock_tab(&mut self, id: &str, cx: &mut Context<Self>) {
+        for space in &mut self.state.spaces {
+            for group in &mut space.groups {
+                if let Some(root) = &mut group.root {
+                    root.remove(&id.to_string());
+                    if root.leaves().is_empty() {
+                        group.root = None;
+                    }
+                }
+                if group.active_tab.as_deref() == Some(id) {
+                    group.active_tab = group
+                        .root
+                        .as_ref()
+                        .and_then(|r| r.leaves().into_iter().next());
+                }
+            }
+        }
+        if let Some(d) = self.active_dock_mut()
+            && !d.tabs.iter().any(|t| t == id)
+        {
+            d.tabs.push(id.to_string());
+            d.active = Some(id.to_string());
+            d.open = true;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Move a docked tab back into the active group's split tree.
+    pub fn undock_tab(&mut self, id: &str, cx: &mut Context<Self>) {
+        let gid = self
+            .state
+            .active_space()
+            .and_then(|s| s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone())))
+            .unwrap_or_default();
+        if let Some(d) = self.active_dock_mut() {
+            d.tabs.retain(|t| t != id);
+            if d.active.as_deref() == Some(id) {
+                d.active = d.tabs.last().cloned();
+            }
+            if d.tabs.is_empty() {
+                d.open = false;
+            }
+        }
+        if let Some(group) = self.state.group_mut(&gid) {
+            group.add_tab(id.to_string());
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn dock_focus(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(d) = self.active_dock_mut() {
+            d.active = Some(id.to_string());
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn dock_set_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if let Some(d) = self.active_dock_mut() {
+            d.width = width;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.state.settings.sidebar_width = width.clamp(224., 400.);
+        self.save();
+        cx.notify();
+    }
+
+    /// Live-resize a split node addressed by `path` (0 = first, 1 = second).
+    pub fn resize_split(&mut self, path: &[u8], fraction: f32, cx: &mut Context<Self>) {
+        if let Some(space) = self.state.active_space_mut() {
+            let gid = space
+                .active_group
+                .clone()
+                .or_else(|| space.groups.first().map(|g| g.id.clone()));
+            if let Some(group) = gid.and_then(|gid| space.groups.iter_mut().find(|g| g.id == gid))
+                && let Some(root) = &mut group.root
+                && let Some(f) = root.split_at_path(path)
+            {
+                *f = fraction.clamp(0.05, 0.95);
+            }
+        }
+        self.save();
+        cx.notify();
+    }
+
+    // ----- notes surface -----
+
+    /// Body HTML of a notes tab, persisted one file per tab id.
+    pub fn notes_body(&self, tab_id: &str) -> String {
+        std::fs::read_to_string(self.paths.notes_dir().join(format!("{tab_id}.html")))
+            .unwrap_or_default()
+    }
+
+    pub fn notes_save(&mut self, tab_id: &str, html: &str) {
+        let dir = self.paths.notes_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("{tab_id}.html")), html);
     }
 
     pub fn set_active_group(&mut self, id: &str, cx: &mut Context<Self>) {

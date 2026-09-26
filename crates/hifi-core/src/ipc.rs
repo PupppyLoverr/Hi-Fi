@@ -69,6 +69,11 @@ pub mod methods {
     pub const SPLIT_SET: &str = "split.set";
     pub const WINDOW_NEW: &str = "window.new";
     pub const BROWSER_USE: &str = "browser.use";
+    pub const DOCK_OPEN: &str = "dock.open";
+    pub const DOCK_TAB: &str = "dock.tab";
+    pub const DOCK_UNDOCK: &str = "dock.undock";
+    pub const DOCK_TOGGLE: &str = "dock.toggle";
+    pub const DOCK_LIST: &str = "dock.list";
 }
 
 #[cfg(unix)]

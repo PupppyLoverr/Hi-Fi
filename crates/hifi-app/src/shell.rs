@@ -15,6 +15,7 @@ use crate::command_bar::CommandBar;
 use crate::sidebar::{Sidebar, mark_icon};
 use crate::store::Store;
 use crate::terminal::TerminalPane;
+use crate::text_input::{TextField, TextFieldEvent};
 use crate::theme::{Theme, radius};
 use crate::views::{DiffView, NewTabView, PreviewView, SettingsView, glyph};
 use crate::webview::{WebEvent, WebPaneHost};
@@ -24,6 +25,26 @@ pub enum Pane {
     Web(Rc<WebPaneHost>),
     Term(Entity<TerminalPane>),
     View(gpui::AnyView),
+}
+
+/// Drag marker for the left sidebar resize handle (cosmos's resize idiom:
+/// a marker drag on the handle, `on_drag_move` on the row it sits in).
+struct SidebarResize;
+/// Drag marker for the right dock resize handle.
+struct DockResize;
+/// Drag marker for a split divider — `path` addresses the Split node
+/// (0 = into `first`, 1 = into `second`).
+struct SplitDrag {
+    path: Vec<u8>,
+    horizontal: bool,
+}
+
+/// The empty drag preview — a 1px chip; the live resize is the feedback.
+struct DragGhost;
+impl gpui::Render for DragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(1.))
+    }
 }
 
 /// One in-flight IPC request waiting on the UI.
@@ -37,6 +58,10 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     command_bar: Entity<CommandBar>,
     panes: HashMap<TabId, Pane>,
+    /// Webview hosts that failed to spawn (error shown instead of a pane).
+    pane_errors: HashMap<TabId, String>,
+    /// Find-bar input, created on first ⌘F.
+    find_input: Option<Entity<TextField>>,
     /// WebEvent source; drained each render.
     web_rx: Receiver<WebEvent>,
     web_tx: Sender<WebEvent>,
@@ -52,6 +77,21 @@ impl Shell {
     ) -> Self {
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), cx));
         let command_bar = cx.new(|cx| CommandBar::new(store.clone(), cx));
+        let find_input = cx.new(|cx| TextField::new("Find in page\u{2026}", cx));
+        cx.subscribe(&find_input, |this, input, event, cx| match event {
+            TextFieldEvent::Changed | TextFieldEvent::Submitted(_) => {
+                let q = input.read(cx).value().to_string();
+                this.find_in_page(&q, cx);
+            }
+            TextFieldEvent::Escaped => {
+                this.find_in_page("", cx);
+                this.store.update(cx, |s, cx| {
+                    s.find_bar_open = false;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         let (web_tx, web_rx) = channel::<WebEvent>();
         // Drive the pump even when nothing repaints: webview events and IPC
         // requests arrive off-thread and must not wait for a render.
@@ -72,10 +112,46 @@ impl Shell {
             sidebar,
             command_bar,
             panes: HashMap::new(),
+            pane_errors: HashMap::new(),
+            find_input: Some(find_input),
             web_rx,
             web_tx,
             ipc_rx,
         }
+    }
+
+    /// Run `window.find` on the surface that should be searched: the dock's
+    /// active tab when the dock is open, else the group's active tab.
+    fn find_in_page(&self, query: &str, cx: &App) {
+        let target = {
+            let s = self.store.read(cx);
+            let docked = s
+                .state
+                .active_space()
+                .and_then(|sp| {
+                    let gid = sp
+                        .active_group
+                        .clone()
+                        .or_else(|| sp.groups.first().map(|g| g.id.clone()))?;
+                    sp.groups.iter().find(|g| g.id == gid)
+                })
+                .and_then(|g| {
+                    (g.dock.open && g.dock.active.is_some())
+                        .then(|| g.dock.active.clone().unwrap())
+                });
+            docked.or_else(|| s.active_tab_id())
+        };
+        let Some(id) = target else { return };
+        let Some(Pane::Web(h)) = self.panes.get(&id) else {
+            return;
+        };
+        let q = serde_json::to_string(query).unwrap_or_else(|_| "\"\"".into());
+        let js = if query.is_empty() {
+            "window.getSelection().removeAllRanges()".to_string()
+        } else {
+            format!("window.find({q}, false, false, true)")
+        };
+        h.eval(js, |_| {});
     }
 
     /// Drain webview + IPC events. Called at the top of render — mutations
@@ -120,6 +196,9 @@ impl Shell {
                         window.dispatch_keystroke(ks, cx);
                     }
                 }
+                WebEvent::NotesSave { tab, html } => {
+                    self.store.update(cx, |s, _| s.notes_save(&tab, &html));
+                }
                 WebEvent::Error { tab, message } => {
                     self.store.update(cx, |s, cx| {
                         s.tab_meta_update(&tab, Some(format!("⚠ {message}")), None, Some(false), None, None, cx);
@@ -132,6 +211,7 @@ impl Shell {
         }
 
         // Apply queued nav ops to live web hosts.
+        let is_dark = Theme::of(cx).palette.is_dark;
         let (navs, reloads, backs, forwards) = self.store.update(cx, |s, _| {
             (
                 std::mem::take(&mut s.pending_navs),
@@ -145,8 +225,9 @@ impl Shell {
                 Some(Pane::Web(h)) => h.load(&url),
                 _ => {
                     // View/terminal pane becoming a web tab: replace with a host.
-                    if let Some(tab) = self.store.read(cx).state.tab(&id).cloned() {
-                        let host = self.web_host(&tab, window);
+                    if let Some(tab) = self.store.read(cx).state.tab(&id).cloned()
+                        && let Some(host) = self.web_host(&tab, is_dark, window, cx)
+                    {
                         host.load(&url);
                     }
                 }
@@ -245,15 +326,52 @@ impl Shell {
         }
     }
 
-    fn web_host(&mut self, tab: &hifi_core::Tab, window: &mut Window) -> Rc<WebPaneHost> {
-        if let Some(Pane::Web(h)) = self.panes.get(&tab.id) {
-            return h.clone();
+    fn web_host(
+        &mut self,
+        tab: &hifi_core::Tab,
+        is_dark: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Rc<WebPaneHost>> {
+        match self.panes.entry(tab.id.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                if let Pane::Web(h) = e.get() {
+                    return Some(h.clone());
+                }
+                // Pane kind changed under the id (e.g. view → web): rebuild.
+                e.remove();
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {}
         }
-        let host = WebPaneHost::new(window, tab.id.clone(), &tab.url, self.web_tx.clone())
-            .expect("webview");
-        let host = Rc::new(host);
-        self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
-        host
+        let ipc = matches!(tab.kind, TabKind::Notes);
+        // hifi:// urls never reach the network — the nav delegate would
+        // cancel them into WebEvent::Url and open a duplicate tab.
+        let load_url = if tab.url.starts_with("hifi://") {
+            ""
+        } else {
+            &tab.url
+        };
+        match WebPaneHost::new(
+            window,
+            tab.id.clone(),
+            load_url,
+            self.web_tx.clone(),
+            ipc,
+        ) {
+            Ok(host) => {
+                let host = Rc::new(host);
+                if tab.kind == TabKind::Notes {
+                    let body = self.store.read(cx).notes_body(&tab.id);
+                    host.load_html(&crate::notes::editor_html(&body, is_dark));
+                }
+                self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
+                Some(host)
+            }
+            Err(e) => {
+                self.pane_errors.insert(tab.id.clone(), e);
+                None
+            }
+        }
     }
 
     fn handle_ipc(&mut self, job: IpcJob, _window: &mut Window, cx: &mut Context<Self>) {
@@ -270,7 +388,13 @@ impl Shell {
                 let kind = get("kind");
                 let command = get("command");
                 let project_path = get("projectPath");
-                let size = get("size");
+                // "40%" → 0.40, "0.4" → 0.40 ��� the new leaf's share.
+                let size = get("size").and_then(|s| {
+                    let s = s.trim().trim_end_matches('%');
+                    s.parse::<f32>().ok().map(|v| {
+                        if v > 1.0 { v / 100.0 } else { v }
+                    })
+                });
                 let anchor = [("rightOf", hifi_core::SplitSide::Right), ("leftOf", hifi_core::SplitSide::Left), ("above", hifi_core::SplitSide::Above), ("below", hifi_core::SplitSide::Below)]
                     .iter()
                     .find_map(|(k, side)| get(k).map(|a| (a, *side)));
@@ -280,7 +404,7 @@ impl Shell {
                     url
                 };
                 Ok(self.store.update(cx, |s, cx| {
-                    let id = s.open_tab(&target_url, group, anchor, cx);
+                    let id = s.open_tab_sized(&target_url, group, anchor, size, cx);
                     if let Some(t) = s.state.tab_mut(&id) {
                         if let Some(c) = &command {
                             t.command = c.clone();
@@ -289,9 +413,52 @@ impl Shell {
                             t.cwd = pp.clone();
                         }
                     }
-                    let _ = size;
                     json!({"id": id})
                 }))
+            }
+            m::DOCK_OPEN => {
+                let url = get("url").unwrap_or_else(|| "hifi://terminal".into());
+                let id = self.store.update(cx, |s, cx| s.dock_open(&url, cx));
+                Ok(json!({"id": id}))
+            }
+            m::DOCK_TAB => {
+                if let Some(id) = get("id") {
+                    self.store.update(cx, |s, cx| s.dock_tab(&id, cx));
+                    Ok(json!({"docked": id}))
+                } else {
+                    Err("id required".into())
+                }
+            }
+            m::DOCK_UNDOCK => {
+                if let Some(id) = get("id") {
+                    self.store.update(cx, |s, cx| s.undock_tab(&id, cx));
+                    Ok(json!({"undocked": id}))
+                } else {
+                    Err("id required".into())
+                }
+            }
+            m::DOCK_TOGGLE => {
+                self.store.update(cx, |s, cx| s.toggle_dock(cx));
+                Ok(json!({"ok": true}))
+            }
+            m::DOCK_LIST => {
+                let dock: serde_json::Value = self
+                    .store
+                    .read(cx)
+                    .state
+                    .active_space()
+                    .and_then(|s| {
+                        let gid = s.active_group.clone().or_else(|| {
+                            s.groups.first().map(|g| g.id.clone())
+                        })?;
+                        s.groups.iter().find(|g| g.id == gid)
+                    })
+                    .map(|g| {
+                        json!({"open": g.dock.open, "width": g.dock.width,
+                               "active": g.dock.active, "tabs": g.dock.tabs})
+                    })
+                    .unwrap_or_else(|| json!({"open": false, "tabs": []}));
+                Ok(dock)
             }
             m::TAB_CLOSE => {
                 if let Some(id) = get("id") {
@@ -431,48 +598,63 @@ impl Shell {
 
     // ----- layout -----
 
-    fn render_leaf(
+    /// A webview canvas bound to `host` — syncs the native clip to the
+    /// painted bounds each frame. Shared by leaves and the dock.
+    fn web_canvas(host: &Rc<WebPaneHost>) -> gpui::Canvas<()> {
+        let host = host.clone();
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _cx| {
+                let host = Rc::downgrade(&host);
+                window.on_present(move || {
+                    if let Some(host) = host.upgrade() {
+                        host.sync_bounds(bounds, true);
+                    }
+                });
+            },
+        )
+    }
+
+    /// The kind-specific body of a pane (no header, no card). Shared by the
+    /// split leaves and the right dock surface.
+    fn pane_body(
         &mut self,
-        tab_id: &TabId,
-        focused: bool,
+        tab: &hifi_core::Tab,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(tab) = self.store.read(cx).state.tab(tab_id).cloned() else {
-            return div().into_any();
-        };
         let p = Theme::of(cx).palette;
-
-        let header = self.pane_header(&tab, cx);
-
-        let body: AnyElement = match tab.kind {
-            TabKind::Web => {
-                let host = self.web_host(&tab, window);
-                div()
-                    .size_full()
-                    .relative()
-                    .child(
-                        gpui::canvas(
-                            |_, _, _| (),
-                            move |bounds, _, window, _cx| {
-                                let host = Rc::downgrade(&host);
-                                window.on_present(move || {
-                                    if let Some(host) = host.upgrade() {
-                                        host.sync_bounds(bounds, true);
-                                    }
-                                });
-                            },
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .into_any()
+        match tab.kind {
+            TabKind::Web | TabKind::Notes => {
+                match self.web_host(tab, p.is_dark, window, cx) {
+                    Some(host) => div()
+                        .size_full()
+                        .relative()
+                        .child(Self::web_canvas(&host).absolute().inset_0())
+                        .into_any(),
+                    None => {
+                        let err = self
+                            .pane_errors
+                            .get(&tab.id)
+                            .cloned()
+                            .unwrap_or_else(|| "webview failed".into());
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(p.danger)
+                            .text_size(px(12.))
+                            .child(format!("⚠ {err}"))
+                            .into_any()
+                    }
+                }
             }
             TabKind::Terminal | TabKind::Agent => {
                 let view = match self.panes.entry(tab.id.clone()) {
                     std::collections::hash_map::Entry::Occupied(e) => match e.get() {
-                        Pane::Term(v) => v.clone(),
-                        _ => unreachable!(),
+                        Pane::Term(v) => Some(v.clone()),
+                        _ => None,
                     },
                     std::collections::hash_map::Entry::Vacant(e) => {
                         let cmd = if tab.kind == TabKind::Agent {
@@ -485,15 +667,37 @@ impl Shell {
                             (!tab.command.is_empty()).then(|| tab.command.clone())
                         };
                         let cwd = (!tab.cwd.is_empty()).then(|| tab.cwd.clone());
-                        let v = cx.new(|cx| {
-                            TerminalPane::spawn(cmd.as_deref(), cwd.as_deref(), cx)
-                                .expect("pty")
-                        });
-                        e.insert(Pane::Term(v.clone()));
-                        v
+                        match TerminalPane::spawn_pty(cmd.as_deref(), cwd.as_deref()) {
+                            Ok(parts) => {
+                                let v = cx.new(|cx| TerminalPane::from_parts(parts, cx));
+                                e.insert(Pane::Term(v.clone()));
+                                Some(v)
+                            }
+                            Err(err) => {
+                                self.pane_errors.insert(tab.id.clone(), err.to_string());
+                                None
+                            }
+                        }
                     }
                 };
-                div().size_full().child(view).into_any()
+                match view {
+                    Some(v) => div().size_full().child(v).into_any(),
+                    None => div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(p.danger)
+                        .text_size(px(12.))
+                        .child(format!(
+                            "⚠ {}",
+                            self.pane_errors
+                                .get(&tab.id)
+                                .cloned()
+                                .unwrap_or_else(|| "pty failed".into())
+                        ))
+                        .into_any(),
+                }
             }
             TabKind::NewTab => {
                 let store = self.store.clone();
@@ -522,7 +726,23 @@ impl Shell {
                 }, window, cx);
                 div().size_full().child(view).into_any()
             }
+        }
+    }
+
+    fn render_leaf(
+        &mut self,
+        tab_id: &TabId,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(tab) = self.store.read(cx).state.tab(tab_id).cloned() else {
+            return div().into_any();
         };
+        let p = Theme::of(cx).palette;
+
+        let header = self.pane_header(&tab, false, cx);
+        let body = self.pane_body(&tab, window, cx);
 
         let focused_border = if focused {
             p.border_strong
@@ -553,7 +773,12 @@ impl Shell {
     }
 
     /// One row of Radius-style chrome above every pane.
-    fn pane_header(&mut self, tab: &hifi_core::Tab, cx: &mut Context<Self>) -> AnyElement {
+    fn pane_header(
+        &mut self,
+        tab: &hifi_core::Tab,
+        docked: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store = self.store.clone();
         let id = tab.id.clone();
@@ -569,6 +794,7 @@ impl Shell {
             TabKind::Diff => icons::GIT_BRANCH,
             TabKind::Preview => icons::EYE,
             TabKind::Settings => icons::SETTINGS,
+            TabKind::Notes => icons::PEN_NEW_SQUARE,
         };
 
         let mut left = div().flex().items_center().gap(px(6.));
@@ -642,9 +868,9 @@ impl Shell {
                     }),
             );
 
-        // Actions: split right, split below, pin, close.
+        // Actions: split right, split below, dock/undock, pin, close.
         header = header
-            .child(header_btn("split-r", icons::SPLIT_COLUMNS, true, p, {
+            .child(header_btn("split-r", icons::SPLIT_COLUMNS, !docked, p, {
                 let store = store.clone();
                 move |_, cx| {
                     store.update(cx, |s, cx| {
@@ -657,7 +883,7 @@ impl Shell {
                     });
                 }
             }))
-            .child(header_btn("split-b", icons::FOLD_VERTICAL, true, p, {
+            .child(header_btn("split-b", icons::FOLD_VERTICAL, !docked, p, {
                 let store = store.clone();
                 move |_, cx| {
                     store.update(cx, |s, cx| {
@@ -670,6 +896,29 @@ impl Shell {
                     });
                 }
             }))
+            .child(header_btn(
+                "dock-move",
+                if docked {
+                    icons::SIDEBAR_LEFT
+                } else {
+                    icons::SIDEBAR_RIGHT
+                },
+                true,
+                p,
+                {
+                    let store = store.clone();
+                    let id5 = id5.clone();
+                    move |_, cx| {
+                        store.update(cx, |s, cx| {
+                            if docked {
+                                s.undock_tab(&id5, cx)
+                            } else {
+                                s.dock_tab(&id5, cx)
+                            }
+                        });
+                    }
+                },
+            ))
             .child(header_btn("pin", icons::PIN, true, p, {
                 let store = store.clone();
                 move |_, cx| {
@@ -682,7 +931,6 @@ impl Shell {
                     store.update(cx, |s, cx| s.close_tab(&id4, cx));
                 }
             }));
-        let _ = id5;
         header.into_any()
     }
 
@@ -695,22 +943,30 @@ impl Shell {
     ) -> gpui::AnyView {
         match self.panes.entry(id.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => match e.get() {
-                Pane::View(v) => v.clone(),
-                _ => unreachable!(),
+                Pane::View(v) => return v.clone(),
+                // Kind changed under this id — rebuild below.
+                _ => {
+                    e.remove();
+                }
             },
             std::collections::hash_map::Entry::Vacant(e) => {
-                let v: gpui::AnyView = cx.new(|cx| make(id, window, cx)).into();
+                let v: gpui::AnyView = cx.new(|cx| make(id.clone(), window, cx)).into();
                 e.insert(Pane::View(v.clone()));
-                v
+                return v;
             }
         }
+        let v: gpui::AnyView = cx.new(|cx| make(id.clone(), window, cx)).into();
+        self.panes.insert(id, Pane::View(v.clone()));
+        v
     }
 
-    /// Render a split node into nested flexes.
+    /// Render a split node into nested flexes. `path` addresses this node in
+    /// the tree (0 = into `first`, 1 = into `second`) for the divider drags.
     fn render_node(
         &mut self,
         node: &SplitNode,
         active: Option<&TabId>,
+        path: &[u8],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -743,40 +999,365 @@ impl Shell {
                 second,
             } => {
                 let f = *fraction;
-                let first_el = self.render_node(first, active, window, cx);
-                let second_el = self.render_node(second, active, window, cx);
+                let horizontal = *direction == hifi_core::SplitDirection::Horizontal;
+                let mut p1 = path.to_vec();
+                p1.push(0);
+                let mut p2 = path.to_vec();
+                p2.push(1);
+                let first_el = self.render_node(first, active, &p1, window, cx);
+                let second_el = self.render_node(second, active, &p2, window, cx);
+
+                // Draggable divider, cosmos's marker + on_drag_move idiom.
+                let store = self.store.clone();
+                let my_path = path.to_vec();
+                let handle_id: SharedString =
+                    format!("split:{}", my_path.iter().map(u8::to_string).collect::<Vec<_>>().join("."))
+                        .into();
+                let handle = div()
+                    .id(handle_id)
+                    .flex_none()
+                    .when(horizontal, |d| {
+                        d.w(px(5.)).h_full().cursor_col_resize()
+                    })
+                    .when(!horizontal, |d| {
+                        d.h(px(5.)).w_full().cursor_row_resize()
+                    })
+                    .occlude()
+                    .on_drag(
+                        SplitDrag {
+                            path: my_path.clone(),
+                            horizontal,
+                        },
+                        |_, _point, _, cx| {
+                            cx.stop_propagation();
+                            cx.new(|_| DragGhost)
+                        },
+                    );
+
                 let mut row = div()
+                    .id(SharedString::from(format!(
+                        "splitrow:{}",
+                        my_path.iter().map(u8::to_string).collect::<Vec<_>>().join(".")
+                    )))
                     .flex()
                     .size_full()
-                    .gap(px(4.))
                     .min_h(px(0.))
                     .min_w(px(0.));
-                row = if *direction == hifi_core::SplitDirection::Horizontal {
-                    row.flex_row()
-                } else {
-                    row.flex_col()
-                };
-                return row
-                    .child(
-                        div()
-                            .flex_basis(relative(f))
-                            .flex_grow(1.)
-                            .min_h(px(0.))
-                            .min_w(px(0.))
-                            .flex()
-                            .child(first_el),
-                    )
-                    .child(
-                        div()
-                            .flex_basis(relative(1. - f))
-                            .flex_grow(1.)
-                            .min_h(px(0.))
-                            .min_w(px(0.))
-                            .flex()
-                            .child(second_el),
-                    )
-                    .into_any();
+                row = if horizontal { row.flex_row() } else { row.flex_col() };
+                row = row.on_drag_move::<SplitDrag>(move |event, _window, cx| {
+                    let (path, horizontal) = {
+                        let drag = event.drag(cx);
+                        (drag.path.clone(), drag.horizontal)
+                    };
+                    let bounds = event.bounds;
+                    let pos = event.event.position;
+                    let (frac, span) = if horizontal {
+                        (
+                            f32::from(pos.x - bounds.left()),
+                            f32::from(bounds.size.width),
+                        )
+                    } else {
+                        (
+                            f32::from(pos.y - bounds.top()),
+                            f32::from(bounds.size.height),
+                        )
+                    };
+                    if span > 1.0 {
+                        store.update(cx, |s, cx| {
+                            s.resize_split(&path, frac / span, cx);
+                        });
+                    }
+                });
+                row.child(
+                    div()
+                        .flex_basis(relative(f))
+                        .flex_grow(1.)
+                        .min_h(px(0.))
+                        .min_w(px(0.))
+                        .flex()
+                        .child(first_el),
+                )
+                .child(handle)
+                .child(
+                    div()
+                        .flex_basis(relative(1. - f))
+                        .flex_grow(1.)
+                        .min_h(px(0.))
+                        .min_w(px(0.))
+                        .flex()
+                        .child(second_el),
+                )
+                .into_any()
             }
+        }
+    }
+
+    /// The cosmos-style right surface host: a chip strip (icon · title · ×,
+    /// plus a `+` picker) over the active surface. Surfaces are regular tabs
+    /// kept in `group.dock` instead of the split tree.
+    fn render_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let store_e = self.store.clone();
+        let (width, tabs, active) = self
+            .store
+            .read(cx)
+            .state
+            .active_space()
+            .and_then(|s| {
+                let gid = s
+                    .active_group
+                    .clone()
+                    .or_else(|| s.groups.first().map(|g| g.id.clone()))?;
+                s.groups
+                    .iter()
+                    .find(|g| g.id == gid)
+                    .map(|g| (g.dock.width, g.dock.tabs.clone(), g.dock.active.clone()))
+            })
+            .unwrap_or((460., vec![], None));
+        let width = width.max(360.);
+
+        // ----- chip strip -----
+        let mut strip = div()
+            .h(px(30.))
+            .px(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .border_b_1()
+            .border_color(p.border)
+            .overflow_hidden();
+        for id in &tabs {
+            let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
+                continue;
+            };
+            let is_active = active.as_deref() == Some(id.as_str());
+            let cid: SharedString = format!("dockchip:{id}").into();
+            let kind_icon = Self::kind_icon(&tab);
+            let title = tab.display_title();
+            let store_c = store_e.clone();
+            let id_c = id.clone();
+            let store_x = store_e.clone();
+            let id_x = id.clone();
+            strip = strip.child(
+                div()
+                    .id(cid)
+                    .h(px(24.))
+                    .w(px(112.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .px(px(7.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(is_active, |d| d.bg(p.raised))
+                    .when(!is_active, |d| {
+                        d.hover(|s| s.bg(p.raised.opacity(0.5)))
+                    })
+                    .child(glyph(kind_icon, 12., if is_active { p.accent } else { p.faint }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(11.))
+                            .text_color(if is_active { p.text } else { p.muted })
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("dockchip-x:{id}")))
+                            .size(px(14.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .hover(|s| s.bg(p.faint.opacity(0.2)))
+                            .child(glyph(icons::CLOSE, 9., p.faint))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                store_x.update(cx, |s, cx| s.close_tab(&id_x, cx));
+                            }),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        store_c.update(cx, |s, cx| s.dock_focus(&id_c, cx));
+                    }),
+            );
+        }
+        // "+" picker — toggles the surface menu.
+        let store_p = store_e.clone();
+        strip = strip.child(
+            div()
+                .id("dock-plus")
+                .size(px(24.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|s| s.bg(p.raised.opacity(0.5)))
+                .child(glyph(icons::PLUS, 13., p.muted))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    store_p.update(cx, |s, cx| {
+                        s.dock_menu_open = !s.dock_menu_open;
+                        cx.notify();
+                    });
+                }),
+        );
+
+        // ----- surface body -----
+        let body: AnyElement = match active
+            .as_ref()
+            .and_then(|id| self.store.read(cx).state.tab(id).cloned())
+        {
+            Some(tab) => {
+                let header = self.pane_header(&tab, true, cx);
+                let body = self.pane_body(&tab, window, cx);
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(div().flex_1().min_h(px(0.)).child(body))
+                    .into_any()
+            }
+            None => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(p.faint)
+                .text_size(px(12.))
+                .child("No surface — press +")
+                .into_any(),
+        };
+
+        // ----- the "+" surface picker (deferred so it floats over panes) -----
+        let menu: Option<AnyElement> = self
+            .store
+            .read(cx)
+            .dock_menu_open
+            .then(|| self.render_dock_menu(cx));
+
+        div()
+            .h_full()
+            .w(px(width))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_l_1()
+            .border_color(p.border)
+            .bg(p.shell.opacity(0.55))
+            .child(strip)
+            .child(body)
+            .when_some(menu, |d, m| d.child(m))
+            .into_any()
+    }
+
+    /// The `+` menu: open a fresh surface in the dock, or move the active
+    /// leaf tab over — mirrors cosmos's right-pane picker.
+    fn render_dock_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let store = self.store.clone();
+        let active = self.store.read(cx).active_tab_id();
+
+        let item = |id: &'static str,
+                    icon: &'static str,
+                    label: &'static str,
+                    on: Box<dyn Fn(&mut App)>| {
+            div()
+                .id(SharedString::from(id))
+                .h(px(28.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|s| s.bg(p.raised))
+                .child(glyph(icon, 13., p.faint))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(p.text)
+                        .child(label),
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| on(cx))
+        };
+
+        let mut col = div()
+            .w(px(190.))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .rounded(px(10.))
+            .bg(p.card)
+            .border_1()
+            .border_color(p.border)
+            .child(item("dm-term", icons::TERMINAL, "Terminal", {
+                let store = store.clone();
+                Box::new(move |cx| {
+                    store.update(cx, |s, cx| {
+                        s.dock_menu_open = false;
+                        s.dock_open("hifi://terminal", cx);
+                    });
+                })
+            }))
+            .child(item("dm-notes", icons::PEN_NEW_SQUARE, "Notes", {
+                let store = store.clone();
+                Box::new(move |cx| {
+                    store.update(cx, |s, cx| {
+                        s.dock_menu_open = false;
+                        s.dock_open("hifi://notes", cx);
+                    });
+                })
+            }))
+            .child(item("dm-diff", icons::GIT_BRANCH, "Git Diff", {
+                let store = store.clone();
+                Box::new(move |cx| {
+                    store.update(cx, |s, cx| {
+                        s.dock_menu_open = false;
+                        s.dock_open("hifi://diff", cx);
+                    });
+                })
+            }));
+        if let Some(id) = active {
+            let store = store.clone();
+            col = col
+                .child(div().h(px(1.)).my(px(3.)).bg(p.border))
+                .child(item("dm-move", icons::SIDEBAR_RIGHT, "Move active tab", {
+                    Box::new(move |cx| {
+                        store.update(cx, |s, cx| {
+                            s.dock_menu_open = false;
+                            s.dock_tab(&id, cx);
+                        });
+                    })
+                }));
+        }
+        deferred(
+            div()
+                .absolute()
+                .top(px(32.))
+                .right(px(6.))
+                .child(col),
+        )
+        .into_any()
+    }
+
+    fn kind_icon(tab: &hifi_core::Tab) -> &'static str {
+        match tab.kind {
+            TabKind::Web => icons::GLOBE,
+            TabKind::NewTab => icons::HOME,
+            TabKind::Terminal | TabKind::Agent => mark_icon(&tab.command),
+            TabKind::Diff => icons::GIT_BRANCH,
+            TabKind::Preview => icons::EYE,
+            TabKind::Settings => icons::SETTINGS,
+            TabKind::Notes => icons::PEN_NEW_SQUARE,
         }
     }
 
@@ -935,19 +1516,34 @@ impl gpui::Render for Shell {
         let p = Theme::of(cx).palette;
         let collapsed = self.store.read(cx).sidebar_collapsed;
 
-        // Which web tabs are visible this frame; hide the rest.
-        let visible_tabs: HashSet<TabId> = self
-            .store
-            .read(cx)
-            .state
-            .active_space()
-            .and_then(|s| {
-                let gid = s.active_group.clone().or_else(|| s.groups.first().map(|g| g.id.clone()))?;
-                s.groups.iter().find(|g| g.id == gid).map(|g| g.tab_ids())
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        // Which web tabs are visible this frame; hide the rest. The dock's
+        // tabs live outside the split tree, so union them in when open.
+        let (visible_tabs, dock_open) = {
+            let group = self
+                .store
+                .read(cx)
+                .state
+                .active_space()
+                .and_then(|s| {
+                    let gid = s
+                        .active_group
+                        .clone()
+                        .or_else(|| s.groups.first().map(|g| g.id.clone()))?;
+                    s.groups.iter().find(|g| g.id == gid)
+                });
+            match group {
+                Some(g) => {
+                    let mut v: HashSet<TabId> = g.tab_ids().into_iter().collect();
+                    if g.dock.open {
+                        for t in &g.dock.tabs {
+                            v.insert(t.clone());
+                        }
+                    }
+                    (v, g.dock.open)
+                }
+                None => (HashSet::new(), false),
+            }
+        };
         for (id, pane) in &self.panes {
             if let Pane::Web(h) = pane
                 && !visible_tabs.contains(id)
@@ -972,7 +1568,7 @@ impl gpui::Render for Shell {
         let content: AnyElement = match root_node {
             Some(node) => {
                 let active = self.store.read(cx).active_tab_id();
-                self.render_node(&node, active.as_ref(), window, cx)
+                self.render_node(&node, active.as_ref(), &[], window, cx)
             }
             None => div()
                 .size_full()
@@ -984,6 +1580,22 @@ impl gpui::Render for Shell {
                 .child("No tabs — ⌘T to open one")
                 .into_any(),
         };
+
+        let sb_width = self.store.read(cx).state.settings.sidebar_width;
+        let dock_width = self
+            .store
+            .read(cx)
+            .state
+            .active_space()
+            .and_then(|s| {
+                let gid = s
+                    .active_group
+                    .clone()
+                    .or_else(|| s.groups.first().map(|g| g.id.clone()))?;
+                s.groups.iter().find(|g| g.id == gid).map(|g| g.dock.width)
+            })
+            .unwrap_or(460.)
+            .max(360.);
 
         let mut root = div()
             .size_full()
@@ -1076,25 +1688,133 @@ impl gpui::Render for Shell {
                     cx.notify();
                 });
             }))
+            .on_action(cx.listener(|this, _: &crate::ToggleDock, _w, cx| {
+                this.store.update(cx, |s, cx| s.toggle_dock(cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::NewNotes, _w, cx| {
+                this.store.update(cx, |s, cx| {
+                    s.dock_open("hifi://notes", cx);
+                });
+            }))
             .child(self.titlebar(cx))
-            .child(
-                div()
+            .child({
+                // Body row: sidebar · content · dock. The two resize handles
+                // float over this row; its bounds drive the width math
+                // (cosmos's on_drag_move idiom).
+                let store_sb = self.store.clone();
+                let store_dk = self.store.clone();
+                let mut row = div()
+                    .id("bodyrow")
                     .flex()
                     .flex_row()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(div().h_full().when(!collapsed, |d| {
-                        d.child(self.sidebar.clone())
-                    }))
-                    .child(
+                    .relative()
+                    .on_drag_move::<SidebarResize>(move |event, _w, cx| {
+                        let w = f32::from(event.event.position.x - event.bounds.left());
+                        store_sb.update(cx, |s, cx| s.set_sidebar_width(w, cx));
+                    })
+                    .on_drag_move::<DockResize>(move |event, _w, cx| {
+                        let w = f32::from(event.bounds.right() - event.event.position.x);
+                        let max = (f32::from(event.bounds.size.width) - 300.).max(360.);
+                        store_dk.update(cx, |s, cx| {
+                            s.dock_set_width(w.clamp(360., max), cx);
+                        });
+                    });
+                if !collapsed {
+                    row = row.child(div().h_full().child(self.sidebar.clone()));
+                    row = row.child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
-                            .p(px(6.))
-                            .child(content),
-                    ),
+                            .id("sidebar-resize")
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(sb_width - 10.))
+                            .w(px(20.))
+                            .occlude()
+                            .cursor_col_resize()
+                            .on_drag(SidebarResize, |_, _point, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| DragGhost)
+                            }),
+                    );
+                }
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .p(px(6.))
+                        .child(content),
+                );
+                if dock_open {
+                    row = row.child(self.render_dock(window, cx));
+                    row = row.child(
+                        div()
+                            .id("dock-resize")
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(dock_width - 10.))
+                            .w(px(20.))
+                            .occlude()
+                            .cursor_col_resize()
+                            .on_drag(DockResize, |_, _point, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| DragGhost)
+                            }),
+                    );
+                }
+                row
+            });
+
+        // Find bar — deferred overlay top-right so it floats over webviews.
+        if self.store.read(cx).find_bar_open && let Some(input) = &self.find_input {
+            root = root.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(44.))
+                        .right(px(12.))
+                        .child(
+                            div()
+                                .w(px(280.))
+                                .h(px(30.))
+                                .rounded(px(10.))
+                                .bg(p.card)
+                                .border_1()
+                                .border_color(p.border)
+                                .flex()
+                                .items_center()
+                                .px(px(8.))
+                                .gap(px(6.))
+                                .child(glyph(icons::MAGNIFER, 12., p.faint))
+                                .child(div().flex_1().child(input.clone()))
+                                .child({
+                                    let store = self.store.clone();
+                                    div()
+                                        .id("findbar-x")
+                                        .size(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(p.raised))
+                                        .child(glyph(icons::CLOSE, 10., p.faint))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            store.update(cx, |s, cx| {
+                                                s.find_bar_open = false;
+                                                cx.notify();
+                                            });
+                                        })
+                                }),
+                        ),
+                )
+                .into_any(),
             );
+            window.focus(&input.read(cx).focus_handle(cx), cx);
+        }
 
         // Command bar overlay (deferred = above native webviews).
         if self.store.read(cx).command_bar_open {

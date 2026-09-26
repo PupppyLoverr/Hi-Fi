@@ -5,6 +5,7 @@ mod assets;
 mod command_bar;
 mod ipc_server;
 mod jsbridge;
+mod notes;
 mod shell;
 mod sidebar;
 mod store;
@@ -29,7 +30,8 @@ actions!(
     hifi,
     [
         NewTab, CloseTab, CommandBar, FocusAddress, ReloadPage, GoBack, GoForward,
-        NextTab, PrevTab, ToggleSidebar, FindInPage, NewTerminal, NewAgent, NewDiff,
+        NextTab, PrevTab, ToggleSidebar, ToggleDock, FindInPage, NewTerminal,
+        NewAgent, NewDiff, NewNotes,
         OpenSettings, Quit, Hide, HideOthers, Minimize, CloseWindow, NewGroup,
         Copy, Cut, Paste, SelectAll, Undo, Redo,
     ]
@@ -92,6 +94,8 @@ fn install_menus(cx: &mut App) {
         ]),
         Menu::new("View").items([
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
+            MenuItem::action("Toggle Dock", ToggleDock),
+            MenuItem::action("New Notes", NewNotes),
             MenuItem::action("Reload", ReloadPage),
             MenuItem::action("Command Bar", CommandBar),
         ]),
@@ -123,6 +127,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         KeyBinding::new("cmd-shift-[", PrevTab, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
+        KeyBinding::new("alt-cmd-b", ToggleDock, None),
+        KeyBinding::new("cmd-shift-n", NewNotes, None),
         KeyBinding::new("cmd-f", FindInPage, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-shift-\\", NewGroup, None),

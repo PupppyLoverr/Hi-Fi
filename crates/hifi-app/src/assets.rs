@@ -132,6 +132,7 @@ pub mod icons {
         (SETTINGS, "settings-minimalistic"),
         (SHIELD, "shield"),
         (SIDEBAR_LEFT, "sidebar-minimalistic-left"),
+        (SIDEBAR_RIGHT, "sidebar-minimalistic-right"),
         (SIDEBAR, "sidebar-minimalistic"),
         (SMARTPHONE, "smartphone"),
         (SORT_VERTICAL, "sort-vertical"),

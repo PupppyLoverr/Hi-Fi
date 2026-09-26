@@ -44,7 +44,13 @@ impl HifiPaths {
         self.root.join("history.json")
     }
 
+    /// Notes surface documents — one HTML file per notes tab.
+    pub fn notes_dir(&self) -> PathBuf {
+        self.root.join("notes")
+    }
+
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.root)
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::create_dir_all(self.notes_dir())
     }
 }

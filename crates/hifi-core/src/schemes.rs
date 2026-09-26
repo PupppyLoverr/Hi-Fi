@@ -28,6 +28,7 @@ pub fn route(input: &str) -> RoutedUrl {
             "agent" | "chat" => RoutedUrl::Internal(TabKind::Agent),
             "diff" | "diffs" => RoutedUrl::Internal(TabKind::Diff),
             "settings" | "preferences" => RoutedUrl::Internal(TabKind::Settings),
+            "notes" | "note" | "docs" => RoutedUrl::Internal(TabKind::Notes),
             "preview" => RoutedUrl::Preview(tail),
             _ => RoutedUrl::Internal(TabKind::NewTab),
         };

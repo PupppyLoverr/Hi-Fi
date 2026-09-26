@@ -33,9 +33,10 @@ fn tab_icon(tab: &hifi_core::Tab, p: &crate::theme::Palette) -> gpui::Svg {
         TabKind::Diff => (icons::GIT_BRANCH, p.faint),
         TabKind::Preview => (icons::EYE, p.faint),
         TabKind::Settings => (icons::SETTINGS, p.faint),
+        TabKind::Notes => (icons::PEN_NEW_SQUARE, p.faint),
         TabKind::Web => (icons::GLOBE, p.faint),
     };
-    glyph(path, 14., color)
+    glyph(path, 15., color)
 }
 
 /// Harness brand mark for agent/terminal commands (Radius-style header icon).
@@ -71,6 +72,7 @@ impl gpui::Render for Sidebar {
         let p = Theme::of(cx).palette;
         let store = self.store.read(cx);
         let compact = store.state.settings.compact_sidebar;
+        let sb_width = store.state.settings.sidebar_width;
         let Some(space_state) = store.state.active_space() else {
             return div().id("sidebar-empty");
         };
@@ -83,7 +85,7 @@ impl gpui::Render for Sidebar {
 
         let mut bar = div()
             .id("sidebar")
-            .w(if compact { px(56.) } else { px(232.) })
+            .w(if compact { px(56.) } else { px(sb_width) })
             .h_full()
             .flex()
             .flex_col()
@@ -176,7 +178,8 @@ impl gpui::Render for Sidebar {
         for group in groups {
             let gid = group.id.clone();
             let g_active = active_group.as_ref() == Some(&gid);
-            // Group header.
+            // Group header — cosmos's section-header style: 11px medium,
+            // muted-60%, px(8) pt(12) pb(4), with a quiet + on the right.
             let store_g = store_e.clone();
             let store_g2 = store_e.clone();
             let mut header = div()
@@ -185,35 +188,48 @@ impl gpui::Render for Sidebar {
                 .items_center()
                 .gap(space::XS)
                 .px(space::SM)
-                .h(px(28.))
-                .rounded(radius::ROUND)
+                .pt(px(12.))
+                .pb(px(4.))
                 .cursor_pointer()
-                .text_size(px(11.5))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(if g_active { p.text } else { p.muted })
-                .bg(if g_active {
-                    p.raised.opacity(0.3)
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(if g_active {
+                    p.muted.opacity(0.9)
                 } else {
-                    gpui::transparent_white()
-                })
-                .child(glyph(icons::FOLDER, 12., if g_active { p.accent } else { p.faint }));
+                    p.faint.opacity(0.6)
+                });
             if !compact {
                 header = header
-                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().child(group.name.clone()))
                     .child(
-                        {
-                            let gid2 = gid.clone();
-                            div()
-                                .id(SharedString::from(format!("group-new-{gid}")))
-                                .cursor_pointer()
-                                .child(glyph(icons::PLUS, 11., p.faint))
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    store_g2.update(cx, |s, cx| {
-                                        s.open_tab("hifi://newtab", Some(gid2.clone()), None, cx);
-                                    });
-                                })
-                        },
-                    );
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(group.name.clone()),
+                    )
+                    .child({
+                        let gid2 = gid.clone();
+                        div()
+                            .id(SharedString::from(format!("group-new-{gid}")))
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .hover(|s| s.bg(p.raised.opacity(0.5)))
+                            .child(glyph(icons::PLUS, 11., p.faint))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                store_g2.update(cx, |s, cx| {
+                                    s.open_tab("hifi://newtab", Some(gid2.clone()), None, cx);
+                                });
+                            })
+                    });
+            } else {
+                header = header.child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(group.name.chars().next().unwrap_or('G').to_uppercase().collect::<String>()),
+                );
             }
             header = header.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 store_g.update(cx, |s, cx| s.set_active_group(&gid, cx));
@@ -235,18 +251,19 @@ impl gpui::Render for Sidebar {
                 let store_t = store_e.clone();
                 let store_t2 = store_e.clone();
                 let tid2 = tid.clone();
+                // Cosmos row geometry: rounded(8) px(8) py(6) gap(8),
+                // 13px text, 15px icon; selected = raised bg + medium weight.
                 let mut row = div()
                     .id(SharedString::from(format!("tab-{tid}")))
                     .flex()
                     .items_center()
                     .gap(space::SM)
                     .px(space::SM)
-                    .h(px(30.))
-                    .ml(px(10.))
-                    .rounded(radius::ROUND)
+                    .py(px(6.))
+                    .rounded(px(8.))
                     .cursor_pointer()
                     .bg(if is_active {
-                        p.raised.opacity(0.5)
+                        p.raised
                     } else {
                         gpui::transparent_white()
                     })
@@ -254,7 +271,7 @@ impl gpui::Render for Sidebar {
                         if is_active {
                             s
                         } else {
-                            s.bg(p.raised.opacity(0.28))
+                            s.bg(p.raised.opacity(0.5))
                         }
                     })
                     .child(tab_icon(tab, &p));
@@ -273,7 +290,8 @@ impl gpui::Render for Sidebar {
                             .flex_1()
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(px(12.5))
+                            .text_size(px(13.))
+                            .when(is_active, |d| d.font_weight(gpui::FontWeight::MEDIUM))
                             .text_color(if is_active { p.text } else { p.muted })
                             .child(tab.display_title()),
                     )
