@@ -575,7 +575,7 @@ impl gpui::Render for Sidebar {
         let of_kind = |kind: TabKind| -> Vec<Tab> {
             groups
                 .iter()
-                .flat_map(|g| g.tab_ids())
+                .flat_map(|g| g.tab_ids().into_iter().chain(g.dock.tabs.iter().cloned()))
                 .filter_map(|id| tab_of(&id))
                 .filter(|t| t.kind == kind && !t.pinned)
                 .collect()

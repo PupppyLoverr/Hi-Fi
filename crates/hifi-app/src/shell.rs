@@ -61,6 +61,9 @@ pub struct Shell {
     panes: HashMap<TabId, Pane>,
     /// Webview hosts that failed to spawn (error shown instead of a pane).
     pane_errors: HashMap<TabId, String>,
+    /// The tab kind each cached pane was built for; a tab whose kind has
+    /// since changed (New Tab -> Agent, ...) gets a fresh pane.
+    pane_kinds: HashMap<TabId, TabKind>,
     /// Find-bar input, created on first ⌘F.
     find_input: Option<Entity<TextField>>,
     /// WebEvent source; drained each render.
@@ -145,6 +148,7 @@ impl Shell {
             command_bar,
             panes: HashMap::new(),
             pane_errors: HashMap::new(),
+            pane_kinds: HashMap::new(),
             find_input: Some(find_input),
             web_rx,
             web_tx,
@@ -720,8 +724,7 @@ impl Shell {
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, _cx| {
-                // Windows child HWNDs paint above GPUI, so clip to the mask.
-                #[cfg(target_os = "windows")]
+                // Native views paint above GPUI, so clip to the content mask.
                 let bounds = bounds.intersect(&window.content_mask().bounds);
                 let host = Rc::downgrade(&host);
                 window.on_present(move || {
@@ -806,6 +809,16 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = Theme::of(cx).palette;
+        let web_kind = |k: TabKind| matches!(k, TabKind::Web | TabKind::Notes);
+        match self.pane_kinds.insert(tab.id.clone(), tab.kind) {
+            Some(old) if old != tab.kind && !(web_kind(old) && web_kind(tab.kind)) => {
+                if let Some(Pane::Web(h)) = self.panes.remove(&tab.id) {
+                    h.hide();
+                }
+                self.pane_errors.remove(&tab.id);
+            }
+            _ => {}
+        }
         match tab.kind {
             TabKind::Web | TabKind::Notes => match self.web_host(tab, p.is_dark, window, cx) {
                 Some(host) => Self::web_surface(&host, &self.focus).into_any(),
@@ -1380,8 +1393,9 @@ impl Shell {
                         )
                     };
                     if span > 1.0 {
+                        let min = (MIN_PANE / span).min(0.5);
                         store.update(cx, |s, cx| {
-                            s.resize_split(&path, frac / span, cx);
+                            s.resize_split(&path, (frac / span).clamp(min, 1. - min), cx);
                         });
                     }
                 });
@@ -1391,6 +1405,7 @@ impl Shell {
                         .flex_grow(1.)
                         .min_h(px(0.))
                         .min_w(px(0.))
+                        .overflow_hidden()
                         .flex()
                         .child(first_el),
                 )
@@ -1401,6 +1416,7 @@ impl Shell {
                         .flex_grow(1.)
                         .min_h(px(0.))
                         .min_w(px(0.))
+                        .overflow_hidden()
                         .flex()
                         .child(second_el),
                 )
@@ -1412,10 +1428,15 @@ impl Shell {
     /// The cosmos right pane: a flush, left-hairlined glass panel. Its
     /// surface tabs ride a `surface_chrome::toolbar`; with nothing open it
     /// shows cosmos's surface picker.
-    fn render_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_dock(
+        &mut self,
+        width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store_e = self.store.clone();
-        let (width, tabs, active) = self
+        let (_, tabs, active) = self
             .store
             .read(cx)
             .state
@@ -1431,7 +1452,6 @@ impl Shell {
                     .map(|g| (g.dock.width, g.dock.tabs.clone(), g.dock.active.clone()))
             })
             .unwrap_or((460., vec![], None));
-        let width = width.max(360.);
 
         let mut strip = surface_chrome::toolbar(&p).overflow_hidden();
         for id in &tabs {
@@ -1918,6 +1938,9 @@ impl Shell {
 /// mouse events, so the resize handle needs painted space of its own.
 const DOCK_GUTTER: f32 = 6.0;
 
+/// Narrowest a split pane can be dragged to; pages lay out badly below it.
+const MIN_PANE: f32 = 220.0;
+
 /// Where the titlebar control cluster starts on macOS: past the traffic
 /// lights at {14,14} (cosmos `titlebar_cluster_start`).
 const TITLEBAR_CLUSTER_START: f32 = 88.0;
@@ -2109,9 +2132,7 @@ impl gpui::Render for Shell {
                     .or_else(|| s.groups.first().map(|g| g.id.clone()))?;
                 s.groups.iter().find(|g| g.id == gid).map(|g| g.dock.width)
             })
-            .unwrap_or(460.)
-            .max(360.);
-
+            .unwrap_or(460.);
         let sidebar_now = if collapsed {
             0.
         } else if sb_compact {
@@ -2119,6 +2140,8 @@ impl gpui::Render for Shell {
         } else {
             sb_width
         };
+        let dock_max = (f32::from(window.viewport_size().width) - sidebar_now - 320.).max(280.);
+        let dock_width = dock_width.max(360.).min(dock_max);
         let mut root = div()
             .relative()
             .size_full()
@@ -2218,7 +2241,19 @@ impl gpui::Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &crate::OpenSettings, _w, cx| {
                 this.store.update(cx, |s, cx| {
-                    s.open_tab("hifi://settings", None, None, cx);
+                    let existing = s
+                        .state
+                        .active_space()
+                        .into_iter()
+                        .flat_map(|sp| &sp.groups)
+                        .flat_map(|g| g.tab_ids().into_iter().chain(g.dock.tabs.clone()))
+                        .find(|id| s.state.tab(id).is_some_and(|t| t.kind == TabKind::Settings));
+                    match existing {
+                        Some(id) => s.focus_tab(&id, cx),
+                        None => {
+                            s.open_tab("hifi://settings", None, None, cx);
+                        }
+                    }
                 });
             }))
             .on_action(cx.listener(|this, _: &crate::NewGroup, _w, cx| {
@@ -2302,7 +2337,7 @@ impl gpui::Render for Shell {
                 }
                 row = row.child(div().flex_1().min_w(px(0.)).h_full().flex().child(content));
                 if dock_open {
-                    row = row.child(self.render_dock(window, cx));
+                    row = row.child(self.render_dock(dock_width, window, cx));
                     row = row.child(
                         div()
                             .id("dock-resize")

@@ -61,8 +61,7 @@ impl NewTabView {
             let (ask, harness) = (me.ask, HARNESSES[me.harness].1);
             me.store.update(cx, |store, cx| {
                 if ask && !looks_like_address(&text) {
-                    store.open_agent(harness, &text, cx);
-                    store.close_tab(&tab, cx);
+                    store.start_agent_in(&tab, harness, &text, cx);
                 } else {
                     let url = resolve_input(store, &text);
                     store.navigate(&tab, &url, cx);
@@ -324,7 +323,8 @@ impl gpui::Render for NewTabView {
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(60.))
+                    .overflow_hidden()
                     .text_size(px(14.))
                     .text_color(p.text)
                     .child(self.input.clone()),
@@ -332,6 +332,10 @@ impl gpui::Render for NewTabView {
             .child(
                 div()
                     .flex()
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
                     .items_center()
                     .gap(px(5.))
                     .text_size(px(11.5))
@@ -353,6 +357,7 @@ impl gpui::Render for NewTabView {
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .p(px(3.))
                     .gap(px(2.))
@@ -429,7 +434,7 @@ impl gpui::Render for NewTabView {
             .child(controls);
 
         if !cards.is_empty() {
-            let mut row = div().w_full().flex().gap(px(10.));
+            let mut row = div().w_full().flex().flex_wrap().gap(px(10.));
             for (i, card) in cards.into_iter().enumerate() {
                 let store = self.store.clone();
                 let TaskCard {
@@ -445,7 +450,7 @@ impl gpui::Render for NewTabView {
                     div()
                         .id(SharedString::from(format!("task-{i}")))
                         .flex_1()
-                        .min_w_0()
+                        .min_w(px(180.))
                         .h(px(236.))
                         .flex()
                         .flex_col()
