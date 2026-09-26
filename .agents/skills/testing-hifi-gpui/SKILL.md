@@ -33,3 +33,9 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - Agent harness binaries (claude, codex, opencode...) are not installed on the VM. The agent tab shows "Failed to spawn command"; that is expected.
 - After resizing a split that contains a web pane, check that the web content reflows to the new width and is not just clipped.
 - Leftover dock tabs (earlier Notes pages) persist across launches, so tab positions shift. Re-screenshot before clicking.
+
+## Measuring pane widths
+- The macOS display is 1600x1200 logical points, and computer-use screenshots are scaled to 1024 wide. Multiply screenshot px by about 1.5625 to get points (220pt = about 141 screenshot px).
+- If the restored window isn't maximised, resize it with `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to set size of window 1 to {1600, 1100}'`. The traffic-light and Window menu clicks didn't work here.
+- The restored 3-pane layout may be nested (`[[A|B]|C]`). Drag each divider and check which split's ratio changes, not just the one under the cursor.
+- The dock gutter may only grab slightly left of the visible dock edge (about 3px in screenshot space).
