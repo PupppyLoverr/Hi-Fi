@@ -39,3 +39,7 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - If the restored window isn't maximised, resize it with `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to set size of window 1 to {1600, 1100}'`. The traffic-light and Window menu clicks didn't work here.
 - The restored 3-pane layout may be nested (`[[A|B]|C]`). Drag each divider and check which split's ratio changes, not just the one under the cursor.
 - The dock gutter may only grab slightly left of the visible dock edge (about 3px in screenshot space).
+- While a GPUI drag is held, mouse moves over a native WKWebView may not reach GPUI. Test drags so the cursor passes over GPUI surfaces (Settings pane, pane header row y≈55, dock New Tab) as well as over web content, and note which ones track.
+- Read split fractions from `state.json` (`type: split`, `fraction`) to see which split a drag actually changed.
+- After relaunch Finder may be frontmost, and after clicking a web page the webview has focus. Click a GPUI surface before sending shortcuts like Alt+Cmd+B.
+- The dock clamps to at least 360pt, so a rightward gutter drag from minimum width does nothing. Widen it first, then test narrowing.

@@ -40,11 +40,13 @@ struct SplitDrag {
     horizontal: bool,
 }
 
-/// The empty drag preview — a 1px chip; the live resize is the feedback.
+/// The drag preview — a near-invisible 1px chip; the live resize is the
+/// feedback. It must paint something so GPUI's overlay plane captures the
+/// pointer while dragging over native webviews.
 struct DragGhost;
 impl gpui::Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size(px(1.))
+        div().size(px(1.)).bg(gpui::black().opacity(0.02))
     }
 }
 
