@@ -97,7 +97,7 @@ pub fn mark_icon(command: &str) -> &'static str {
 pub fn kind_icon(tab: &Tab) -> &'static str {
     match tab.kind {
         TabKind::Web => icons::GLOBE,
-        TabKind::NewTab => icons::HOME,
+        TabKind::NewTab => icons::MAGNIFER,
         TabKind::Terminal | TabKind::Agent => mark_icon(&tab.command),
         TabKind::Diff => icons::GIT_BRANCH,
         TabKind::Preview => icons::EYE,

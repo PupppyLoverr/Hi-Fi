@@ -297,10 +297,6 @@ impl Shell {
         web.extend(self.web_rx.try_iter());
         for ev in web {
             match ev {
-                WebEvent::PageClick => {
-                    self.context_menu = None;
-                    cx.notify();
-                }
                 WebEvent::Title { tab, title } => {
                     let is_empty_notes_title = self
                         .store
@@ -351,15 +347,18 @@ impl Shell {
                     let store = self.store.clone();
                     let shell = cx.entity().downgrade();
                     let dismiss: Rc<dyn Fn(&mut App)> = Rc::new(move |app| {
-                        let _ = shell.update(app, |this, _| this.context_menu = None);
+                        let _ = shell.update(app, |this, cx| {
+                            this.context_menu = None;
+                            cx.notify();
+                        });
                     });
-                    let action = |id: &'static str,
+                    let action = |id: SharedString,
                                   label: SharedString,
                                   action: Rc<dyn Fn(&mut App)>,
                                   separator_before: bool|
                      -> crate::menu::MenuItem {
                         crate::menu::MenuItem {
-                            id: id.into(),
+                            id,
                             label,
                             icon: None,
                             action,
@@ -379,7 +378,7 @@ impl Shell {
                     let reload_dismiss = dismiss.clone();
                     let mut items = vec![
                         action(
-                            "ctx-back",
+                            "ctx-back".into(),
                             "Back".into(),
                             Rc::new(move |app| {
                                 back_store.update(app, |s, cx| {
@@ -391,7 +390,7 @@ impl Shell {
                             false,
                         ),
                         action(
-                            "ctx-forward",
+                            "ctx-forward".into(),
                             "Forward".into(),
                             Rc::new(move |app| {
                                 forward_store.update(app, |s, cx| {
@@ -403,7 +402,7 @@ impl Shell {
                             false,
                         ),
                         action(
-                            "ctx-reload",
+                            "ctx-reload".into(),
                             "Reload".into(),
                             Rc::new(move |app| {
                                 reload_store.update(app, |s, cx| {
@@ -419,7 +418,7 @@ impl Shell {
                         let link = href.clone();
                         let link_dismiss = dismiss.clone();
                         items.push(action(
-                            "ctx-copy-link",
+                            "ctx-copy-link".into(),
                             "Copy Link".into(),
                             Rc::new(move |app| {
                                 app.write_to_clipboard(gpui::ClipboardItem::new_string(
@@ -434,7 +433,7 @@ impl Shell {
                         let split_url = href.clone();
                         let split_dismiss = dismiss.clone();
                         items.push(action(
-                            "ctx-open-link",
+                            "ctx-open-link".into(),
                             "Open Link in Split Right".into(),
                             Rc::new(move |app| {
                                 split_store.update(app, |s, cx| {
@@ -454,7 +453,7 @@ impl Shell {
                         let image = src.clone();
                         let image_dismiss = dismiss.clone();
                         items.push(action(
-                            "ctx-copy-image",
+                            "ctx-copy-image".into(),
                             "Copy Image URL".into(),
                             Rc::new(move |app| {
                                 app.write_to_clipboard(gpui::ClipboardItem::new_string(
@@ -477,7 +476,7 @@ impl Shell {
                         };
                         let selected_dismiss = dismiss.clone();
                         items.push(action(
-                            "ctx-copy-selection",
+                            "ctx-copy-selection".into(),
                             label.into(),
                             Rc::new(move |app| {
                                 app.write_to_clipboard(gpui::ClipboardItem::new_string(
@@ -498,7 +497,7 @@ impl Shell {
                     let ask_url = current_url.clone();
                     let ask_dismiss = dismiss.clone();
                     items.push(action(
-                        "ctx-ask-agent",
+                        "ctx-ask-agent".into(),
                         "Ask the agent about this page".into(),
                         Rc::new(move |app| {
                             ask_store.update(app, |s, cx| {
@@ -517,7 +516,7 @@ impl Shell {
                     let copy_url_store = current_url.clone();
                     let copy_url_dismiss = dismiss.clone();
                     items.push(action(
-                        "ctx-copy-url",
+                        "ctx-copy-url".into(),
                         "Copy URL".into(),
                         Rc::new(move |app| {
                             app.write_to_clipboard(gpui::ClipboardItem::new_string(
@@ -530,9 +529,14 @@ impl Shell {
                     let pin_store = store.clone();
                     let pin_tab = tab.clone();
                     let pin_dismiss = dismiss.clone();
+                    let pinned = store
+                        .read(cx)
+                        .state
+                        .tab(&tab)
+                        .is_some_and(|current| current.pinned);
                     items.push(action(
-                        "ctx-pin",
-                        "Pin / Unpin".into(),
+                        "ctx-pin".into(),
+                        if pinned { "Unpin" } else { "Pin" }.into(),
                         Rc::new(move |app| {
                             pin_store.update(app, |s, cx| s.toggle_pin(&pin_tab, cx));
                             pin_dismiss(app);
@@ -562,7 +566,7 @@ impl Shell {
                         let move_space = space.id.clone();
                         let move_dismiss = dismiss.clone();
                         items.push(action(
-                            "ctx-move-space",
+                            format!("ctx-move-space-{}", space.id).into(),
                             format!("Move to {}", space.name).into(),
                             Rc::new(move |app| {
                                 move_store.update(app, |s, cx| {
@@ -584,7 +588,7 @@ impl Shell {
                     let close_dismiss = dismiss.clone();
                     items.extend([
                         action(
-                            "ctx-split-right",
+                            "ctx-split-right".into(),
                             "Split Right".into(),
                             Rc::new(move |app| {
                                 split_right_store.update(app, |s, cx| {
@@ -603,7 +607,7 @@ impl Shell {
                             true,
                         ),
                         action(
-                            "ctx-split-down",
+                            "ctx-split-down".into(),
                             "Split Down".into(),
                             Rc::new(move |app| {
                                 split_down_store.update(app, |s, cx| {
@@ -619,7 +623,7 @@ impl Shell {
                             false,
                         ),
                         action(
-                            "ctx-close",
+                            "ctx-close".into(),
                             "Close Pane".into(),
                             Rc::new(move |app| {
                                 close_store.update(app, |s, cx| s.close_tab(&close_tab, cx));
@@ -1193,8 +1197,7 @@ impl Shell {
         let host = host.clone();
         gpui::canvas(
             |_, _, _| (),
-            move |bounds, _, window, cx| {
-                host.set_input_shield(cx.has_active_drag());
+            move |bounds, _, window, _cx| {
                 // Native views paint above GPUI, so clip to the content mask.
                 let bounds = bounds.intersect(&window.content_mask().bounds);
                 let host = Rc::downgrade(&host);
@@ -1578,6 +1581,7 @@ impl Shell {
             .min_w(px(0.))
             .overflow_hidden()
             .whitespace_nowrap()
+            .gap(px(6.))
             .child(
                 div()
                     .flex_shrink(1.)
@@ -1595,6 +1599,7 @@ impl Shell {
                         .min_w(px(0.))
                         .overflow_hidden()
                         .text_ellipsis()
+                        .text_size(px(11.))
                         .text_color(p.faint)
                         .child(format!("{sep}{secondary}")),
                 )
@@ -2443,7 +2448,10 @@ impl gpui::Render for Shell {
             let store = self.store.clone();
             let shell = cx.entity().downgrade();
             let dismiss: Rc<dyn Fn(&mut App)> = Rc::new(move |app| {
-                let _ = shell.update(app, |this, _| this.context_menu = None);
+                let _ = shell.update(app, |this, cx| {
+                    this.context_menu = None;
+                    cx.notify();
+                });
             });
             let group_store = store.clone();
             let group_dismiss = dismiss.clone();
@@ -2491,7 +2499,10 @@ impl gpui::Render for Shell {
             let close_menu: Rc<dyn Fn(&mut App)> = {
                 let shell = shell.clone();
                 Rc::new(move |app: &mut App| {
-                    let _ = shell.update(app, |this, _| this.context_menu = None);
+                    let _ = shell.update(app, |this, cx| {
+                        this.context_menu = None;
+                        cx.notify();
+                    });
                 })
             };
             let mut items = Vec::new();
@@ -2540,7 +2551,16 @@ impl gpui::Render for Shell {
                 let close_menu = close_menu.clone();
                 items.push(crate::menu::MenuItem {
                     id: "row-pin".into(),
-                    label: "Pin / Unpin".into(),
+                    label: if store
+                        .read(cx)
+                        .state
+                        .tab(&tab_id)
+                        .is_some_and(|tab| tab.pinned)
+                    {
+                        "Unpin".into()
+                    } else {
+                        "Pin".into()
+                    },
                     icon: Some(icons::PIN),
                     action: Rc::new(move |app| {
                         store.update(app, |s, cx| s.toggle_pin(&id, cx));
@@ -2653,8 +2673,10 @@ impl gpui::Render for Shell {
         let menu_open = self.context_menu.is_some();
         for (id, pane) in &self.panes {
             if let Pane::Web(h) = pane {
-                h.set_input_shield(false);
-                if menu_open || !visible_tabs.contains(id) {
+                if visible_tabs.contains(id) {
+                    h.set_input_shield(menu_open || cx.has_active_drag());
+                } else {
+                    h.set_input_shield(cx.has_active_drag());
                     h.hide();
                 }
             }
@@ -2723,17 +2745,19 @@ impl gpui::Render for Shell {
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
-            .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, _| {
+            .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
                 this.context_menu = None;
+                cx.notify();
                 for pane in this.panes.values() {
                     if let Pane::Web(h) = pane {
                         h.release_focus();
                     }
                 }
             }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, _| {
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key.eq_ignore_ascii_case("escape") {
                     this.context_menu = None;
+                    cx.notify();
                 }
             }))
             .when(cfg!(target_os = "linux"), |root| {
@@ -2963,7 +2987,10 @@ impl gpui::Render for Shell {
         if let Some((x, y, items)) = &self.context_menu {
             let shell = cx.entity().downgrade();
             let dismiss: Rc<dyn Fn(&mut App)> = Rc::new(move |app| {
-                let _ = shell.update(app, |this, _| this.context_menu = None);
+                let _ = shell.update(app, |this, cx| {
+                    this.context_menu = None;
+                    cx.notify();
+                });
             });
             root = root.child(crate::menu::context_menu(
                 items.clone(),

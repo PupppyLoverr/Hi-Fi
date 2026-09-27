@@ -84,6 +84,9 @@ pub fn context_menu(
             menu.child(row)
         },
     );
+    let left_dismiss = dismiss.clone();
+    let middle_dismiss = dismiss.clone();
+    let right_dismiss = dismiss;
     deferred(
         div()
             .absolute()
@@ -94,7 +97,9 @@ pub fn context_menu(
                     .absolute()
                     .inset_0()
                     .occlude()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| dismiss(cx)),
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| left_dismiss(cx))
+                    .on_mouse_down(MouseButton::Middle, move |_, _, cx| middle_dismiss(cx))
+                    .on_mouse_down(MouseButton::Right, move |_, _, cx| right_dismiss(cx)),
             )
             .child(div().absolute().left(px(x)).top(px(y)).child(menu)),
     )
