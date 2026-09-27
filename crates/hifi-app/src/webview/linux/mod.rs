@@ -341,6 +341,7 @@ impl WebPaneHost {
         self.set_visible(false);
     }
 
+    #[allow(dead_code)]
     pub fn set_input_shield(&self, _on: bool) {}
 
     pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
