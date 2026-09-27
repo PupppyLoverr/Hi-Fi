@@ -299,6 +299,7 @@ impl Shell {
             match ev {
                 WebEvent::PageClick => {
                     self.context_menu = None;
+                    cx.notify();
                 }
                 WebEvent::Title { tab, title } => {
                     let is_empty_notes_title = self
