@@ -1,4 +1,12 @@
-//! Protocol-aware execution for the production agent harnesses.
+//! Real agent execution: spawns a CLI harness (OpenCode first-class, any other
+//! harness as a plain-text stream) in the chat's working folder and turns
+//! its output into transcript events.
+//!
+//! The harness gets Hi-Fi's browser through the `hifi mcp` server, scoped to
+//! the chat tab (`HIFI_AGENT_TAB`), so every page it opens is an agent-owned
+//! hidden tab — the user's own panes never move. File edits and shell access
+//! are gated by the chat's [`Guard`] level through the harness' own permission
+//! config.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -12,19 +20,30 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
+    /// OpenCode's JSON event stream.
     Opencode,
+    /// Claude-compatible stream JSON output.
     ClaudeStream,
+    /// Codex `exec --json` JSONL output.
     CodexExec,
+    /// Agent Client Protocol over newline-delimited JSON-RPC.
     Acp,
 }
 
 pub struct Harness {
+    /// Stable identifier persisted in chat tabs and settings.
     pub id: &'static str,
+    /// Human-readable name shown in the harness picker.
     pub label: &'static str,
+    /// Executable searched for in PATH and known installer directories.
     pub executable: &'static str,
+    /// Arguments selecting the harness' protocol mode.
     pub args: &'static [&'static str],
+    /// Output protocol used by the runner.
     pub protocol: Protocol,
+    /// Models advertised in the picker for this harness.
     pub models: &'static [&'static str],
+    /// Friendly installation command or documentation hint.
     pub install_hint: &'static str,
 }
 
@@ -144,7 +163,7 @@ pub fn harness(id: &str) -> &'static Harness {
     HARNESSES
         .iter()
         .find(|h| h.id == id)
-        .unwrap_or(&HARNESSES[7])
+        .unwrap_or_else(|| HARNESSES.iter().find(|h| h.id == "opencode").unwrap())
 }
 
 pub fn model_short(model: &str) -> &str {
@@ -153,12 +172,15 @@ pub fn model_short(model: &str) -> &str {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// Harness session id — pass back as `session` to continue the thread.
     Session(String),
+    /// A harness tool invocation has started.
     ToolStart {
         id: String,
         tool: String,
         title: String,
     },
+    /// A harness tool invocation has completed.
     ToolDone {
         id: String,
         tool: String,
@@ -166,13 +188,10 @@ pub enum AgentEvent {
         output: String,
         error: Option<String>,
     },
-    Text {
-        id: String,
-        text: String,
-    },
-    Done {
-        error: Option<String>,
-    },
+    /// Assistant text for a part; replaces earlier text with the same id.
+    Text { id: String, text: String },
+    /// Harness exited. `error` is the stderr tail when it failed.
+    Done { error: Option<String> },
 }
 
 #[derive(Clone)]
@@ -183,6 +202,7 @@ pub struct RunConfig {
     pub guard: Guard,
     pub session: String,
     pub prompt: String,
+    /// Owning chat tab: browser tools open tabs under it.
     pub tab_id: String,
     pub first_turn: bool,
 }
@@ -210,6 +230,7 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Directories harness installers drop binaries into, on top of `PATH`.
 fn extra_bin_dirs() -> Vec<PathBuf> {
     let h = home();
     let mut dirs = vec![
@@ -260,6 +281,8 @@ fn extra_bin_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// `PATH` with the extra bin dirs prepended so harnesses and `hifi` resolve
+/// even when the app was launched from Finder (no shell profile).
 pub(crate) fn search_path() -> String {
     let mut parts: Vec<String> = extra_bin_dirs()
         .iter()
@@ -320,30 +343,62 @@ pub const DESTRUCTIVE_PATTERNS: &[&str] = &[
     "git push",
     "git reset --hard",
     "git clean",
+    "mkfs",
+    "dd ",
+    "chmod -R",
+    "> /dev/",
 ];
 
+/// Return whether a shell-like command contains a destructive operation.
+///
+/// Matching command segments instead of arbitrary substrings keeps `dd ` from
+/// matching words such as `add `.
+pub fn is_destructive(text: &str) -> bool {
+    text.split(['\n', ';', '&', '|'])
+        .map(str::trim)
+        .any(|segment| {
+            DESTRUCTIVE_PATTERNS
+                .iter()
+                .any(|pattern| segment.starts_with(pattern))
+                || segment.contains("> /dev/")
+        })
+}
+
+/// OpenCode config for a guard level: browser tools via `hifi mcp`, file and
+/// shell access per level. `--auto` approves anything not denied here.
 pub fn opencode_config(guard: Guard, hifi_bin: &Path, tab_id: &str) -> Value {
     let permission = match guard {
         Guard::Strict => json!({
-            "*": "allow", "edit": "deny", "write": "deny", "patch": "deny",
+            // The bash tool stays registered (OpenCode's free tier rejects
+            // requests without it) but nothing except a bare `pwd` may run;
+            // reads go through the read/glob/grep tools.
+            "*": "allow",
+            "edit": "deny",
+            "write": "deny",
+            "patch": "deny",
             "bash": { "*": "deny", "pwd": "allow" },
         }),
         Guard::Balanced => {
             let mut bash = serde_json::Map::new();
             bash.insert("*".into(), json!("allow"));
             for pattern in DESTRUCTIVE_PATTERNS {
-                bash.insert((*pattern).into(), json!("deny"));
+                bash.insert(format!("{pattern}*"), json!("deny"));
             }
             json!({ "*": "allow", "bash": bash })
         }
         Guard::Full => json!({ "*": "allow" }),
     };
     json!({
-        "$schema": "https://opencode.ai/config.json", "permission": permission,
-        "mcp": { "hifi": {
-            "type": "local", "command": [hifi_bin, "mcp"], "enabled": true,
-            "environment": { "HIFI_AGENT_TAB": tab_id }
-        }}
+        "$schema": "https://opencode.ai/config.json",
+        "permission": permission,
+        "mcp": {
+            "hifi": {
+                "type": "local",
+                "command": [hifi_bin, "mcp"],
+                "enabled": true,
+                "environment": { "HIFI_AGENT_TAB": tab_id }
+            }
+        }
     })
 }
 
@@ -463,6 +518,7 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
     args
 }
 
+/// What the harness is told about where it runs, once per chat.
 fn preamble(cwd: &str, guard: Guard) -> String {
     format!(
         "You are running inside the Hi-Fi browser as its agent. Working folder: {cwd}. \
@@ -475,6 +531,8 @@ to interact. Keep answers concise.\n\nTask: ",
     )
 }
 
+/// Spawn the harness. Events arrive on `tx` from a reader thread; the returned
+/// [`Run`] kills the process on stop.
 pub fn spawn(mut cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run, String> {
     let selected = harness(&cfg.harness);
     let (bin, protocol_args) = resolve(selected)?;
@@ -983,6 +1041,8 @@ pub(crate) fn tool_title(tool: &str, input: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use std::time::Duration;
 
     #[test]
     fn production_harnesses_are_exactly_cosmos_order() {
@@ -1152,5 +1212,69 @@ mod tests {
     #[test]
     fn model_short_strips_provider() {
         assert_eq!(model_short("opencode/big-pickle"), "big-pickle");
+    }
+
+    #[test]
+    fn unknown_harnesses_fall_back_to_opencode() {
+        assert_eq!(harness("nope").id, "opencode");
+    }
+
+    #[test]
+    fn destructive_detection_is_command_aware() {
+        assert!(!is_destructive("git add ."));
+        assert!(is_destructive("echo hi && rm -rf x"));
+        assert!(is_destructive("sudo ls"));
+        assert!(is_destructive("dd if=/dev/zero"));
+    }
+
+    #[test]
+    #[ignore = "requires a configured OpenCode account and network access"]
+    fn opencode_live_turn() {
+        let cwd = std::env::temp_dir().join(format!("hifi-opencode-live-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("create temporary OpenCode cwd");
+        let cfg = RunConfig {
+            harness: "opencode".into(),
+            model: "opencode/big-pickle".into(),
+            cwd: cwd.display().to_string(),
+            guard: Guard::Strict,
+            session: String::new(),
+            prompt: "Reply with exactly the word PONG and nothing else.".into(),
+            tab_id: "test-tab".into(),
+            first_turn: false,
+        };
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let run = spawn(cfg, tx).expect("OpenCode must be installed");
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let events = futures::executor::block_on(async move {
+                let mut events = Vec::new();
+                while let Some(event) = rx.next().await {
+                    let done = matches!(event, AgentEvent::Done { .. });
+                    events.push(event);
+                    if done {
+                        break;
+                    }
+                }
+                events
+            });
+            let _ = events_tx.send(events);
+        });
+        let result = events_rx.recv_timeout(Duration::from_secs(120));
+        run.stop();
+        let _ = std::fs::remove_dir_all(&cwd);
+        let events = result.expect("OpenCode did not finish within 120 seconds");
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Text { text, .. } if text.contains("PONG")
+            )),
+            "OpenCode events did not contain PONG: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Done { error: None })),
+            "OpenCode did not complete successfully: {events:?}"
+        );
     }
 }

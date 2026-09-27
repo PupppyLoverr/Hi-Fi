@@ -10,7 +10,7 @@ use futures::channel::mpsc::UnboundedSender;
 use hifi_core::Guard;
 use serde_json::{Value, json};
 
-use crate::agent_runner::{AgentEvent, DESTRUCTIVE_PATTERNS, Run, RunConfig, value_text};
+use crate::agent_runner::{AgentEvent, Run, RunConfig, value_text};
 
 #[derive(Default)]
 pub(crate) struct UpdateState {
@@ -43,6 +43,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> String {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}).to_string()
 }
 
+/// Select a permission option according to Hi-Fi's guard policy.
 pub fn permission_response(params: &Value, guard: Guard) -> Value {
     let options = params
         .get("options")
@@ -55,13 +56,12 @@ pub fn permission_response(params: &Value, guard: Guard) -> Value {
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let raw = params.get("rawInput").map(value_text).unwrap_or_default();
-    let destructive = {
-        let haystack = format!("{title} {raw}").to_lowercase();
-        DESTRUCTIVE_PATTERNS
-            .iter()
-            .any(|pattern| haystack.contains(&pattern.to_lowercase()))
-    };
+    let raw = tool
+        .get("rawInput")
+        .or_else(|| params.get("rawInput"))
+        .map(value_text)
+        .unwrap_or_default();
+    let destructive = crate::agent_runner::is_destructive(&format!("{title} {raw}"));
     let wanted = match guard {
         Guard::Strict if matches!(kind, "read" | "fetch" | "search" | "think") => "allow_once",
         Guard::Strict => "reject_once",
@@ -185,6 +185,7 @@ pub(crate) fn events_from_update(update: &Value, state: &mut UpdateState) -> Vec
     events
 }
 
+/// Spawn an ACP harness and drive its initialize/session/prompt lifecycle.
 pub fn spawn(
     cfg: RunConfig,
     bin: PathBuf,
@@ -297,15 +298,14 @@ pub fn spawn(
                     let result = if method == "session/request_permission" {
                         permission_response(value.get("params").unwrap_or(&Value::Null), guard)
                     } else {
-                        if method.starts_with("fs/") || method.starts_with("terminal/") {
-                            let _ = write_tx.send(error_response(
-                                id,
-                                -32601,
-                                "Hi-Fi does not expose filesystem or terminal requests",
-                            ));
-                            continue;
-                        }
-                        json!({})
+                        let message =
+                            if method.starts_with("fs/") || method.starts_with("terminal/") {
+                                "Hi-Fi does not expose filesystem or terminal requests"
+                            } else {
+                                "Hi-Fi does not support this ACP request"
+                            };
+                        let _ = write_tx.send(error_response(id, -32601, message));
+                        continue;
                     };
                     let _ = write_tx.send(response(id, result));
                 }
@@ -490,6 +490,13 @@ mod tests {
         ]});
         assert_eq!(
             permission_response(&destructive, Guard::Balanced)["outcome"]["optionId"],
+            "reject"
+        );
+        let nested_raw = json!({"toolCall":{"kind":"execute","rawInput":"git push"},"options":[
+            {"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}
+        ]});
+        assert_eq!(
+            permission_response(&nested_raw, Guard::Balanced)["outcome"]["optionId"],
             "reject"
         );
         for (guard, expected) in [
