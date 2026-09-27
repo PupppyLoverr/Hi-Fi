@@ -20,7 +20,6 @@ use hifi_core::{SplitNode, Tab, TabId, TabKind};
 pub const COMPACT_WIDTH: f32 = 76.;
 /// cosmos `shell/spaces.rs` section metrics.
 const SIDEBAR_SECTION_GAP: f32 = 12.0;
-const SIDEBAR_DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
 const SIDEBAR_DISCLOSURE_BODY_INSET: f32 = 4.0;
 const PINNED_KEY: &str = "__pinned";
 
@@ -171,13 +170,13 @@ fn action_row(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(30.))
+        .h(px(Theme::ROW_H))
         .flex()
         .flex_none()
         .items_center()
         .gap(px(8.))
         .px(px(8.))
-        .rounded(px(8.))
+        .rounded(px(Theme::ROW_RADIUS))
         .cursor_pointer()
         .text_size(px(13.))
         .text_color(p.text.opacity(0.8))
@@ -202,8 +201,8 @@ impl Sidebar {
             .gap(px(8.))
             .px(px(8.))
             .py(px(6.))
-            .min_h(px(30.))
-            .rounded(px(8.))
+            .h(px(Theme::ROW_H))
+            .rounded(px(Theme::ROW_RADIUS))
             .cursor_pointer()
             .when(compact, |d| d.justify_center())
             .when(active, |d| {
@@ -371,7 +370,7 @@ impl Sidebar {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(px(SIDEBAR_DISCLOSURE_HEADER_HEIGHT))
+            .h(px(Theme::SECTION_HEADER_H))
             .px(px(Theme::SPACE_SM))
             .cursor_pointer()
             .child(
@@ -412,7 +411,7 @@ fn basename(path: &str) -> String {
 /// Row title: the page title for web/pages, the harness for sessions.
 fn row_title(tab: &Tab) -> String {
     match tab.kind {
-        TabKind::Agent if !tab.prompt.is_empty() => tab.prompt.clone(),
+        TabKind::Agent if !tab.prompt.is_empty() => clean_prompt(&tab.prompt, 48),
         TabKind::Notes if tab.title.is_empty() || tab.title == "Notes" => "Untitled".into(),
         TabKind::Notes => tab.title.clone(),
         TabKind::Terminal | TabKind::Agent | TabKind::Diff => {
@@ -420,6 +419,23 @@ fn row_title(tab: &Tab) -> String {
             t.split_once('/').map_or(t.clone(), |(k, _)| k.to_string())
         }
         _ => tab.display_title(),
+    }
+}
+
+fn clean_prompt(prompt: &str, max_chars: usize) -> String {
+    let cleaned = prompt
+        .replace(['*', '`', '#', '_'], "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = cleaned.chars();
+    let short: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else if short.is_empty() {
+        "Agent".into()
+    } else {
+        short
     }
 }
 
@@ -446,7 +462,14 @@ impl gpui::Render for Sidebar {
         let width = if compact {
             COMPACT_WIDTH
         } else {
-            state.settings.sidebar_width
+            if state.settings.sidebar_width > 0. {
+                state
+                    .settings
+                    .sidebar_width
+                    .clamp(Theme::SIDEBAR_MIN, Theme::SIDEBAR_MAX)
+            } else {
+                Theme::SIDEBAR_WIDTH
+            }
         };
         let Some(space) = state.active_space() else {
             return div().id("sidebar-empty");
@@ -501,7 +524,7 @@ impl gpui::Render for Sidebar {
         list = list.child(
             div()
                 .id("sb-space-header")
-                .h(px(32.))
+                .h(px(Theme::SPACE_SWITCHER_H))
                 .flex()
                 .flex_none()
                 .items_center()
@@ -513,7 +536,7 @@ impl gpui::Render for Sidebar {
                 .hover(|s| s.bg(p.glass_hover()))
                 .child(
                     div()
-                        .size(px(20.))
+                        .size(px(Theme::ROW_ICON_WELL))
                         .flex_none()
                         .rounded_full()
                         .bg(p.accent)
@@ -539,6 +562,15 @@ impl gpui::Render for Sidebar {
                     if let Some(id) = next_space.clone() {
                         store_hdr.update(cx, |s, cx| s.switch_space(&id, cx));
                     }
+                }),
+        );
+        let store_search = self.store.clone();
+        list = list.child(
+            action_row("sb-search", icons::MAGNIFER, "Search or jump…", compact, p)
+                .h(px(Theme::SIDEBAR_SEARCH_H))
+                .text_color(p.muted)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    store_search.update(cx, |s, cx| s.toggle_command_bar(cx));
                 }),
         );
 
@@ -600,10 +632,10 @@ impl gpui::Render for Sidebar {
             &'static str,
             TabKind,
             bool,
-        ); 2] = [
+        ); 3] = [
             (
                 "sb-chats",
-                "Chats",
+                "CHATS",
                 "New Chat",
                 icons::PEN_NEW_SQUARE,
                 "hifi://agent",
@@ -611,8 +643,17 @@ impl gpui::Render for Sidebar {
                 true,
             ),
             (
+                "sb-agents",
+                "AGENTS",
+                "New Agent",
+                icons::FILE_CODE,
+                "hifi://agent",
+                TabKind::Terminal,
+                true,
+            ),
+            (
                 "sb-pages",
-                "Pages",
+                "PAGES",
                 "New Page",
                 icons::DOCUMENT_ADD,
                 "hifi://notes",
@@ -650,19 +691,12 @@ impl gpui::Render for Sidebar {
             list = list.child(col);
         }
 
-        // Tabs: the browser's own section, then one disclosure per group.
+        // Today's browser tabs are grouped by space; multiple groups retain
+        // their disclosures while a single group reads as one list.
         list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
-        let store_nt = self.store.clone();
-        list = list.child(
-            action_row("sb-new-tab", icons::PLUS, "New Tab", compact, p)
-                .text_color(p.muted)
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    store_nt.update(cx, |s, cx| {
-                        s.open_tab("hifi://newtab", None, None, cx);
-                    });
-                }),
-        );
-
+        if !compact {
+            list = list.child(self.disclosure("sb-today", "__today", "TODAY", true, None, p, cx));
+        }
         for group in &groups {
             let gid = group.id.clone();
             let g_active = active_group.as_ref() == Some(&gid);
@@ -727,6 +761,17 @@ impl gpui::Render for Sidebar {
                 continue;
             }
             let open = !self.collapsed.contains(&gid);
+            if groups.len() == 1 {
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .gap(px(1.))
+                        .children(rows),
+                );
+                continue;
+            }
             let store_plus = self.store.clone();
             let gid_plus = gid.clone();
             let plus = div()
@@ -803,7 +848,7 @@ impl gpui::Render for Sidebar {
             .items_center()
             .gap(px(4.))
             .px(px(Theme::SPACE_SM))
-            .h(px(44.))
+            .h(px(Theme::SPACE_DOCK_H))
             .border_t_1()
             .border_color(p.hairline(0.05))
             .when(compact, |d| d.flex_col().h_auto().py(px(8.)));
@@ -815,7 +860,7 @@ impl gpui::Render for Sidebar {
             bottom = bottom.child(
                 div()
                     .id(SharedString::from(format!("space-{id}")))
-                    .size(px(24.))
+                    .size(px(Theme::SPACE_DOCK_BTN))
                     .flex_none()
                     .rounded(px(6.))
                     .flex()

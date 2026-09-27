@@ -8,6 +8,8 @@ use hifi_core::{
 };
 use std::collections::HashSet;
 
+use crate::theme::Theme;
+
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub title: String,
@@ -543,7 +545,7 @@ impl Store {
     }
 
     pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
-        self.state.settings.sidebar_width = width.clamp(224., 400.);
+        self.state.settings.sidebar_width = width.clamp(Theme::SIDEBAR_MIN, Theme::SIDEBAR_MAX);
         self.save();
         cx.notify();
     }
