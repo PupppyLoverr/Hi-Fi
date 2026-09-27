@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use gpui::{
     AnyElement, App, Context, Entity, Focusable, MouseButton, SharedString, Window,
-    WindowControlArea, deferred, div, prelude::*, px, relative,
+    WindowControlArea, Bounds, deferred, div, point, prelude::*, px, relative, size,
 };
 
 use crate::assets::icons;
@@ -366,15 +366,16 @@ impl Shell {
         let js = match req.method.as_str() {
             m::TAB_EXEC => get("js").unwrap_or_default(),
             m::TAB_SNAPSHOT => crate::jsbridge::SNAPSHOT_JS.to_string(),
-            m::TAB_CLICK => format!(
-                "(()=>{{const el=document.querySelector({});el&&el.click();return JSON.stringify({{ok:!!el}})}})()",
-                serde_json::to_string(&get("target").unwrap_or_default()).unwrap()
+            m::TAB_READ => crate::jsbridge::READ_JS.to_string(),
+            m::TAB_CLICK => crate::jsbridge::click_js(&get("target").unwrap_or_default()),
+            m::TAB_TYPE => crate::jsbridge::type_js(
+                &get("target").unwrap_or_default(),
+                &get("text").unwrap_or_default(),
+                p.get("submit").and_then(|v| v.as_bool()).unwrap_or(false),
             ),
-            m::TAB_TYPE => format!(
-                "(()=>{{const el=document.querySelector({});if(el){{el.focus();el.value={};el.dispatchEvent(new Event('input',{{bubbles:true}}))}}return JSON.stringify({{ok:!!el}})}})()",
-                serde_json::to_string(&get("target").unwrap_or_default()).unwrap(),
-                serde_json::to_string(&get("text").unwrap_or_default()).unwrap()
-            ),
+            m::TAB_SCROLL => {
+                crate::jsbridge::scroll_js(p.get("dy").and_then(|v| v.as_f64()).unwrap_or(600.0))
+            }
             _ => return Err("bad method".into()),
         };
         Ok(js)
@@ -466,7 +467,6 @@ impl Shell {
     fn handle_ipc(&mut self, job: IpcJob, _window: &mut Window, cx: &mut Context<Self>) {
         use hifi_core::ipc::methods as m;
         use serde_json::json;
-        let id = job.request.id.clone();
         let p = &job.request.params;
         let get = |k: &str| p.get(k).and_then(|v| v.as_str()).map(String::from);
         let result: Result<serde_json::Value, String> = match job.request.method.as_str() {
@@ -497,6 +497,13 @@ impl Shell {
                 } else {
                     url
                 };
+                if let Some(owner) = get("agentOf") {
+                    let id = self
+                        .store
+                        .update(cx, |s, cx| s.open_agent_tab(&target_url, &owner, cx));
+                    self.ensure_headless_host(&id, _window, cx);
+                    return self.finish_ipc(job, Ok(json!({"id": id})));
+                }
                 Ok(self.store.update(cx, |s, cx| {
                     let id = s.open_tab_sized(&target_url, group, anchor, size, cx);
                     if let Some(t) = s.state.tab_mut(&id) {
@@ -572,7 +579,7 @@ impl Shell {
                     .tabs
                     .iter()
                     .map(|t| {
-                        json!({"id": t.id, "kind": t.kind.as_str(), "title": t.title, "url": t.url, "pinned": t.pinned, "groupId": t.group_id})
+                        json!({"id": t.id, "kind": t.kind.as_str(), "title": t.title, "url": t.url, "pinned": t.pinned, "groupId": t.group_id, "agentOf": t.agent_of, "loading": t.loading})
                     })
                     .collect();
                 Ok(json!(tabs))
@@ -587,6 +594,7 @@ impl Shell {
             }
             m::TAB_NAVIGATE => match (get("id"), get("url")) {
                 (Some(id), Some(url)) => {
+                    self.ensure_headless_host(&id, _window, cx);
                     if let Some(Pane::Web(h)) = self.panes.get(&id) {
                         h.load(&url);
                     }
@@ -621,12 +629,19 @@ impl Shell {
                 }
                 Ok(json!({"ok": true}))
             }
-            m::TAB_EXEC | m::TAB_SNAPSHOT | m::TAB_CLICK | m::TAB_TYPE => {
+            m::TAB_EXEC | m::TAB_SNAPSHOT | m::TAB_CLICK | m::TAB_TYPE | m::TAB_READ
+            | m::TAB_SCROLL => {
+                if let Some(id) = get("id") {
+                    self.ensure_headless_host(&id, _window, cx);
+                }
                 self.ipc_eval_async(&job.request, job.reply.clone());
                 return;
             }
             m::TAB_SCREENSHOT => {
                 let id = get("id");
+                if let Some(id) = &id {
+                    self.ensure_headless_host(id, _window, cx);
+                }
                 let host = id
                     .as_ref()
                     .and_then(|id| self.panes.get(id))
@@ -684,11 +699,39 @@ impl Shell {
             }
             other => Err(format!("unknown method {other}")),
         };
+        self.finish_ipc(job, result);
+    }
+
+    fn finish_ipc(&self, job: IpcJob, result: Result<serde_json::Value, String>) {
+        let id = job.request.id.clone();
         let response = match result {
             Ok(v) => hifi_core::IpcResponse::ok(id, v),
             Err(e) => hifi_core::IpcResponse::err(id, e),
         };
         let _ = job.reply.send(response);
+    }
+
+    /// Agent-owned web tabs live outside the split tree, so nothing renders
+    /// them. Give such a tab a hidden, viewport-sized page host so the agent's
+    /// snapshot/click/type/read tools work without it ever appearing on
+    /// screen.
+    fn ensure_headless_host(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes.contains_key(id) {
+            return;
+        }
+        let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
+            return;
+        };
+        if tab.kind != TabKind::Web {
+            return;
+        }
+        let is_dark = Theme::of(cx).palette.is_dark;
+        if let Some(host) = self.web_host(&tab, is_dark, window, cx) {
+            host.sync_bounds(
+                Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.))),
+                false,
+            );
+        }
     }
 
     // ----- layout -----

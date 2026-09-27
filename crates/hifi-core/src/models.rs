@@ -77,6 +77,53 @@ pub struct Tab {
     /// Agent tabs: the task the harness was started with.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prompt: String,
+    /// Agent tabs: `provider/model` the harness runs with.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// Agent tabs: harness session id, so follow-ups continue the thread.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session: String,
+    /// Agent tabs: what the agent may do on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Guard>,
+    /// Web tabs an agent opened for itself: the chat tab that owns them. They
+    /// stay out of the split tree until the user shows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_of: Option<TabId>,
+}
+
+/// Permission level for an agent run. Browser tools and file reads are always
+/// allowed; the level decides what else is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Guard {
+    /// Read files and browse only — no edits, no shell.
+    Strict,
+    /// Edit files and run commands, except destructive ones.
+    #[default]
+    Balanced,
+    /// Everything, no prompts.
+    Full,
+}
+
+impl Guard {
+    pub const ALL: [Guard; 3] = [Guard::Strict, Guard::Balanced, Guard::Full];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Guard::Strict => "Strict",
+            Guard::Balanced => "Balanced",
+            Guard::Full => "Full",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Guard::Strict => "Browse and read files only",
+            Guard::Balanced => "Edit and run, destructive commands blocked",
+            Guard::Full => "Everything allowed",
+        }
+    }
 }
 
 impl Tab {
@@ -97,6 +144,10 @@ impl Tab {
             can_go_forward: false,
             favicon_url: String::new(),
             prompt: String::new(),
+            model: String::new(),
+            session: String::new(),
+            guard: None,
+            agent_of: None,
         }
     }
 
@@ -452,6 +503,24 @@ pub struct Settings {
     /// Search engine query template ("{q}" placeholder).
     #[serde(default = "default_search")]
     pub search_engine: String,
+    /// Default harness command for new chats ("opencode", "claude", …).
+    #[serde(default = "default_harness")]
+    pub agent_harness: String,
+    /// Default `provider/model` for new chats.
+    #[serde(default = "default_model")]
+    pub agent_model: String,
+    #[serde(default)]
+    pub agent_guard: Guard,
+    /// Default working folder for new chats; empty = home.
+    #[serde(default)]
+    pub agent_cwd: String,
+}
+
+fn default_harness() -> String {
+    "opencode".into()
+}
+fn default_model() -> String {
+    "opencode/big-pickle".into()
 }
 
 fn default_blur() -> f32 {
@@ -479,6 +548,10 @@ impl Default for Settings {
             sidebar_width: default_sidebar_width(),
             restore_session: true,
             search_engine: default_search(),
+            agent_harness: default_harness(),
+            agent_model: default_model(),
+            agent_guard: Guard::default(),
+            agent_cwd: String::new(),
         }
     }
 }

@@ -49,8 +49,14 @@ impl HifiPaths {
         self.root.join("notes")
     }
 
+    /// Agent chat transcripts — one JSON file per chat tab.
+    pub fn chats_dir(&self) -> PathBuf {
+        self.root.join("chats")
+    }
+
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)?;
-        std::fs::create_dir_all(self.notes_dir())
+        std::fs::create_dir_all(self.notes_dir())?;
+        std::fs::create_dir_all(self.chats_dir())
     }
 }

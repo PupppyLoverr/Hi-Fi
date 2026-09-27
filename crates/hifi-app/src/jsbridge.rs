@@ -18,3 +18,66 @@ pub const SNAPSHOT_JS: &str = r#"(() => {
   }
   return JSON.stringify({ url: location.href, title: document.title, elements: out });
 })()"#;
+
+/// Page text for agents: title, url and the visible innerText, capped so a
+/// long page doesn't blow up the model context.
+pub const READ_JS: &str = r#"(() => {
+  const text = (document.body?.innerText || '').replace(/\n{3,}/g, '\n\n').slice(0, 20000);
+  return JSON.stringify({ url: location.href, title: document.title, text });
+})()"#;
+
+/// Human-style click: scroll into view, then dispatch the pointer sequence
+/// a real click produces (so pages listening for pointer/mouse events react).
+pub fn click_js(selector: &str) -> String {
+    format!(
+        r#"(() => {{
+  const el = document.querySelector({sel});
+  if (!el) return JSON.stringify({{ ok: false, error: 'no element matches selector' }});
+  el.scrollIntoView({{ block: 'center', inline: 'center' }});
+  const r = el.getBoundingClientRect();
+  const o = {{ bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 }};
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t, o));
+  el.focus && el.focus();
+  el.click();
+  return JSON.stringify({{ ok: true, label: (el.innerText || el.value || el.getAttribute('aria-label') || '').slice(0, 80) }});
+}})()"#,
+        sel = serde_json::to_string(selector).unwrap_or_default()
+    )
+}
+
+/// Human-style typing: focus, replace the value, fire input/change; `submit`
+/// presses Enter afterwards (form submit or keydown handlers).
+pub fn type_js(selector: &str, text: &str, submit: bool) -> String {
+    format!(
+        r#"(() => {{
+  const el = document.querySelector({sel});
+  if (!el) return JSON.stringify({{ ok: false, error: 'no element matches selector' }});
+  el.scrollIntoView({{ block: 'center' }});
+  el.focus();
+  if (el.isContentEditable) el.textContent = {text}; else {{
+    const proto = Object.getPrototypeOf(el);
+    const d = Object.getOwnPropertyDescriptor(proto, 'value');
+    d && d.set ? d.set.call(el, {text}) : (el.value = {text});
+  }}
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  if ({submit}) {{
+    const k = {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }};
+    const stop = !el.dispatchEvent(new KeyboardEvent('keydown', k));
+    el.dispatchEvent(new KeyboardEvent('keypress', k));
+    el.dispatchEvent(new KeyboardEvent('keyup', k));
+    if (!stop && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+  }}
+  return JSON.stringify({{ ok: true }});
+}})()"#,
+        sel = serde_json::to_string(selector).unwrap_or_default(),
+        text = serde_json::to_string(text).unwrap_or_default(),
+        submit = submit
+    )
+}
+
+pub fn scroll_js(dy: f64) -> String {
+    format!(
+        "(()=>{{window.scrollBy({{top:{dy},behavior:'instant'}});return JSON.stringify({{ok:true,y:Math.round(window.scrollY),max:Math.round(document.documentElement.scrollHeight-window.innerHeight)}})}})()"
+    )
+}

@@ -60,6 +60,9 @@ pub mod methods {
     pub const TAB_CLICK: &str = "tab.click";
     pub const TAB_TYPE: &str = "tab.type";
     pub const TAB_SCREENSHOT: &str = "tab.screenshot";
+    /// Visible text of the page (agent reading surface).
+    pub const TAB_READ: &str = "tab.read";
+    pub const TAB_SCROLL: &str = "tab.scroll";
     pub const GROUP_LIST: &str = "group.list";
     pub const GROUP_CREATE: &str = "group.create";
     pub const SPACE_LIST: &str = "space.list";

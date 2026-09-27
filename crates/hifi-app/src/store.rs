@@ -179,6 +179,55 @@ impl Store {
         cx.notify();
     }
 
+    /// A web tab an agent chat opened for itself. It lives in the chat's
+    /// group but outside the split tree, so the user's panes never change;
+    /// `show_agent_tab` brings it on screen on request.
+    pub fn open_agent_tab(&mut self, url: &str, owner: &str, cx: &mut Context<Self>) -> TabId {
+        let gid = self
+            .state
+            .tab(owner)
+            .map(|t| t.group_id.clone())
+            .or_else(|| {
+                self.state.active_space().and_then(|s| {
+                    s.active_group
+                        .clone()
+                        .or_else(|| s.groups.first().map(|g| g.id.clone()))
+                })
+            })
+            .unwrap_or_else(|| self.create_group("Tabs", None, cx));
+        let mut tab = hifi_core::Tab::new(TabKind::Web, url, gid);
+        tab.agent_of = Some(owner.to_string());
+        tab.loading = true;
+        let id = tab.id.clone();
+        self.state.tabs.push(tab);
+        self.save();
+        cx.notify();
+        id
+    }
+
+    /// Web tabs owned by an agent chat, in creation order.
+    pub fn agent_tabs(&self, owner: &str) -> Vec<&hifi_core::Tab> {
+        self.state
+            .tabs
+            .iter()
+            .filter(|t| t.agent_of.as_deref() == Some(owner))
+            .collect()
+    }
+
+    /// Put an agent-owned tab into its group's split tree and focus it.
+    pub fn show_agent_tab(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(tab) = self.state.tab(id) else {
+            return;
+        };
+        let gid = tab.group_id.clone();
+        if let Some(group) = self.state.group_mut(&gid)
+            && !group.tab_ids().iter().any(|t| t == id)
+        {
+            group.add_tab(id.to_string());
+        }
+        self.focus_tab(id, cx);
+    }
+
     pub fn focus_tab(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(tab) = self.state.tab(id) else {
             return;
