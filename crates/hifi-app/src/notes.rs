@@ -5,7 +5,7 @@
 //! through wry's `window.ipc.postMessage` channel.
 
 /// Payload the editor posts on every autosave.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct PageSave {
     pub title: String,
     pub html: String,
@@ -110,7 +110,7 @@ const doc = document.getElementById('doc');
 const titleEl = document.getElementById('title');
 const menu = document.getElementById('menu');
 doc.innerHTML = {body_json} || '<div><br></div>';
-titleEl.textContent = {title_json};
+  titleEl.textContent = {title_json}.replace(/[\u0000-\u001f\u007f-\u009f\u2612]/g, '');
 
 let saveTimer = null;
 function save() {{
@@ -119,10 +119,44 @@ function save() {{
 }}
 function queue() {{ clearTimeout(saveTimer); saveTimer = setTimeout(save, 500); placeholder(); }}
 doc.addEventListener('input', queue);
-titleEl.addEventListener('input', queue);
+titleEl.addEventListener('input', () => {{
+  const clean = Array.from(titleEl.textContent || '').filter(ch => {{
+    const code = ch.codePointAt(0) || 0;
+    return code >= 0x20 && code !== 0x7F && !(code >= 0x80 && code <= 0x9F)
+      && code !== 0x2612
+      && !(code >= 0xE000 && code <= 0xF8FF)
+      && !(code >= 0xF0000 && code <= 0xFFFFD)
+      && !(code >= 0x100000 && code <= 0x10FFFD);
+  }}).join('');
+  if (clean !== titleEl.textContent) {{
+    titleEl.textContent = clean;
+    caretTo(titleEl, false);
+  }}
+  queue();
+}});
+titleEl.addEventListener('beforeinput', (e) => {{
+  const data = e.data || '';
+  if (Array.from(data).some(ch => {{
+    const code = ch.codePointAt(0) || 0;
+    return code < 0x20 || (code >= 0x7F && code <= 0x9F) || code === 0x2612;
+  }})) e.preventDefault();
+}});
 window.addEventListener('beforeunload', save);
 titleEl.addEventListener('keydown', (e) => {{
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'Home' || e.key === 'End') {{
+    e.preventDefault(); caretTo(titleEl, e.key === 'Home'); return;
+  }}
   if (e.key === 'Enter') {{ e.preventDefault(); caretTo(doc.firstElementChild || doc, true); }}
+  const code = (e.key || '').codePointAt(0) || 0;
+  const printable = Array.from(e.key || '').length === 1
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(e.key)
+    && !((code >= 0xE000 && code <= 0xF8FF)
+      || (code >= 0xF0000 && code <= 0xFFFFD)
+      || (code >= 0x100000 && code <= 0x10FFFD)
+      || code === 0x2612);
+  const editing = ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab'];
+  if (!printable && !editing.includes(e.key) && e.key !== 'Enter') e.preventDefault();
 }});
 
 function block() {{
@@ -139,7 +173,7 @@ function leaf() {{
 }}
 function caretTo(el, start) {{
   const r = document.createRange(); r.selectNodeContents(el); r.collapse(!!start);
-  const s = getSelection(); s.removeAllRanges(); s.addRange(r); el.focus && doc.focus();
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r); el.focus && el.focus();
 }}
 function placeholder() {{
   doc.querySelectorAll('.ph').forEach(n => n.classList.remove('ph'));

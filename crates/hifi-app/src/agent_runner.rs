@@ -470,6 +470,36 @@ pub fn events_from_opencode(v: &Value) -> Vec<AgentEvent> {
 
 /// Fallback title when the harness gives none: the most telling input field.
 fn tool_title(tool: &str, input: Option<&Value>) -> String {
+    let tool_name = tool.trim_start_matches("hifi_");
+    if tool_name == "browser_click" || tool_name == "browser_type" {
+        let verb = if tool_name == "browser_click" {
+            "Click"
+        } else {
+            "Type into"
+        };
+        if let Some(label) = input
+            .and_then(|i| i.get("label").or_else(|| i.get("name")))
+            .and_then(Value::as_str)
+            .filter(|label| !label.is_empty())
+        {
+            return format!("{verb} \"{label}\"");
+        }
+        if let Some(target) = input.and_then(|i| i.get("target")) {
+            let index = target.as_u64().map(|n| n.to_string()).or_else(|| {
+                target.as_str().and_then(|target| {
+                    target
+                        .strip_prefix("[data-hifi=\"")
+                        .and_then(|target| target.strip_suffix("\"]"))
+                        .filter(|index| index.chars().all(|c| c.is_ascii_digit()))
+                        .map(str::to_string)
+                })
+            });
+            if let Some(index) = index {
+                return format!("{verb} element #{index}");
+            }
+        }
+        return format!("{verb} element");
+    }
     let pick = |keys: &[&str]| {
         input.and_then(|i| {
             keys.iter()
@@ -487,11 +517,7 @@ fn tool_title(tool: &str, input: Option<&Value>) -> String {
         "text",
         "description",
     ])
-    .unwrap_or_else(|| {
-        tool.trim_start_matches("hifi_")
-            .replace('_', " ")
-            .to_string()
-    })
+    .unwrap_or_else(|| tool_name.replace('_', " "))
 }
 
 #[cfg(test)]

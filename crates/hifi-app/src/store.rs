@@ -6,6 +6,7 @@ use hifi_core::{
     Group, GroupId, HifiPaths, RoutedUrl, Settings, Space, SplitSide, Tab, TabId, TabKind,
     WorkspaceState, route,
 };
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
@@ -41,12 +42,74 @@ pub struct Store {
     pub live_agents: Vec<TabId>,
 }
 
+fn prune_empty_dock_tabs(state: &mut WorkspaceState, keep_one_per_dock: bool) {
+    let empty_ids: HashSet<TabId> = state
+        .tabs
+        .iter()
+        .filter(|tab| tab.kind == TabKind::NewTab && tab.url == "hifi://newtab")
+        .map(|tab| tab.id.clone())
+        .collect();
+    let mut removed = Vec::new();
+    for space in &mut state.spaces {
+        for group in &mut space.groups {
+            let mut kept_empty = false;
+            for id in &group.dock.tabs {
+                if empty_ids.contains(id) && (!keep_one_per_dock || kept_empty) {
+                    removed.push(id.clone());
+                } else {
+                    kept_empty |= empty_ids.contains(id);
+                }
+            }
+            group
+                .dock
+                .tabs
+                .retain(|id| !removed.iter().any(|removed| removed == id));
+            if group
+                .dock
+                .active
+                .as_ref()
+                .is_some_and(|id| removed.iter().any(|removed| removed == id))
+            {
+                group.dock.active = group.dock.tabs.last().cloned();
+            }
+            if group.dock.tabs.is_empty() {
+                group.dock.active = None;
+                group.dock.open = false;
+            }
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    state.tabs.retain(|tab| {
+        if !removed.contains(&tab.id) {
+            return true;
+        }
+        state
+            .spaces
+            .iter()
+            .flat_map(|space| &space.groups)
+            .any(|group| {
+                group
+                    .root
+                    .as_ref()
+                    .is_some_and(|root| root.contains(&tab.id))
+            })
+            || state
+                .spaces
+                .iter()
+                .flat_map(|space| &space.groups)
+                .any(|group| group.dock.tabs.contains(&tab.id))
+    });
+}
+
 impl Store {
     pub fn load(cx: &mut App) -> Entity<Store> {
         let paths = HifiPaths::detect();
         let _ = paths.ensure_dirs();
         let file = hifi_core::StateFile::new(paths.state_file());
         let mut state = file.load();
+        prune_empty_dock_tabs(&mut state, true);
         if state.spaces.is_empty() {
             let mut space = Space::new("Personal");
             let mut group = Group::new("Tabs");
@@ -277,6 +340,7 @@ impl Store {
     /// Open a surface tab in the dock and activate it. Reuses `open_tab`
     /// routing so `hifi://terminal`, `hifi://notes`, URLs etc. all work.
     pub fn dock_open(&mut self, url_or_kind: &str, cx: &mut Context<Self>) -> TabId {
+        prune_empty_dock_tabs(&mut self.state, false);
         // Create the tab outside the split tree — group_id points at the
         // active group for ownership but membership is the dock stack.
         let gid = self
@@ -406,14 +470,33 @@ impl Store {
 
     /// Body HTML of a notes tab, persisted one file per tab id.
     pub fn notes_body(&self, tab_id: &str) -> String {
-        std::fs::read_to_string(self.paths.notes_dir().join(format!("{tab_id}.html")))
-            .unwrap_or_default()
+        let raw = std::fs::read_to_string(self.paths.notes_dir().join(format!("{tab_id}.html")))
+            .unwrap_or_default();
+        serde_json::from_str::<crate::notes::PageSave>(&raw)
+            .map(|page| page.html)
+            .unwrap_or(raw)
     }
 
-    pub fn notes_save(&mut self, tab_id: &str, html: &str) {
+    pub fn notes_title(&self, tab_id: &str) -> Option<String> {
+        let raw =
+            std::fs::read_to_string(self.paths.notes_dir().join(format!("{tab_id}.html"))).ok()?;
+        serde_json::from_str::<crate::notes::PageSave>(&raw)
+            .ok()
+            .map(|page| page.title)
+            .filter(|title| !title.is_empty())
+    }
+
+    pub fn notes_save(&mut self, tab_id: &str, title: &str, html: &str) {
         let dir = self.paths.notes_dir();
         let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join(format!("{tab_id}.html")), html);
+        let page = crate::notes::PageSave {
+            title: title.to_string(),
+            html: html.to_string(),
+        };
+        let _ = std::fs::write(
+            dir.join(format!("{tab_id}.html")),
+            serde_json::to_string(&page).unwrap_or_else(|_| html.to_string()),
+        );
     }
 
     /// Turn an existing tab (a New Tab, wherever it lives) into an agent
@@ -457,6 +540,42 @@ impl Store {
         }
         self.save();
         cx.notify();
+    }
+
+    /// Fill per-chat agent settings for restored chats created before those
+    /// fields were persisted. Existing values always win over current defaults.
+    pub fn hydrate_agent_settings(&mut self, id: &str, cx: &mut Context<Self>) {
+        let defaults = self.state.settings.clone();
+        let mut changed = false;
+        if let Some(tab) = self.state.tab_mut(id)
+            && tab.kind == TabKind::Agent
+        {
+            let harness = if tab.command.is_empty() {
+                defaults.agent_harness.as_str()
+            } else {
+                tab.command.as_str()
+            };
+            if tab.model.is_empty() {
+                tab.model = if harness == defaults.agent_harness {
+                    defaults.agent_model.clone()
+                } else {
+                    crate::agent_runner::harness(harness).models[0].to_string()
+                };
+                changed = true;
+            }
+            if tab.guard.is_none() {
+                tab.guard = Some(defaults.agent_guard);
+                changed = true;
+            }
+            if tab.cwd.is_empty() && !defaults.agent_cwd.is_empty() {
+                tab.cwd = defaults.agent_cwd.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            self.save();
+            cx.notify();
+        }
     }
 
     /// Pick harness + model for a chat; also becomes the default for new chats.

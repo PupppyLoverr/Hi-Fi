@@ -510,11 +510,34 @@ impl WebPaneHost {
         }
         let printable = stroke.key_char.as_deref().filter(|s| {
             s.chars().count() == 1
-                && !s.chars().any(char::is_control)
+                && s.chars().all(|c| {
+                    !c.is_control()
+                        && c != '\u{2612}'
+                        && !(0xE000..=0xF8FF).contains(&(c as u32))
+                        && !(0xF0000..=0xFFFFD).contains(&(c as u32))
+                        && !(0x100000..=0x10FFFD).contains(&(c as u32))
+                })
                 && !stroke.modifiers.control
                 && !stroke.modifiers.platform
+                && !matches!(
+                    stroke.key.as_str(),
+                    "home"
+                        | "end"
+                        | "left"
+                        | "right"
+                        | "up"
+                        | "down"
+                        | "pageup"
+                        | "pagedown"
+                        | "insert"
+                        | "delete"
+                        | "backspace"
+                        | "escape"
+                        | "tab"
+                        | "enter"
+                )
         });
-        let key = match printable.unwrap_or(stroke.key.as_str()) {
+        let key = match stroke.key.as_str() {
             "enter" => "Return",
             "backspace" => "BackSpace",
             "delete" => "Delete",
@@ -529,12 +552,12 @@ impl WebPaneHost {
             "pageup" => "Page_Up",
             "pagedown" => "Page_Down",
             "space" => "space",
-            key => key,
+            _ => printable.unwrap_or(""),
         };
         self.command(json!({
             "cmd": if down { "key_down" } else { "key_up" },
             "key": key,
-            "text": stroke.key_char.as_deref().unwrap_or(""),
+            "text": printable.unwrap_or(""),
             "mods": modifiers_mask(stroke.modifiers),
         }));
     }

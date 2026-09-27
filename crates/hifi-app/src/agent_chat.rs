@@ -4,10 +4,11 @@
 //! `chats/<tab>.json` so it survives restarts.
 
 use gpui::{
-    Context, Entity, Focusable, MouseButton, PathPromptOptions, ScrollHandle, SharedString, Window,
-    div, prelude::*, px,
+    Context, Entity, Focusable, FontWeight, MouseButton, PathPromptOptions, ScrollHandle,
+    SharedString, StyledText, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -68,6 +69,8 @@ impl AgentChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let settings_id = tab_id.clone();
+        store.update(cx, |s, cx| s.hydrate_agent_settings(&settings_id, cx));
         let input = cx.new(|cx| TextField::new("Reply, @ for context", cx));
         cx.subscribe(&input, |me: &mut AgentChatView, input, event, cx| {
             let TextFieldEvent::Submitted(text) = event else {
@@ -364,6 +367,91 @@ fn short(text: &str, n: usize) -> String {
     }
 }
 
+fn markdown_text(text: &str) -> StyledText {
+    let parts: Vec<&str> = text.split("**").collect();
+    if parts.len() < 3 || parts.len().is_multiple_of(2) {
+        return StyledText::new(text.replace("**", ""));
+    }
+    let mut plain = String::new();
+    let mut highlights = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let start = plain.len();
+        plain.push_str(part);
+        if index % 2 == 1 && start < plain.len() {
+            highlights.push((start..plain.len(), FontWeight::BOLD.into()));
+        }
+    }
+    StyledText::new(plain).with_highlights(highlights)
+}
+
+fn short_error(text: &str) -> String {
+    let mut result = text.lines().take(3).collect::<Vec<_>>().join("\n");
+    if result.chars().count() > 300 {
+        result = result.chars().take(300).collect();
+        result.push('…');
+    }
+    result
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn display_tool_title(tool: &str, title: &str, output: &str, cwd: &str) -> String {
+    let tool = tool.to_ascii_lowercase();
+    if tool.contains("browser_click") || tool.contains("browser_type") {
+        let verb = if tool.contains("browser_click") {
+            "Click"
+        } else {
+            "Type into"
+        };
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(output)
+            && let Some(label) = result.get("label").and_then(serde_json::Value::as_str)
+        {
+            return if verb == "Click" {
+                format!("{verb} \"{label}\"")
+            } else {
+                format!("{verb} <{label}>")
+            };
+        }
+        if let Some(index) = title
+            .strip_prefix("[data-hifi=\"")
+            .and_then(|target| target.strip_suffix("\"]"))
+            .filter(|index| index.chars().all(|c| c.is_ascii_digit()))
+        {
+            return format!("{verb} element #{index}");
+        }
+    }
+    if !(tool.contains("write") || tool.contains("edit") || tool.contains("patch")) {
+        return title.to_string();
+    }
+    let base = normalize_path(Path::new(cwd));
+    let path = Path::new(title);
+    let resolved = normalize_path(
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base.join(path)
+        }
+        .as_path(),
+    );
+    if let Ok(relative) = resolved.strip_prefix(&base) {
+        relative.display().to_string()
+    } else {
+        resolved.display().to_string()
+    }
+}
+
 fn tool_icon(tool: &str) -> &'static str {
     let t = tool.to_lowercase();
     if t.contains("browser_open") || t.contains("navigate") || t.contains("webfetch") {
@@ -543,10 +631,10 @@ fn step_row(
             d.child(
                 div()
                     .min_w_0()
-                    .truncate()
                     .text_size(px(11.5))
+                    .line_clamp(3)
                     .text_color(p.danger.opacity(0.8))
-                    .child(short(e, 90)),
+                    .child(short_error(e)),
             )
         })
 }
@@ -574,6 +662,7 @@ impl gpui::Render for AgentChatView {
             .map(|t| t.cwd.clone())
             .filter(|c| !c.is_empty())
             .unwrap_or_else(|| self.store.read(cx).state.settings.agent_cwd.clone());
+        let session = tab.as_ref().map(|t| t.session.clone()).unwrap_or_default();
         let h_icon = crate::sidebar::mark_icon(&harness);
         let title = self
             .items
@@ -649,7 +738,13 @@ impl gpui::Render for AgentChatView {
                 } => {
                     let expanded = self.expanded.contains(id);
                     let has_output = !output.trim().is_empty();
-                    let row = step_row(tool_icon(tool), title.clone(), *done, error.as_deref(), &p);
+                    let row = step_row(
+                        tool_icon(tool),
+                        display_tool_title(tool, title, output, &cwd),
+                        *done,
+                        error.as_deref(),
+                        &p,
+                    );
                     let key = id.clone();
                     div()
                         .flex()
@@ -689,7 +784,7 @@ impl gpui::Render for AgentChatView {
                     .text_size(px(13.5))
                     .line_height(px(21.))
                     .text_color(p.text)
-                    .child(text.clone()),
+                    .child(markdown_text(text)),
                 Item::Note { text } => div()
                     .my(px(6.))
                     .px(px(10.))
@@ -949,6 +1044,15 @@ impl gpui::Render for AgentChatView {
                             },
                         )),
                     )
+                    .when(!session.is_empty(), |d| {
+                        d.child(chip(
+                            "chat-session",
+                            icons::LINK,
+                            format!("Session · {}", short(&session, 12)),
+                            false,
+                            &p,
+                        ))
+                    })
                     .child(div().flex_1())
                     .child(
                         chip(

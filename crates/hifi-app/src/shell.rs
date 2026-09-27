@@ -265,10 +265,10 @@ impl Shell {
                     let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
                     self.store.update(cx, |s, cx| match page {
                         Some(page) => {
-                            s.notes_save(&tab, &page.html);
+                            s.notes_save(&tab, &page.title, &page.html);
                             s.set_title(&tab, page.title, cx);
                         }
-                        None => s.notes_save(&tab, &html),
+                        None => s.notes_save(&tab, "", &html),
                     });
                 }
                 #[cfg(target_os = "linux")]
@@ -452,7 +452,20 @@ impl Shell {
                 let host = Rc::new(host);
                 if tab.kind == TabKind::Notes {
                     let body = self.store.read(cx).notes_body(&tab.id);
-                    host.load_html(&crate::notes::editor_html(&body, &tab.title, is_dark));
+                    let saved_title = self.store.read(cx).notes_title(&tab.id);
+                    let title = if tab.title.is_empty() || tab.title == "Notes" {
+                        saved_title.clone().unwrap_or_else(|| tab.title.clone())
+                    } else {
+                        tab.title.clone()
+                    };
+                    if let Some(saved_title) = saved_title
+                        && (tab.title.is_empty() || tab.title == "Notes")
+                    {
+                        let id = tab.id.clone();
+                        self.store
+                            .update(cx, |s, cx| s.set_title(&id, saved_title, cx));
+                    }
+                    host.load_html(&crate::notes::editor_html(&body, &title, is_dark));
                 }
                 self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
                 Some(host)
