@@ -290,6 +290,7 @@ pub struct WebPaneHost {
     parent: Retained<NSView>,
     _monitor: Option<Retained<AnyObject>>,
     visible: Cell<bool>,
+    bounds: Cell<Bounds<Pixels>>,
 }
 
 impl WebPaneHost {
@@ -320,11 +321,16 @@ impl WebPaneHost {
             let ipc_tab = tab.clone();
             let ipc_tx = tx.clone();
             builder = builder.with_ipc_handler(move |req| {
-                let _ = ipc_tx.send(WebEvent::NotesSave {
-                    tab: ipc_tab.clone(),
-                    html: req.body().clone(),
-                });
+                if let Some(event) = crate::webview::parse_ipc_event(&ipc_tab, req.body()) {
+                    let _ = ipc_tx.send(event);
+                } else {
+                    let _ = ipc_tx.send(WebEvent::NotesSave {
+                        tab: ipc_tab.clone(),
+                        html: req.body().clone(),
+                    });
+                }
             });
+            builder = builder.with_initialization_script(crate::jsbridge::CONTEXT_MENU_JS);
         }
         let web = builder.build_as_child(window).map_err(|e| e.to_string())?;
 
@@ -472,6 +478,7 @@ impl WebPaneHost {
             parent,
             _monitor: monitor,
             visible: Cell::new(false),
+            bounds: Cell::new(Bounds::default()),
         };
         if !url.is_empty() && url != "hifi://newtab" {
             let _ = host.web.load_url(url);
@@ -484,6 +491,7 @@ impl WebPaneHost {
     /// parent isn't flipped (cosmos's math: the clip fills the parent and a
     /// layer mask pins the page to the pane rect).
     pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
+        self.bounds.set(bounds);
         let x = f64::from(f32::from(bounds.origin.x));
         let y_top = f64::from(f32::from(bounds.origin.y));
         let w = f64::from(f32::from(bounds.size.width)).max(0.);
@@ -517,6 +525,10 @@ impl WebPaneHost {
             let _ = self.web.set_visible(show);
             self.clip.setHidden(!show);
         }
+    }
+
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
     }
 
     pub fn set_input_shield(&self, on: bool) {

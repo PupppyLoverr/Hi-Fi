@@ -158,7 +158,7 @@ impl Palette {
             accent_soft: accent.opacity(0.16),
             border: hsla(0., 0., 1., 0.07),
             border_strong: hsla(0., 0., 1., 0.13),
-            danger: color(0xf87171),
+            danger: color(0xef6a6a),
             success: color(0x4ade80),
             is_dark: true,
         }
@@ -178,7 +178,7 @@ impl Palette {
             accent_soft: accent.opacity(0.14),
             border: hsla(0., 0., 0., 0.07),
             border_strong: hsla(0., 0., 0., 0.13),
-            danger: color(0xdc2626),
+            danger: color(0xd13d3d),
             success: color(0x16a34a),
             is_dark: false,
         }
@@ -197,6 +197,22 @@ impl Theme {
     pub const TITLEBAR_HEIGHT: f32 = 38.0;
     pub const TITLEBAR_TOP_PAD: f32 = 4.0;
     pub const SPACE_SM: f32 = 8.0;
+    pub const SIDEBAR_WIDTH: f32 = 244.0;
+    pub const SIDEBAR_MIN: f32 = 200.0;
+    pub const SIDEBAR_MAX: f32 = 320.0;
+    pub const SIDEBAR_TOP_PAD: f32 = 38.0;
+    pub const SPACE_SWITCHER_H: f32 = 28.0;
+    pub const SIDEBAR_SEARCH_H: f32 = 28.0;
+    pub const SECTION_HEADER_H: f32 = 24.0;
+    pub const ROW_H: f32 = 32.0;
+    pub const ROW_ICON_WELL: f32 = 20.0;
+    pub const ROW_RADIUS: f32 = 8.0;
+    pub const SPACE_DOCK_H: f32 = 48.0;
+    pub const SPACE_DOCK_BTN: f32 = 28.0;
+    pub const PANE_TOOLBAR_H: f32 = 36.0;
+    pub const TOOLBAR_BTN: f32 = 24.0;
+    pub const ADDRESS_H: f32 = 24.0;
+    pub const ICON_OPTICAL: f32 = 14.0;
 
     /// Whether surfaces sit on the compositor-blurred glass shell.
     pub const fn is_frost() -> bool {

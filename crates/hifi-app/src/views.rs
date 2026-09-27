@@ -213,11 +213,6 @@ impl gpui::Render for NewTabView {
             })
             .take(3)
             .map(|t| {
-                let harness = if t.command.is_empty() {
-                    "claude".to_string()
-                } else {
-                    t.command.clone()
-                };
                 let place = if t.cwd.is_empty() {
                     "Local".to_string()
                 } else {
@@ -226,11 +221,7 @@ impl gpui::Render for NewTabView {
                 TaskCard {
                     id: Some(t.id.clone()),
                     url: String::new(),
-                    status: if t.kind == hifi_core::TabKind::Agent {
-                        format!("Agent · {harness}")
-                    } else {
-                        "Terminal".into()
-                    },
+                    status: t.display_title(),
                     title: if !t.prompt.is_empty() {
                         t.prompt.clone()
                     } else if t.title.is_empty() {
@@ -404,7 +395,7 @@ impl gpui::Render for NewTabView {
         let menu = (ask && self.picker_open).then(|| {
             div()
                 .absolute()
-                .top(px(28.))
+                .bottom(px(28.))
                 .right(px(4.))
                 .child(crate::agent_chat::model_menu(
                     &harness,

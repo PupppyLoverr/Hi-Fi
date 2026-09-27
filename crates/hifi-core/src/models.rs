@@ -172,12 +172,37 @@ impl Tab {
                 if let Some(c) = cap.get_mut(0..1) {
                     c.make_ascii_uppercase();
                 }
-                if self.title.is_empty() || self.title == cap {
-                    cap
-                } else {
-                    format!("{cap}/{}", self.title)
+                if self.kind == TabKind::Agent && !self.prompt.trim().is_empty() {
+                    return self.prompt.trim().to_string();
                 }
+                let cwd = self
+                    .cwd
+                    .trim_end_matches(['/', '\\'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("workspace");
+                format!("{cap} · {cwd}")
             }
+        }
+    }
+
+    /// Human-facing chrome title with host suffixes removed and a compact
+    /// single-line length suitable for pane toolbars and window titles.
+    pub fn short_title(&self) -> String {
+        let mut title = self.display_title();
+        for separator in [" - ", " | "] {
+            if let Some((prefix, _)) = title.split_once(separator) {
+                title = prefix.to_string();
+                break;
+            }
+        }
+        let mut chars = title.chars();
+        let shortened: String = chars.by_ref().take(40).collect();
+        if chars.next().is_some() {
+            format!("{shortened}…")
+        } else {
+            shortened
         }
     }
 }
@@ -494,7 +519,7 @@ pub struct Settings {
     pub background_dim: f32,
     #[serde(default)]
     pub compact_sidebar: bool,
-    /// Sidebar width in px (cosmos: 224–400, default 256).
+    /// Sidebar width in px (Lumen: 200–320, default 244).
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
     /// Restore the previous session on launch.
@@ -530,7 +555,7 @@ fn default_true() -> bool {
     true
 }
 fn default_sidebar_width() -> f32 {
-    256.0
+    244.0
 }
 fn default_search() -> String {
     "https://duckduckgo.com/?q={q}".into()
@@ -602,5 +627,30 @@ impl WorkspaceState {
             return self.spaces.get_mut(i);
         }
         self.spaces.first_mut()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GroupId, SplitNode, SplitSide, Tab, TabKind};
+
+    #[test]
+    fn removing_split_leaf_promotes_sibling() {
+        let mut root = SplitNode::leaf("left".into());
+        assert!(root.split(&"left".to_string(), "right".into(), SplitSide::Right, 0.5));
+        assert!(root.remove(&"left".into()));
+        assert_eq!(root.leaves(), vec!["right".to_string()]);
+        assert!(matches!(root, SplitNode::Leaf { .. }));
+    }
+
+    #[test]
+    fn short_title_strips_host_suffix_and_truncates() {
+        let mut tab = Tab::new(TabKind::Web, "https://example.com", GroupId::from("g"));
+        tab.title = "A useful title - example.com".into();
+        assert_eq!(tab.short_title(), "A useful title");
+
+        tab.title = "x".repeat(45);
+        assert_eq!(tab.short_title().chars().count(), 41);
+        assert!(tab.short_title().ends_with('…'));
     }
 }
