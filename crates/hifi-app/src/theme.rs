@@ -158,7 +158,7 @@ impl Palette {
             accent_soft: accent.opacity(0.16),
             border: hsla(0., 0., 1., 0.07),
             border_strong: hsla(0., 0., 1., 0.13),
-            danger: color(0xf87171),
+            danger: color(0xef6a6a),
             success: color(0x4ade80),
             is_dark: true,
         }
@@ -178,7 +178,7 @@ impl Palette {
             accent_soft: accent.opacity(0.14),
             border: hsla(0., 0., 0., 0.07),
             border_strong: hsla(0., 0., 0., 0.13),
-            danger: color(0xdc2626),
+            danger: color(0xd13d3d),
             success: color(0x16a34a),
             is_dark: false,
         }

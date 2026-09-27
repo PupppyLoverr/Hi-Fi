@@ -1,7 +1,7 @@
 //! `Store` — the app's central state entity. Wraps `WorkspaceState`, performs
 //! all mutations, and persists to `state.json` on every change.
 
-use gpui::{App, AppContext, Context, Entity};
+use gpui::{App, AppContext, Context, Entity, Pixels, Point};
 use hifi_core::{
     Group, GroupId, HifiPaths, RoutedUrl, Settings, Space, SplitSide, Tab, TabId, TabKind,
     WorkspaceState, route,
@@ -30,6 +30,7 @@ pub struct Store {
     pub sidebar_collapsed: bool,
     /// The dock `+` surface picker popup.
     pub dock_menu_open: bool,
+    #[allow(dead_code)]
     pub dock_overflow_open: bool,
     pub history: Vec<HistoryEntry>,
     /// Pending navigations the webview layer picks up (drained by WebPaneView).
@@ -43,6 +44,10 @@ pub struct Store {
     /// Agent tabs started this session whose chat should play live; others
     /// were restored and show their transcript immediately.
     pub live_agents: Vec<TabId>,
+    pub running_agents: HashSet<TabId>,
+    pub failed_agents: HashSet<TabId>,
+    pub pending_context_menu: Option<(TabId, Point<Pixels>)>,
+    pub pending_space_menu: Option<Point<Pixels>>,
 }
 
 fn prune_empty_dock_tabs(state: &mut WorkspaceState, keep_one_per_dock: bool) {
@@ -239,6 +244,10 @@ impl Store {
             pending_forward: Vec::new(),
             last_opened: None,
             live_agents: Vec::new(),
+            running_agents: HashSet::new(),
+            failed_agents: HashSet::new(),
+            pending_context_menu: None,
+            pending_space_menu: None,
         })
     }
 
@@ -728,6 +737,27 @@ impl Store {
         }
     }
 
+    pub fn set_agent_running(
+        &mut self,
+        id: &str,
+        running: bool,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if running {
+            self.running_agents.insert(id.to_string());
+            self.failed_agents.remove(id);
+        } else {
+            self.running_agents.remove(id);
+            if failed {
+                self.failed_agents.insert(id.to_string());
+            } else {
+                self.failed_agents.remove(id);
+            }
+        }
+        cx.notify();
+    }
+
     pub fn open_harness(&mut self, harness: &str, prompt: &str, cx: &mut Context<Self>) {
         let id = self.open_tab("hifi://terminal", None, None, cx);
         if let Some(tab) = self.state.tab_mut(&id) {
@@ -839,6 +869,44 @@ impl Store {
     pub fn toggle_pin(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(tab) = self.state.tab_mut(id) {
             tab.pinned = !tab.pinned;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn move_tab_to_space(&mut self, id: &str, space_id: &str, cx: &mut Context<Self>) {
+        let Some(tab) = self.state.tab(id).cloned() else {
+            return;
+        };
+        if tab.group_id.is_empty() {
+            return;
+        }
+        let Some(target) = self.state.spaces.iter().find(|space| space.id == space_id) else {
+            return;
+        };
+        let target_group = target
+            .active_group
+            .clone()
+            .or_else(|| target.groups.first().map(|group| group.id.clone()));
+        let Some(target_group) = target_group else {
+            return;
+        };
+        for space in &mut self.state.spaces {
+            for group in &mut space.groups {
+                if let Some(root) = &mut group.root {
+                    root.remove(&id.to_string());
+                }
+                group.dock.tabs.retain(|tab_id| tab_id != id);
+                if group.active_tab.as_deref() == Some(id) {
+                    group.active_tab = group.tab_ids().first().cloned();
+                }
+            }
+        }
+        if let Some(tab) = self.state.tab_mut(id) {
+            tab.group_id = target_group.clone();
+        }
+        if let Some(group) = self.state.group_mut(&target_group) {
+            group.add_tab(id.to_string());
         }
         self.save();
         cx.notify();

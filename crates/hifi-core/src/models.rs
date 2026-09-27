@@ -172,11 +172,17 @@ impl Tab {
                 if let Some(c) = cap.get_mut(0..1) {
                     c.make_ascii_uppercase();
                 }
-                if self.title.is_empty() || self.title == cap {
-                    cap
-                } else {
-                    format!("{cap}/{}", self.title)
+                if self.kind == TabKind::Agent && !self.prompt.trim().is_empty() {
+                    return self.prompt.trim().to_string();
                 }
+                let cwd = self
+                    .cwd
+                    .trim_end_matches(['/', '\\'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("workspace");
+                format!("{cap} · {cwd}")
             }
         }
     }
