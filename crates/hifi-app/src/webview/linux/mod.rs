@@ -336,6 +336,8 @@ impl WebPaneHost {
         self.set_visible(false);
     }
 
+    pub fn set_input_shield(&self, _on: bool) {}
+
     pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
         self.bounds.set(bounds);
         self.set_visible(visible);
