@@ -140,7 +140,14 @@ fn composer_pill(
         .text_color(p.muted)
         .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
         .child(glyph(icon, 13., p.muted))
-        .child(label.into())
+        .child(
+            div()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label.into()),
+        )
         .when(chevron, |d| {
             d.child(glyph(icons::ALT_ARROW_DOWN, 10., p.faint))
         })
@@ -332,8 +339,9 @@ impl gpui::Render for NewTabView {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(60.))
+                    .min_w_0()
                     .overflow_hidden()
+                    .text_ellipsis()
                     .text_size(px(14.))
                     .text_color(p.text)
                     .child(self.input.clone()),
@@ -491,7 +499,7 @@ impl gpui::Render for NewTabView {
                         true,
                         &p,
                     )
-                    .max_w(px(150.))
+                    .max_w(px(160.))
                     .overflow_hidden()
                     .on_click(cx.listener(
                         |this, _: &gpui::ClickEvent, _, cx| {

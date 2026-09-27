@@ -1570,7 +1570,12 @@ impl Shell {
         let active_index = active
             .as_ref()
             .and_then(|id| tabs.iter().position(|tab_id| tab_id == id));
-        let visible_count = 8.min(tabs.len());
+        let strip_width = (width - DOCK_GUTTER).max(0.);
+        let active_chip_width = 96.;
+        let icon_chip_count =
+            ((strip_width - active_chip_width - 80.).max(0.) / 28.).floor() as usize;
+        let active_chip_count = if active.is_some() { 1 } else { 0 };
+        let visible_count = (icon_chip_count + active_chip_count).min(tabs.len());
         let mut visible = tabs.iter().take(visible_count).cloned().collect::<Vec<_>>();
         if let Some(index) = active_index
             && index >= visible_count
@@ -1602,7 +1607,7 @@ impl Shell {
                     .id(cid)
                     .group("dock-chip")
                     .h(px(surface_chrome::CONTROL_SIZE))
-                    .when(is_active, |d| d.max_w(px(140.)))
+                    .when(is_active, |d| d.min_w(px(96.)).max_w(px(140.)))
                     .when(!is_active, |d| d.w(px(30.)))
                     .min_w(px(0.))
                     .flex_shrink(1.)

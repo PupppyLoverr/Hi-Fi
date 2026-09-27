@@ -518,7 +518,7 @@ impl Element for TextElement {
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
-        let placeholder = if window.viewport_size().width < px(360.) {
+        let placeholder = if bounds.size.width < px(420.) {
             input
                 .compact_placeholder
                 .as_ref()
