@@ -1607,7 +1607,7 @@ impl Shell {
                     .id(cid)
                     .group("dock-chip")
                     .h(px(surface_chrome::CONTROL_SIZE))
-                    .when(is_active, |d| d.min_w(px(96.)).max_w(px(140.)))
+                    .when(is_active, |d| d.min_w(px(96.)).max_w(px(140.)).flex_none())
                     .when(!is_active, |d| d.w(px(30.)))
                     .min_w(px(0.))
                     .flex_shrink(1.)
@@ -1628,8 +1628,8 @@ impl Shell {
                     .when(is_active, |d| {
                         d.child(
                             div()
-                                .flex_1()
-                                .min_w(px(0.))
+                                .min_w(px(56.))
+                                .flex_shrink(1.)
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
