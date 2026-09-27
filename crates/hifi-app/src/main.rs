@@ -183,18 +183,11 @@ fn bind_keys(cx: &mut App) {
 
 fn main() {
     let app = gpui_platform::application().with_assets(assets::Assets);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    let handle = runtime.handle().clone();
 
     let (ipc_tx, ipc_rx) = channel::<IpcJob>();
     let (wake_tx, wake_rx) = futures::channel::mpsc::unbounded();
 
     app.run(move |cx| {
-        gpui_tokio::init_from_handle(cx, handle.clone());
         register_fonts(cx);
 
         let store = Store::load(cx);
