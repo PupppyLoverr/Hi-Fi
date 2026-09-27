@@ -21,17 +21,22 @@ use gpui::{
 use parking_lot::Mutex as PMutex;
 
 use crate::theme::{FONT_MONO, Theme};
+use crate::webview::WakeSender;
 
 type Pty = alacritty_terminal::tty::Pty;
 
 /// Wakes the app when the grid changes.
 struct Proxy {
     tx: mpsc::Sender<TermEvent>,
+    wake: Option<WakeSender>,
 }
 
 impl EventListener for Proxy {
     fn send_event(&self, event: TermEvent) {
         let _ = self.tx.send(event);
+        if let Some(wake) = &self.wake {
+            let _ = wake.unbounded_send(());
+        }
     }
 }
 
@@ -89,17 +94,36 @@ pub struct TermParts {
 
 impl TerminalPane {
     /// Fallible half of `spawn` — no view context needed.
+    #[allow(dead_code)]
     pub fn spawn_pty(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
-        Self::spawn_pty_inner(command, None, cwd)
+        Self::spawn_pty_inner(command, None, cwd, None)
     }
 
     /// Like `spawn_pty`, passing `arg` to `command` as one extra argv entry.
+    #[allow(dead_code)]
     pub fn spawn_pty_with_arg(
         command: &str,
         arg: &str,
         cwd: Option<&str>,
     ) -> anyhow::Result<TermParts> {
-        Self::spawn_pty_inner(Some(command), Some(arg), cwd)
+        Self::spawn_pty_inner(Some(command), Some(arg), cwd, None)
+    }
+
+    pub fn spawn_pty_with_wake(
+        command: Option<&str>,
+        cwd: Option<&str>,
+        wake: WakeSender,
+    ) -> anyhow::Result<TermParts> {
+        Self::spawn_pty_inner(command, None, cwd, Some(wake))
+    }
+
+    pub fn spawn_pty_with_arg_and_wake(
+        command: &str,
+        arg: &str,
+        cwd: Option<&str>,
+        wake: WakeSender,
+    ) -> anyhow::Result<TermParts> {
+        Self::spawn_pty_inner(Some(command), Some(arg), cwd, Some(wake))
     }
 
     /// View half of `spawn`.
@@ -123,13 +147,17 @@ impl TerminalPane {
         command: Option<&str>,
         arg: Option<&str>,
         cwd: Option<&str>,
+        wake: Option<WakeSender>,
     ) -> anyhow::Result<TermParts> {
         let dims = TermDims {
             cols: 120,
             rows: 30,
         };
         let (tx, rx) = mpsc::channel::<TermEvent>();
-        let proxy = Proxy { tx: tx.clone() };
+        let proxy = Proxy {
+            tx: tx.clone(),
+            wake: wake.clone(),
+        };
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &dims, proxy)));
 
         let options = PtyOptions {
@@ -153,7 +181,7 @@ impl TerminalPane {
             cell_height: 16,
         };
         let pty = tty::new(&options, window_size, 0)?;
-        let event_proxy = Proxy { tx };
+        let event_proxy = Proxy { tx, wake };
         let event_loop = EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
         let sender = event_loop.channel();
         let join = event_loop.spawn();

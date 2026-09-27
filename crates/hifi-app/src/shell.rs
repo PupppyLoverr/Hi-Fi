@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use futures::StreamExt;
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, Focusable, MouseButton, SharedString, Window,
     WindowControlArea, deferred, div, point, prelude::*, px, relative, size,
@@ -19,7 +20,7 @@ use crate::terminal::TerminalPane;
 use crate::text_input::{TextField, TextFieldEvent};
 use crate::theme::Theme;
 use crate::views::{DiffView, NewTabView, PreviewView, SettingsView, glyph};
-use crate::webview::{WebEvent, WebPaneHost};
+use crate::webview::{WakeSender, WebEvent, WebEventSender, WebPaneHost};
 use hifi_core::{SplitNode, TabId, TabKind};
 
 pub enum Pane {
@@ -70,11 +71,12 @@ pub struct Shell {
     find_input: Option<Entity<TextField>>,
     /// WebEvent source; drained each render.
     web_rx: Receiver<WebEvent>,
-    web_tx: Sender<WebEvent>,
+    web_tx: WebEventSender,
     ipc_rx: Receiver<IpcJob>,
     /// Events drained off the channels by the wake loop, applied on render.
     inbox_web: Vec<WebEvent>,
     inbox_ipc: Vec<IpcJob>,
+    wake: WakeSender,
     /// Root focus target so window-level key bindings dispatch when no
     /// input or terminal holds focus.
     focus: gpui::FocusHandle,
@@ -84,6 +86,8 @@ impl Shell {
     pub fn new(
         store: Entity<Store>,
         ipc_rx: Receiver<IpcJob>,
+        mut wake_rx: futures::channel::mpsc::UnboundedReceiver<()>,
+        wake: WakeSender,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -104,16 +108,11 @@ impl Shell {
             }
         })
         .detach();
-        let (web_tx, web_rx) = channel::<WebEvent>();
+        let (web_tx_raw, web_rx) = channel::<WebEvent>();
+        let web_tx = WebEventSender::new(web_tx_raw, wake.clone());
         cx.observe(&store, |_, _, cx| cx.notify()).detach();
-        // Webview events, IPC requests and PTY output arrive off-thread. Poll
-        // the channels at frame rate but only repaint when something landed,
-        // so an idle window costs no layout or paint work.
         cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
-                    .await;
+            while wake_rx.next().await.is_some() {
                 let alive = this.update(cx, |this, cx| {
                     let before = this.inbox_web.len() + this.inbox_ipc.len();
                     this.inbox_web.extend(this.web_rx.try_iter());
@@ -157,6 +156,7 @@ impl Shell {
             ipc_rx,
             inbox_web: Vec::new(),
             inbox_ipc: Vec::new(),
+            wake,
             focus: cx.focus_handle(),
         }
     }
@@ -911,10 +911,17 @@ impl Shell {
                         let cmd = (!tab.command.is_empty()).then(|| tab.command.clone());
                         let cwd = (!tab.cwd.is_empty()).then(|| tab.cwd.clone());
                         let spawned = match (&cmd, tab.prompt.is_empty()) {
-                            (Some(c), false) => {
-                                TerminalPane::spawn_pty_with_arg(c, &tab.prompt, cwd.as_deref())
-                            }
-                            _ => TerminalPane::spawn_pty(cmd.as_deref(), cwd.as_deref()),
+                            (Some(c), false) => TerminalPane::spawn_pty_with_arg_and_wake(
+                                c,
+                                &tab.prompt,
+                                cwd.as_deref(),
+                                self.wake.clone(),
+                            ),
+                            _ => TerminalPane::spawn_pty_with_wake(
+                                cmd.as_deref(),
+                                cwd.as_deref(),
+                                self.wake.clone(),
+                            ),
                         };
                         match spawned {
                             Ok(parts) => {

@@ -3,6 +3,28 @@
 //! helper process) on Linux. All three expose the same `WebPaneHost` API
 //! and report through the same `WebEvent` channel.
 
+use std::sync::mpsc::{SendError, Sender};
+
+pub type WakeSender = futures::channel::mpsc::UnboundedSender<()>;
+
+#[derive(Clone)]
+pub struct WebEventSender {
+    tx: Sender<WebEvent>,
+    wake: WakeSender,
+}
+
+impl WebEventSender {
+    pub fn new(tx: Sender<WebEvent>, wake: WakeSender) -> Self {
+        Self { tx, wake }
+    }
+
+    pub fn send(&self, event: WebEvent) -> Result<(), SendError<WebEvent>> {
+        let result = self.tx.send(event);
+        let _ = self.wake.unbounded_send(());
+        result
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

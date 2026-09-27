@@ -191,6 +191,7 @@ fn main() {
     let handle = runtime.handle().clone();
 
     let (ipc_tx, ipc_rx) = channel::<IpcJob>();
+    let (wake_tx, wake_rx) = futures::channel::mpsc::unbounded();
 
     app.run(move |cx| {
         gpui_tokio::init_from_handle(cx, handle.clone());
@@ -242,7 +243,7 @@ fn main() {
 
         // IPC socket for the `hifi` CLI.
         let paths = store.read(cx).paths.clone();
-        ipc_server::serve(paths.socket_file(), ipc_tx.clone());
+        ipc_server::serve(paths.socket_file(), ipc_tx.clone(), wake_tx.clone());
 
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let window = cx
@@ -262,7 +263,9 @@ fn main() {
                     app_id: Some("hifi".into()),
                     ..Default::default()
                 },
-                |window, cx| cx.new(|cx| Shell::new(store.clone(), ipc_rx, window, cx)),
+                |window, cx| {
+                    cx.new(|cx| Shell::new(store.clone(), ipc_rx, wake_rx, wake_tx, window, cx))
+                },
             )
             .expect("open window");
         let _ = window;

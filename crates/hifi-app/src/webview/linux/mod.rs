@@ -10,13 +10,12 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use gpui::{Bounds, Pixels, RenderImage};
 use serde_json::{Value, json};
 
-use super::WebEvent;
+use super::{WebEvent, WebEventSender};
 
 type EvalCallback = Box<dyn FnOnce(Option<String>) + Send>;
 
@@ -63,7 +62,7 @@ impl Worker {
 
 struct Route {
     tab: String,
-    tx: Sender<WebEvent>,
+    tx: WebEventSender,
     state: Mutex<PageState>,
     frame: Mutex<Option<Arc<RenderImage>>>,
     evals: Mutex<VecDeque<EvalCallback>>,
@@ -287,7 +286,7 @@ impl WebPaneHost {
         _cx: &gpui::App,
         tab: String,
         url: &str,
-        tx: Sender<WebEvent>,
+        tx: WebEventSender,
         ipc_enabled: bool,
     ) -> Result<Self, String> {
         let worker = worker()?;

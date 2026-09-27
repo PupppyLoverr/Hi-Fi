@@ -560,25 +560,42 @@ impl Store {
         cx: &mut Context<Self>,
     ) {
         let mut record_history = None;
+        let mut changed = false;
         if let Some(tab) = self.state.tab_mut(id) {
-            if let Some(t) = title {
+            if let Some(t) = title
+                && tab.title != t
+            {
                 tab.title = t;
+                changed = true;
             }
             if let Some(u) = url {
                 if tab.url != u {
                     record_history = Some((tab.title.clone(), u.clone()));
+                    changed = true;
                 }
                 tab.url = u;
             }
-            if let Some(l) = loading {
+            if let Some(l) = loading
+                && tab.loading != l
+            {
                 tab.loading = l;
+                changed = true;
             }
-            if let Some(v) = can_back {
+            if let Some(v) = can_back
+                && tab.can_go_back != v
+            {
                 tab.can_go_back = v;
+                changed = true;
             }
-            if let Some(v) = can_fwd {
+            if let Some(v) = can_fwd
+                && tab.can_go_forward != v
+            {
                 tab.can_go_forward = v;
+                changed = true;
             }
+        }
+        if !changed {
+            return;
         }
         if let Some((title, url)) = record_history {
             self.history.push(HistoryEntry {

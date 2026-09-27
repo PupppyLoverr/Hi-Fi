@@ -6,7 +6,6 @@
 //! The same compositing boundary cosmos uses on macOS.
 
 use std::cell::{Cell, RefCell};
-use std::sync::mpsc::Sender;
 
 use gpui::{Bounds, Pixels};
 use objc2::rc::Retained;
@@ -26,7 +25,7 @@ use objc2_web_kit::{
 };
 use wry::{WebViewBuilderExtMacos as _, WebViewExtMacOS as _};
 
-use super::WebEvent;
+use super::{WebEvent, WebEventSender};
 
 thread_local! {
     /// Set while a GPUI drag (split/dock/sidebar resize) is in flight.
@@ -107,7 +106,7 @@ fn press_hits_page(gpui_view: &NSView, e: &NSEvent) -> bool {
 
 pub struct HostIvars {
     tab: String,
-    tx: Sender<WebEvent>,
+    tx: WebEventSender,
 }
 
 const OBSERVED: [&str; 3] = ["title", "canGoBack", "canGoForward"];
@@ -232,7 +231,7 @@ define_class!(
 );
 
 impl Observer {
-    fn new(tab: String, tx: Sender<WebEvent>, mtm: MainThreadMarker) -> Retained<Self> {
+    fn new(tab: String, tx: WebEventSender, mtm: MainThreadMarker) -> Retained<Self> {
         let object = mtm.alloc().set_ivars(HostIvars { tab, tx });
         unsafe { msg_send![super(object), init] }
     }
@@ -295,7 +294,7 @@ impl WebPaneHost {
         _cx: &gpui::App,
         tab: String,
         url: &str,
-        tx: Sender<WebEvent>,
+        tx: WebEventSender,
         ipc_enabled: bool,
     ) -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("must run on main thread")?;

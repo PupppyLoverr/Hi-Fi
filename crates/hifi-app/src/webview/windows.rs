@@ -11,7 +11,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Mutex;
-use std::sync::mpsc::Sender;
 
 use gpui::{Bounds, Pixels, px};
 use raw_window_handle::{
@@ -24,7 +23,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use wry::WebViewExtWindows as _;
 use wry::dpi::{LogicalPosition, LogicalSize};
 
-use super::WebEvent;
+use super::{WebEvent, WebEventSender};
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -101,7 +100,7 @@ impl Inner {
 pub struct WebPaneHost {
     inner: Rc<RefCell<Inner>>,
     tab: String,
-    tx: Sender<WebEvent>,
+    tx: WebEventSender,
 }
 
 impl WebPaneHost {
@@ -110,7 +109,7 @@ impl WebPaneHost {
         cx: &gpui::App,
         tab: String,
         url: &str,
-        tx: Sender<WebEvent>,
+        tx: WebEventSender,
         ipc_enabled: bool,
     ) -> Result<Self, String> {
         let handle = HasWindowHandle::window_handle(window)
@@ -316,7 +315,7 @@ impl WebPaneHost {
 fn build(
     parent: &ParentWindow,
     tab: &str,
-    tx: Sender<WebEvent>,
+    tx: WebEventSender,
     ipc_enabled: bool,
     inner: &Rc<RefCell<Inner>>,
 ) -> Result<(wry::WebView, ICoreWebView2AcceleratorKeyPressedEventHandler), String> {

@@ -209,8 +209,11 @@ impl AgentChatView {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let go = this
                     .update(cx, |v: &mut AgentChatView, cx| {
-                        cx.notify();
-                        v.active.is_some() && v.run == run
+                        let go = v.active.is_some() && v.run == run;
+                        if go {
+                            cx.notify();
+                        }
+                        go
                     })
                     .unwrap_or(false);
                 if !go {
@@ -614,7 +617,7 @@ impl gpui::Render for AgentChatView {
         }
 
         for (i, item) in self.items.iter().enumerate() {
-            let el = match item.clone() {
+            let el = match item {
                 Item::User { text } => div()
                     .w_full()
                     .flex()
@@ -631,7 +634,7 @@ impl gpui::Render for AgentChatView {
                             .bg(p.accent.opacity(if p.is_dark { 0.22 } else { 0.12 }))
                             .text_size(px(13.5))
                             .text_color(p.text)
-                            .child(text),
+                            .child(text.clone()),
                     ),
                 Item::Step {
                     id,
@@ -641,9 +644,9 @@ impl gpui::Render for AgentChatView {
                     done,
                     error,
                 } => {
-                    let expanded = self.expanded.contains(&id);
+                    let expanded = self.expanded.contains(id);
                     let has_output = !output.trim().is_empty();
-                    let row = step_row(tool_icon(&tool), title, done, error.as_deref(), &p);
+                    let row = step_row(tool_icon(tool), title.clone(), *done, error.as_deref(), &p);
                     let key = id.clone();
                     div()
                         .flex()
@@ -674,7 +677,7 @@ impl gpui::Render for AgentChatView {
                                     .text_size(px(11.))
                                     .line_height(px(16.))
                                     .text_color(p.muted)
-                                    .child(short(&output, 1500)),
+                                    .child(short(output, 1500)),
                             )
                         })
                 }
@@ -683,7 +686,7 @@ impl gpui::Render for AgentChatView {
                     .text_size(px(13.5))
                     .line_height(px(21.))
                     .text_color(p.text)
-                    .child(text),
+                    .child(text.clone()),
                 Item::Note { text } => div()
                     .my(px(6.))
                     .px(px(10.))
@@ -694,7 +697,7 @@ impl gpui::Render for AgentChatView {
                     .border_color(p.accent.opacity(0.6))
                     .text_size(px(12.5))
                     .text_color(p.muted)
-                    .child(text),
+                    .child(text.clone()),
             };
             transcript = transcript.child(el.flex_none());
         }
