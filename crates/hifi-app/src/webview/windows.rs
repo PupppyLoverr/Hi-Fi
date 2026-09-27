@@ -337,7 +337,7 @@ fn build(
                 });
                 return false;
             }
-            true
+            hifi_core::schemes::allowed_navigation(&url)
         })
         .with_document_title_changed_handler(move |title| {
             let _ = title_tx.send(WebEvent::Title {

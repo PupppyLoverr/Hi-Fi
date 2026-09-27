@@ -32,11 +32,18 @@ pub fn run(socket: &Path) -> Result<()> {
         .ok()
         .filter(|value| !value.is_empty());
     let socket = socket.to_path_buf();
+    let call_agent = agent_tab.clone();
     let ctx = Ctx {
         agent_tab,
         wait_after_navigation: true,
         call: Box::new(move |method, params| {
-            client::call(&socket, method, params, IPC_TIMEOUT_SECS)
+            client::call_as_agent(
+                &socket,
+                method,
+                params,
+                IPC_TIMEOUT_SECS,
+                call_agent.as_deref(),
+            )
         }),
     };
     let stdin = io::stdin();

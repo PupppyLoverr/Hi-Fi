@@ -155,6 +155,10 @@ define_class!(
                 });
                 return;
             }
+            if !hifi_core::schemes::allowed_navigation(&url) {
+                decision.call((WKNavigationActionPolicy::Cancel,));
+                return;
+            }
             decision.call((WKNavigationActionPolicy::Allow,));
         }
 

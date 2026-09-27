@@ -56,6 +56,16 @@ pub fn resolve_search(template: &str, query: &str) -> String {
     template.replace("{q}", &urlencoding(query))
 }
 
+pub fn allowed_navigation(input: &str) -> bool {
+    if input == "about:blank" {
+        return true;
+    }
+    let Ok(url) = url::Url::parse(input) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https" | "hifi")
+}
+
 fn urlencoding(s: &str) -> String {
     s.bytes()
         .map(|b| match b {

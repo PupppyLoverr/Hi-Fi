@@ -397,6 +397,9 @@ impl WebPaneHost {
     }
 
     pub fn load(&self, url: &str) {
+        if !hifi_core::schemes::allowed_navigation(url) {
+            return;
+        }
         self.command(json!({"cmd": "load", "url": url}));
     }
 

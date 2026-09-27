@@ -482,6 +482,20 @@ impl Shell {
         use serde_json::json;
         let p = &job.request.params;
         let get = |k: &str| p.get(k).and_then(|v| v.as_str()).map(String::from);
+        if let Some(agent) = job.request.agent.as_deref() {
+            let tab_owner = get("id").and_then(|id| {
+                self.store
+                    .read(cx)
+                    .state
+                    .tab(&id)
+                    .and_then(|tab| tab.agent_of.as_deref())
+            });
+            if let Err(error) =
+                hifi_core::ipc::agent_may(&job.request.method, Some(agent), tab_owner)
+            {
+                return self.finish_ipc(job, Err(error.into()));
+            }
+        }
         let result: Result<serde_json::Value, String> = match job.request.method.as_str() {
             m::PING => Ok(json!({"ok": true, "name": "Hi-Fi"})),
             m::TAB_OPEN => {
@@ -510,7 +524,7 @@ impl Shell {
                 } else {
                     url
                 };
-                if let Some(owner) = get("agentOf") {
+                if let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf")) {
                     let id = self
                         .store
                         .update(cx, |s, cx| s.open_agent_tab(&target_url, &owner, cx));
@@ -591,6 +605,11 @@ impl Shell {
                     .state
                     .tabs
                     .iter()
+                    .filter(|t| {
+                        job.request.agent.as_deref().is_none_or(|agent| {
+                            t.agent_of.as_deref() == Some(agent)
+                        })
+                    })
                     .map(|t| {
                         json!({"id": t.id, "kind": t.kind.as_str(), "title": t.title, "url": t.url, "pinned": t.pinned, "groupId": t.group_id, "agentOf": t.agent_of, "loading": t.loading})
                     })
@@ -607,6 +626,10 @@ impl Shell {
             }
             m::TAB_NAVIGATE => match (get("id"), get("url")) {
                 (Some(id), Some(url)) => {
+                    if !hifi_core::schemes::allowed_navigation(&url) {
+                        return self
+                            .finish_ipc(job, Err("navigation scheme is not allowed".into()));
+                    }
                     self.ensure_headless_host(&id, _window, cx);
                     if let Some(Pane::Web(h)) = self.panes.get(&id) {
                         h.load(&url);

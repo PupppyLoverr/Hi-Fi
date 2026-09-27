@@ -243,7 +243,10 @@ fn main() {
 
         // IPC socket for the `hifi` CLI.
         let paths = store.read(cx).paths.clone();
-        ipc_server::serve(paths.socket_file(), ipc_tx.clone(), wake_tx.clone());
+        let token = paths
+            .write_ipc_token()
+            .expect("could not initialize Hi-Fi IPC token");
+        ipc_server::serve(paths.socket_file(), token, ipc_tx.clone(), wake_tx.clone());
 
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let window = cx

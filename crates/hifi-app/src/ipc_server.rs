@@ -4,6 +4,8 @@
 //! std channel; the shell drains it and replies over a per-request channel.
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 
@@ -11,27 +13,34 @@ use crate::shell::IpcJob;
 use crate::webview::WakeSender;
 use hifi_core::IpcRequest;
 
-pub fn serve(sock_path: std::path::PathBuf, jobs: Sender<IpcJob>, wake: WakeSender) {
+pub fn serve(sock_path: std::path::PathBuf, token: String, jobs: Sender<IpcJob>, wake: WakeSender) {
     #[cfg(unix)]
-    serve_unix(sock_path, jobs, wake);
+    serve_unix(sock_path, token, jobs, wake);
     #[cfg(not(unix))]
-    serve_tcp(sock_path, jobs, wake);
+    serve_tcp(sock_path, token, jobs, wake);
 }
 
 #[cfg(unix)]
-fn serve_unix(sock_path: std::path::PathBuf, jobs: Sender<IpcJob>, wake: WakeSender) {
+fn serve_unix(
+    sock_path: std::path::PathBuf,
+    token: String,
+    jobs: Sender<IpcJob>,
+    wake: WakeSender,
+) {
     thread::spawn(move || {
         let _ = std::fs::remove_file(&sock_path);
         let Ok(listener) = std::os::unix::net::UnixListener::bind(&sock_path) else {
             eprintln!("hifi: cannot bind {}", sock_path.display());
             return;
         };
+        let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
         for conn in listener.incoming().flatten() {
             let jobs = jobs.clone();
             let wake = wake.clone();
+            let token = token.clone();
             thread::spawn(move || {
                 if let Ok(reader) = conn.try_clone() {
-                    handle(reader, conn, jobs, wake);
+                    handle(reader, conn, token, jobs, wake);
                 }
             });
         }
@@ -39,7 +48,7 @@ fn serve_unix(sock_path: std::path::PathBuf, jobs: Sender<IpcJob>, wake: WakeSen
 }
 
 #[cfg(not(unix))]
-fn serve_tcp(sock_path: std::path::PathBuf, jobs: Sender<IpcJob>, wake: WakeSender) {
+fn serve_tcp(sock_path: std::path::PathBuf, token: String, jobs: Sender<IpcJob>, wake: WakeSender) {
     thread::spawn(move || {
         let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", 0)) else {
             eprintln!("hifi: cannot bind loopback IPC listener");
@@ -60,17 +69,24 @@ fn serve_tcp(sock_path: std::path::PathBuf, jobs: Sender<IpcJob>, wake: WakeSend
         for conn in listener.incoming().flatten() {
             let jobs = jobs.clone();
             let wake = wake.clone();
+            let token = token.clone();
             thread::spawn(move || {
                 if let Ok(reader) = conn.try_clone() {
-                    handle(reader, conn, jobs, wake);
+                    handle(reader, conn, token, jobs, wake);
                 }
             });
         }
     });
 }
 
-fn handle(reader: impl Read, mut writer: impl Write, jobs: Sender<IpcJob>, wake: WakeSender) {
-    let mut reader = BufReader::new(reader);
+fn handle(
+    reader: impl Read,
+    mut writer: impl Write,
+    token: String,
+    jobs: Sender<IpcJob>,
+    wake: WakeSender,
+) {
+    let mut reader = BufReader::new(reader.take(4 * 1024 * 1024));
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
         return;
@@ -87,6 +103,15 @@ fn handle(reader: impl Read, mut writer: impl Write, jobs: Sender<IpcJob>, wake:
             return;
         }
     };
+    if req.token != token {
+        let _ = writeln!(
+            writer,
+            "{}",
+            serde_json::to_string(&hifi_core::IpcResponse::err(req.id, "unauthorized"))
+                .unwrap_or_default()
+        );
+        return;
+    }
     let (tx, rx) = channel();
     if jobs
         .send(IpcJob {

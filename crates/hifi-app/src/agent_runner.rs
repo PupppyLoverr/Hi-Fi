@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use futures::channel::mpsc::UnboundedSender;
-use hifi_core::Guard;
+use hifi_core::{Guard, HifiPaths};
 use serde_json::{Value, json};
 
 /// Harnesses the composer offers: command, label, models (provider/model).
@@ -228,6 +228,27 @@ pub fn opencode_config(guard: Guard, hifi_bin: &Path, tab_id: &str) -> Value {
     })
 }
 
+fn write_opencode_config(config: &Value, tab_id: &str) -> Result<PathBuf, String> {
+    let dir = HifiPaths::detect().root.join("opencode").join(tab_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let path = dir.join("opencode.json");
+    let data = serde_json::to_vec(config).map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
 /// What the harness is told about where it runs, once per chat.
 fn preamble(cwd: &str, guard: Guard) -> String {
     format!(
@@ -282,10 +303,9 @@ pub fn spawn(cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run, Str
                 cmd.arg("--session").arg(&cfg.session);
             }
             cmd.arg("--auto");
-            cmd.env(
-                "OPENCODE_CONFIG_CONTENT",
-                opencode_config(cfg.guard, &hifi, &cfg.tab_id).to_string(),
-            );
+            let config = opencode_config(cfg.guard, &hifi, &cfg.tab_id);
+            let config_path = write_opencode_config(&config, &cfg.tab_id)?;
+            cmd.env("OPENCODE_CONFIG", config_path);
             cmd.arg(&prompt);
         }
         "claude" => {

@@ -12,6 +12,10 @@ pub struct IpcRequest {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,14 +111,36 @@ pub mod client {
         params: Value,
         timeout_secs: u64,
     ) -> anyhow::Result<IpcResponse> {
-        let stream = connect(socket)
-            .map_err(|e| anyhow::anyhow!("cannot reach Hi-Fi (is it running?): {e}"))?;
+        call_as_agent(socket, method, params, timeout_secs, None)
+    }
+
+    pub fn call_as_agent(
+        socket: &Path,
+        method: &str,
+        params: Value,
+        timeout_secs: u64,
+        agent: Option<&str>,
+    ) -> anyhow::Result<IpcResponse> {
+        let stream = connect(socket).map_err(|e| anyhow::anyhow!("Hi-Fi is not running: {e}"))?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(timeout_secs)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let token_path = socket
+            .parent()
+            .map(|parent| parent.join("ipc.token"))
+            .ok_or_else(|| anyhow::anyhow!("Hi-Fi is not running"))?;
+        let token = std::fs::read_to_string(token_path)
+            .map_err(|_| anyhow::anyhow!("Hi-Fi is not running"))?
+            .trim()
+            .to_string();
+        if token.is_empty() {
+            anyhow::bail!("Hi-Fi is not running");
+        }
         let req = IpcRequest {
             id: uuid::Uuid::new_v4().simple().to_string(),
             method: method.to_string(),
             params,
+            token,
+            agent: agent.map(str::to_string),
         };
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
@@ -132,4 +158,65 @@ pub mod client {
 /// Where the Windows IPC server publishes its loopback port.
 pub fn port_file(socket: &std::path::Path) -> std::path::PathBuf {
     socket.with_extension("port")
+}
+
+pub fn agent_may(
+    method: &str,
+    req_agent: Option<&str>,
+    tab_agent_of: Option<&str>,
+) -> Result<(), &'static str> {
+    let Some(agent) = req_agent else {
+        return Ok(());
+    };
+    use methods as m;
+    if matches!(method, m::TAB_OPEN | m::TAB_LIST | m::PING) {
+        return Ok(());
+    }
+    let tab_method = matches!(
+        method,
+        m::TAB_CLOSE
+            | m::TAB_FOCUS
+            | m::TAB_RELOAD
+            | m::TAB_NAVIGATE
+            | m::TAB_BACK
+            | m::TAB_FORWARD
+            | m::TAB_PIN
+            | m::TAB_EXEC
+            | m::TAB_SNAPSHOT
+            | m::TAB_CLICK
+            | m::TAB_TYPE
+            | m::TAB_SCREENSHOT
+            | m::TAB_READ
+            | m::TAB_SCROLL
+    );
+    if method == m::TAB_EXEC {
+        return Err("not permitted for agents");
+    }
+    if tab_method {
+        return if tab_agent_of == Some(agent) {
+            Ok(())
+        } else {
+            Err("tab is not owned by this agent")
+        };
+    }
+    Err("not permitted for agents")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{agent_may, methods};
+
+    #[test]
+    fn agent_can_use_owned_tab_only() {
+        assert!(agent_may(methods::TAB_READ, Some("chat"), Some("chat")).is_ok());
+        assert_eq!(
+            agent_may(methods::TAB_READ, Some("chat"), None),
+            Err("tab is not owned by this agent")
+        );
+        assert_eq!(
+            agent_may(methods::TAB_EXEC, Some("chat"), Some("chat")),
+            Err("not permitted for agents")
+        );
+        assert!(agent_may(methods::TAB_LIST, Some("chat"), None).is_ok());
+    }
 }
