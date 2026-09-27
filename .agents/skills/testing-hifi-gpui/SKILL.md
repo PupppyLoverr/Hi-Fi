@@ -47,3 +47,11 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - GPUI only starts a drag after the first pointer move it receives. If the first moves after mouse-down go straight into a WKWebView, the drag may never start. Test a divider grab whose first move goes toward a web pane, and separately one whose first move goes over an app-drawn surface.
 - After any change to macOS mouse routing, test a held text-selection drag in *every* web pane, not just one. Also double-click a word to separate "no press delivered" from "no drag delivered". On 9ef846f, selection drags worked in the rightmost pane but not in the middle one.
 - If a web pane's text looks cut off on the left, scroll left inside the pane. If nothing more appears, the WKWebView frame is being clipped; it is not a horizontal scroll offset. Pages with wide tables, such as iana.org/domains/reserved, show this in narrow panes.
+
+## Agent chat (scripted mock agent)
+- Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+T opens the command bar instead, and pressing Enter on its "New tab" item may just run an empty web search.
+- In Ask mode, Enter turns the same tab into an agent chat. The first-turn script takes about 9s and a follow-up about 3s, so take the mid-run screenshot 1–3s after sending.
+- To test stop, send a message and click the stop button (same spot as send) within about 0.3s, then wait 5s to confirm nothing appears after "Stopped".
+- Sidebar "New Chat" opens a chat in the dock. Close split panes first to give the chat room.
+- "Run in terminal" needs the `claude` CLI; without it the Terminal tab shows "Failed to spawn command 'claude'".
+- Check the page preview card after later items arrive: the card may shrink and clip.

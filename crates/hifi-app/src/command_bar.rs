@@ -44,12 +44,14 @@ impl CommandBar {
             t
         });
         let store_for_events = store.clone();
-        cx.subscribe(&input, move |_me, _i, event, cx| {
+        cx.subscribe(&input, move |me: &mut CommandBar, _i, event, cx| {
             match event {
                 TextFieldEvent::Changed => cx.notify(),
-                TextFieldEvent::Submitted(text) => {
-                    // Enter without selection = open as URL/search.
-                    store_for_events.update(cx, |s, cx| s.submit_address(text, cx));
+                TextFieldEvent::Submitted(_) => {
+                    // Enter runs the highlighted candidate (the URL/search
+                    // row by default, the command list when empty).
+                    me.refresh(cx);
+                    me.execute(cx);
                 }
                 TextFieldEvent::Escaped => {
                     store_for_events.update(cx, |s, cx| {

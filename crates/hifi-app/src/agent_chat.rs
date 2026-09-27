@@ -532,7 +532,7 @@ impl gpui::Render for AgentChatView {
                     col
                 }
             };
-            transcript = transcript.child(el);
+            transcript = transcript.child(el.flex_none());
         }
 
         if let Some(t) = self.started {
@@ -732,7 +732,7 @@ impl gpui::Render for AgentChatView {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .child(transcript),
+                    .child(transcript.flex_none()),
             )
             .child(div().flex_none().flex().justify_center().child(composer))
     }
