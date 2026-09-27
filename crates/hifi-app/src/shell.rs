@@ -297,6 +297,9 @@ impl Shell {
         web.extend(self.web_rx.try_iter());
         for ev in web {
             match ev {
+                WebEvent::PageClick => {
+                    self.context_menu = None;
+                }
                 WebEvent::Title { tab, title } => {
                     let is_empty_notes_title = self
                         .store
@@ -2646,10 +2649,9 @@ impl gpui::Render for Shell {
                 None => (HashSet::new(), false),
             }
         };
-        let menu_open = self.context_menu.is_some();
         for (id, pane) in &self.panes {
             if let Pane::Web(h) = pane {
-                h.set_input_shield(menu_open);
+                h.set_input_shield(false);
                 if !visible_tabs.contains(id) {
                     h.hide();
                 }

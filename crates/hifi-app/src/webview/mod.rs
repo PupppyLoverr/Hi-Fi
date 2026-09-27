@@ -42,6 +42,7 @@ pub use windows::WebPaneHost;
 /// Events a native page pushes to the app (engine callback → channel → GPUI).
 #[derive(Debug)]
 pub enum WebEvent {
+    PageClick,
     ContextMenu {
         tab: String,
         x: f64,
@@ -98,6 +99,9 @@ pub enum WebEvent {
 /// Decode an IPC payload shared by browser context menus and Notes saves.
 pub fn parse_ipc_event(tab: &str, body: &str) -> Option<WebEvent> {
     let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    if value.get("type")?.as_str() == Some("page-click") {
+        return Some(WebEvent::PageClick);
+    }
     (value.get("type")?.as_str() == Some("ctx")).then(|| WebEvent::ContextMenu {
         tab: tab.into(),
         x: value
