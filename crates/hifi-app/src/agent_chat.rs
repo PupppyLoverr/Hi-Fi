@@ -92,8 +92,12 @@ impl AgentChatView {
             started: None,
             scroll: ScrollHandle::new(),
         };
-        if !prompt.trim().is_empty() {
+        let live = me.store.read(cx).live_agents.contains(&me.tab_id);
+        if live && !prompt.trim().is_empty() {
             me.send(prompt, cx);
+        } else if !prompt.trim().is_empty() {
+            me.items.push(Item::User(prompt.clone()));
+            me.items.extend(first_turn(&prompt));
         }
         me
     }

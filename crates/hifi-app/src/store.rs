@@ -36,6 +36,9 @@ pub struct Store {
     pub pending_forward: Vec<TabId>,
     /// Raised on IPC open — shell scrolls new tab into view.
     pub last_opened: Option<TabId>,
+    /// Agent tabs started this session whose chat should play live; others
+    /// were restored and show their transcript immediately.
+    pub live_agents: Vec<TabId>,
 }
 
 impl Store {
@@ -70,6 +73,7 @@ impl Store {
             pending_back: Vec::new(),
             pending_forward: Vec::new(),
             last_opened: None,
+            live_agents: Vec::new(),
         })
     }
 
@@ -373,6 +377,9 @@ impl Store {
         cx: &mut Context<Self>,
     ) {
         let prompt = prompt.trim();
+        if !self.live_agents.iter().any(|t| t == id) {
+            self.live_agents.push(id.to_string());
+        }
         if let Some(tab) = self.state.tab_mut(id) {
             tab.kind = TabKind::Agent;
             tab.url = "hifi://agent".into();
