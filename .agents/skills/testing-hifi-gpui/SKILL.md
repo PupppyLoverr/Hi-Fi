@@ -69,3 +69,11 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - Sidebar "New Chat" opens a chat in the dock. Close split panes first to give the chat room.
 - "Run in terminal" launches the selected harness in a terminal tab.
 - Check the page preview card after later items arrive: the card may shrink and clip.
+
+## Lumen UI (PR #4+) notes
+- The `computer` tool coordinate space equals the 1024x768 screenshot; do not double coordinates (clicks on the sidebar edge look like a hung app).
+- Pane toolbar order (left→right after the title field): peek badge · split right · split down · dock · pin · close. Dock/pin are only enabled when the pane is focused — click the tab's sidebar row first.
+- Verify `Copy URL` with `pbcopy < /dev/null` before and `pbpaste` after.
+- Read split fractions from `~/Library/Application Support/HiFi/state.json` with a recursive JSON walk (the key nesting varies).
+- Running-agent pulse is a small blue dot on the row icon; take 3 zooms of the row within ~1s while "Working for Ns" is shown.
+- The checkout may be switched to another branch by the sidekick mid-run; read source with `git show <sha>:<path>` and keep testing the already-running binary.

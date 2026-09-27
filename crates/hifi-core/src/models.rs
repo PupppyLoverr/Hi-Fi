@@ -632,7 +632,16 @@ impl WorkspaceState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GroupId, Tab, TabKind};
+    use super::{GroupId, SplitNode, SplitSide, Tab, TabKind};
+
+    #[test]
+    fn removing_split_leaf_promotes_sibling() {
+        let mut root = SplitNode::leaf("left".into());
+        assert!(root.split(&"left".to_string(), "right".into(), SplitSide::Right, 0.5));
+        assert!(root.remove(&"left".into()));
+        assert_eq!(root.leaves(), vec!["right".to_string()]);
+        assert!(matches!(root, SplitNode::Leaf { .. }));
+    }
 
     #[test]
     fn short_title_strips_host_suffix_and_truncates() {

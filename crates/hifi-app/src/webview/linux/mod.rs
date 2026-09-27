@@ -349,6 +349,10 @@ impl WebPaneHost {
         self.set_visible(visible);
     }
 
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
+    }
+
     /// Paint the latest frame into `bounds` (called from the pane canvas).
     pub fn paint(&self, bounds: Bounds<Pixels>, window: &mut gpui::Window) {
         let scale = window.scale_factor();

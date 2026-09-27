@@ -290,6 +290,7 @@ pub struct WebPaneHost {
     parent: Retained<NSView>,
     _monitor: Option<Retained<AnyObject>>,
     visible: Cell<bool>,
+    bounds: Cell<Bounds<Pixels>>,
 }
 
 impl WebPaneHost {
@@ -477,6 +478,7 @@ impl WebPaneHost {
             parent,
             _monitor: monitor,
             visible: Cell::new(false),
+            bounds: Cell::new(Bounds::default()),
         };
         if !url.is_empty() && url != "hifi://newtab" {
             let _ = host.web.load_url(url);
@@ -489,6 +491,7 @@ impl WebPaneHost {
     /// parent isn't flipped (cosmos's math: the clip fills the parent and a
     /// layer mask pins the page to the pane rect).
     pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
+        self.bounds.set(bounds);
         let x = f64::from(f32::from(bounds.origin.x));
         let y_top = f64::from(f32::from(bounds.origin.y));
         let w = f64::from(f32::from(bounds.size.width)).max(0.);
@@ -522,6 +525,10 @@ impl WebPaneHost {
             let _ = self.web.set_visible(show);
             self.clip.setHidden(!show);
         }
+    }
+
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
     }
 
     pub fn set_input_shield(&self, on: bool) {

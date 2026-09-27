@@ -502,12 +502,9 @@ impl Shell {
                         Rc::new(move |app| {
                             ask_store.update(app, |s, cx| {
                                 let id = s.open_tab("hifi://agent", None, None, cx);
-                                if let Some(agent) = s.state.tab_mut(&id) {
-                                    agent.prompt = format!("Summarize {}", ask_url);
-                                    agent.title = agent.prompt.clone();
-                                }
-                                s.save();
-                                cx.notify();
+                                let harness = s.state.settings.agent_harness.clone();
+                                let prompt = format!("Summarize this page: {ask_url}");
+                                s.start_agent_in(&id, &harness, &prompt, cx);
                             });
                             ask_dismiss(app);
                         }),
@@ -632,10 +629,22 @@ impl Shell {
                             true,
                         ),
                     ]);
-                    let origin = window.content_mask().bounds.origin;
+                    let scale = if cfg!(target_os = "macos") {
+                        1.0
+                    } else {
+                        window.scale_factor()
+                    };
+                    let bounds = self
+                        .panes
+                        .get(&tab)
+                        .and_then(|pane| match pane {
+                            Pane::Web(host) => Some(host.bounds()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
                     self.context_menu = Some((
-                        f32::from(origin.x) + x as f32,
-                        f32::from(origin.y) + y as f32,
+                        f32::from(bounds.origin.x) + x as f32 / scale,
+                        f32::from(bounds.origin.y) + y as f32 / scale,
                         items,
                     ));
                 }
@@ -1597,6 +1606,7 @@ impl Shell {
                     div()
                         .flex_1()
                         .min_w(px(0.))
+                        .ml(px(6.))
                         .overflow_hidden()
                         .text_ellipsis()
                         .text_size(px(11.))
@@ -1608,7 +1618,7 @@ impl Shell {
             let addr_id = id.clone();
             header = header.child(
                 surface_chrome::input(&p)
-                    .id("addr")
+                    .id(SharedString::from(format!("addr:{}", tab.id)))
                     .cursor_text()
                     .when(focused, |s| {
                         s.bg(p.ink(0.08))
@@ -2457,40 +2467,62 @@ impl gpui::Render for Shell {
             let group_dismiss = dismiss.clone();
             let space_store = store.clone();
             let space_dismiss = dismiss.clone();
-            self.context_menu = Some((
-                f32::from(anchor.x),
-                f32::from(anchor.y),
-                vec![
-                    crate::menu::MenuItem {
-                        id: "space-new-group".into(),
-                        label: "New Group".into(),
-                        icon: Some(icons::PLUS),
-                        action: Rc::new(move |app| {
-                            group_store.update(app, |s, cx| {
-                                s.create_group("Group", None, cx);
-                            });
-                            group_dismiss(app);
-                        }),
-                        separator_before: false,
-                        disabled: false,
-                        selected: false,
-                    },
-                    crate::menu::MenuItem {
-                        id: "space-new-space".into(),
-                        label: "New Space".into(),
-                        icon: Some(icons::PLUS),
-                        action: Rc::new(move |app| {
-                            space_store.update(app, |s, cx| {
-                                s.create_space("Space", cx);
-                            });
-                            space_dismiss(app);
-                        }),
-                        separator_before: false,
-                        disabled: false,
-                        selected: false,
-                    },
-                ],
-            ));
+            let state = store.read(cx).state.clone();
+            let active_space = state.active_space().map(|space| space.id.clone());
+            let mut items = Vec::new();
+            for space in state.spaces {
+                let selected = active_space.as_deref() == Some(space.id.as_str());
+                let store = store.clone();
+                let dismiss = dismiss.clone();
+                let id = space.id.clone();
+                items.push(crate::menu::MenuItem {
+                    id: format!("space-switch-{}", space.id).into(),
+                    label: space.name.into(),
+                    icon: Some(if selected {
+                        icons::CHECK
+                    } else {
+                        icons::FOLDER
+                    }),
+                    action: Rc::new(move |app| {
+                        store.update(app, |s, cx| s.switch_space(&id, cx));
+                        dismiss(app);
+                    }),
+                    separator_before: false,
+                    disabled: selected,
+                    selected,
+                });
+            }
+            items.extend([
+                crate::menu::MenuItem {
+                    id: "space-new-group".into(),
+                    label: "New Group".into(),
+                    icon: Some(icons::PLUS),
+                    action: Rc::new(move |app| {
+                        group_store.update(app, |s, cx| {
+                            s.create_group("Group", None, cx);
+                        });
+                        group_dismiss(app);
+                    }),
+                    separator_before: true,
+                    disabled: false,
+                    selected: false,
+                },
+                crate::menu::MenuItem {
+                    id: "space-new-space".into(),
+                    label: "New Space".into(),
+                    icon: Some(icons::PLUS),
+                    action: Rc::new(move |app| {
+                        space_store.update(app, |s, cx| {
+                            s.create_space("Space", cx);
+                        });
+                        space_dismiss(app);
+                    }),
+                    separator_before: false,
+                    disabled: false,
+                    selected: false,
+                },
+            ]);
+            self.context_menu = Some((f32::from(anchor.x), f32::from(anchor.y), items));
         }
         if let Some((tab_id, anchor)) = self.store.update(cx, |s, _| s.pending_context_menu.take())
         {

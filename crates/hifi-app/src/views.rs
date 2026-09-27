@@ -395,7 +395,7 @@ impl gpui::Render for NewTabView {
         let menu = (ask && self.picker_open).then(|| {
             div()
                 .absolute()
-                .top(px(28.))
+                .bottom(px(28.))
                 .right(px(4.))
                 .child(crate::agent_chat::model_menu(
                     &harness,

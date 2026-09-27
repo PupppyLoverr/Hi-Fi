@@ -3,8 +3,8 @@
 
 use gpui::{App, AppContext, Context, Entity, Pixels, Point};
 use hifi_core::{
-    Group, GroupId, HifiPaths, RoutedUrl, Settings, Space, SplitSide, Tab, TabId, TabKind,
-    WorkspaceState, route,
+    Group, GroupId, HifiPaths, RoutedUrl, Settings, Space, SplitNode, SplitSide, Tab, TabId,
+    TabKind, WorkspaceState, route,
 };
 use std::collections::HashSet;
 
@@ -323,13 +323,22 @@ impl Store {
 
     pub fn close_tab(&mut self, id: &str, cx: &mut Context<Self>) {
         self.state.tabs.retain(|t| t.id != id);
+        let mut replacements = Vec::new();
         for space in &mut self.state.spaces {
             for group in &mut space.groups {
+                let had_root = group.root.is_some();
                 if let Some(root) = &mut group.root {
                     root.remove(&id.to_string());
                     if root.leaves().is_empty() {
                         group.root = None;
                     }
+                }
+                if had_root && group.root.is_none() && group.tab_ids().is_empty() {
+                    let replacement = Tab::new(TabKind::NewTab, "hifi://newtab", group.id.clone());
+                    let replacement_id = replacement.id.clone();
+                    replacements.push(replacement);
+                    group.root = Some(SplitNode::leaf(replacement_id.clone()));
+                    group.active_tab = Some(replacement_id);
                 }
                 if group.active_tab.as_deref() == Some(id) {
                     group.active_tab = group
@@ -349,6 +358,7 @@ impl Store {
                 }
             }
         }
+        self.state.tabs.extend(replacements);
         self.save();
         cx.notify();
     }

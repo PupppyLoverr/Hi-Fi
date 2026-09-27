@@ -183,6 +183,10 @@ impl WebPaneHost {
         inner.apply();
     }
 
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.inner.borrow().bounds.unwrap_or_default()
+    }
+
     /// WebView2 already leaves captured GPUI drags alone.
     pub fn set_input_shield(&self, _on: bool) {}
 

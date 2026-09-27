@@ -551,14 +551,8 @@ impl gpui::Render for Sidebar {
             .px(px(Theme::SPACE_SM))
             .pt(px(4.));
 
-        // Workspace header: the space switcher (cycles spaces).
+        // Workspace header: the space switcher menu.
         let space_name = space.name.clone();
-        let next_space = spaces
-            .iter()
-            .skip_while(|(id, _)| *id != space_id)
-            .nth(1)
-            .or_else(|| spaces.first())
-            .map(|(id, _)| id.clone());
         let store_hdr = self.store.clone();
         let initial: String = space_name
             .chars()
@@ -603,10 +597,12 @@ impl gpui::Render for Sidebar {
                     )
                     .child(glyph(icons::ALT_ARROW_DOWN, 11., p.faint))
                 })
-                .on_click(move |_, _, cx| {
-                    if let Some(id) = next_space.clone() {
-                        store_hdr.update(cx, |s, cx| s.switch_space(&id, cx));
-                    }
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    cx.stop_propagation();
+                    store_hdr.update(cx, |s, cx| {
+                        s.pending_space_menu = Some(event.position);
+                        cx.notify();
+                    });
                 }),
         );
         let store_search = self.store.clone();
@@ -621,41 +617,53 @@ impl gpui::Render for Sidebar {
 
         // Favorites: pinned tabs as a 3-up tile grid.
         if !pinned.is_empty() {
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+            list = list.child(self.disclosure(
+                "sb-pinned",
+                PINNED_KEY,
+                "PINNED",
+                !self.collapsed.contains(PINNED_KEY),
+                None,
+                p,
+                cx,
+            ));
             let mut grid = div().mt(px(8.)).flex().flex_wrap().flex_none().gap(px(6.));
-            for tab in &pinned {
-                let on = active_tab.as_ref() == Some(&tab.id);
-                let store = self.store.clone();
-                let tid = tab.id.clone();
-                grid = grid.child(
-                    div()
-                        .id(SharedString::from(format!("tile-{}", tab.id)))
-                        .h(px(38.))
-                        .when(compact, |d| d.w_full())
-                        .when(!compact, |d| {
-                            d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(10.))
-                        .cursor_pointer()
-                        .bg(if p.is_dark {
-                            p.ink(0.05)
-                        } else {
-                            hsla(0., 0., 1., 0.5)
-                        })
-                        .border_1()
-                        .border_color(if on {
-                            p.accent.opacity(0.6)
-                        } else {
-                            p.hairline(0.04)
-                        })
-                        .hover(|s| s.bg(p.pill()))
-                        .child(tab_badge(tab, 16., &p))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |s, cx| s.focus_tab(&tid, cx));
-                        }),
-                );
+            if !self.collapsed.contains(PINNED_KEY) {
+                for tab in &pinned {
+                    let on = active_tab.as_ref() == Some(&tab.id);
+                    let store = self.store.clone();
+                    let tid = tab.id.clone();
+                    grid = grid.child(
+                        div()
+                            .id(SharedString::from(format!("tile-{}", tab.id)))
+                            .h(px(38.))
+                            .when(compact, |d| d.w_full())
+                            .when(!compact, |d| {
+                                d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(10.))
+                            .cursor_pointer()
+                            .bg(if p.is_dark {
+                                p.ink(0.05)
+                            } else {
+                                hsla(0., 0., 1., 0.5)
+                            })
+                            .border_1()
+                            .border_color(if on {
+                                p.accent.opacity(0.6)
+                            } else {
+                                p.hairline(0.04)
+                            })
+                            .hover(|s| s.bg(p.pill()))
+                            .child(tab_badge(tab, 16., &p))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                store.update(cx, |s, cx| s.focus_tab(&tid, cx));
+                            }),
+                    );
+                }
             }
             list = list.child(grid);
         }
@@ -674,7 +682,7 @@ impl gpui::Render for Sidebar {
                     .into_iter()
                     .chain(group.dock.tabs.iter().cloned())
                     .filter_map(|id| tab_of(&id))
-                    .filter(|tab| matches!(tab.kind, TabKind::Web | TabKind::NewTab))
+                    .filter(|tab| !tab.pinned && matches!(tab.kind, TabKind::Web | TabKind::NewTab))
                     .collect();
                 (group.id.clone(), group.name.clone(), tabs)
             })
