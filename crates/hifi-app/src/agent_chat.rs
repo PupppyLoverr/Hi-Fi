@@ -295,6 +295,9 @@ impl AgentChatView {
                 }
             }
             AgentEvent::Done { error } => {
+                if self.active.is_none() {
+                    return;
+                }
                 if let Some(e) = error {
                     self.items.push(Item::Note {
                         text: format!("The harness stopped with an error: {}", short(&e, 600)),

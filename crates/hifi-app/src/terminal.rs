@@ -94,19 +94,9 @@ pub struct TermParts {
 
 impl TerminalPane {
     /// Fallible half of `spawn` — no view context needed.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn spawn_pty(command: Option<&str>, cwd: Option<&str>) -> anyhow::Result<TermParts> {
         Self::spawn_pty_inner(command, None, cwd, None)
-    }
-
-    /// Like `spawn_pty`, passing `arg` to `command` as one extra argv entry.
-    #[allow(dead_code)]
-    pub fn spawn_pty_with_arg(
-        command: &str,
-        arg: &str,
-        cwd: Option<&str>,
-    ) -> anyhow::Result<TermParts> {
-        Self::spawn_pty_inner(Some(command), Some(arg), cwd, None)
     }
 
     pub fn spawn_pty_with_wake(

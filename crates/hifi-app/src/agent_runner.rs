@@ -192,17 +192,9 @@ pub fn opencode_config(guard: Guard, hifi_bin: &Path, tab_id: &str) -> Value {
             "write": "deny",
             "patch": "deny",
             // The bash tool stays registered (OpenCode's free tier rejects
-            // requests without it) but only read-only commands may run.
-            "bash": {
-                "*": "deny",
-                "ls*": "allow",
-                "cat *": "allow",
-                "pwd": "allow",
-                "echo *": "allow",
-                "git status*": "allow",
-                "git log*": "allow",
-                "git diff*": "allow",
-            },
+            // requests without it) but nothing except a bare `pwd` may run;
+            // reads go through the read/glob/grep tools.
+            "bash": { "*": "deny", "pwd": "allow" },
         }),
         Guard::Balanced => json!({
             "*": "allow",
@@ -400,6 +392,19 @@ pub fn events_from_opencode(v: &Value) -> Vec<AgentEvent> {
     if let Some(sid) = v.get("sessionID").and_then(Value::as_str) {
         out.push(AgentEvent::Session(sid.to_string()));
     }
+    if v.get("type").and_then(Value::as_str) == Some("error") {
+        let err = v.get("error");
+        let msg = err
+            .and_then(|e| e.pointer("/data/message"))
+            .or_else(|| err.and_then(|e| e.get("message")))
+            .or_else(|| err.and_then(|e| e.get("name")))
+            .and_then(Value::as_str)
+            .unwrap_or("harness reported an error");
+        out.push(AgentEvent::Done {
+            error: Some(msg.to_string()),
+        });
+        return out;
+    }
     let Some(part) = v.get("part") else {
         return out;
     };
@@ -508,6 +513,16 @@ mod tests {
         let text = json!({"type":"text","sessionID":"ses_1","part":{"id":"p1","type":"text","text":"`hi`"}});
         let evs = events_from_opencode(&text);
         assert!(matches!(&evs[1], AgentEvent::Text { id, text } if id == "p1" && text == "`hi`"));
+    }
+
+    #[test]
+    fn provider_error_surfaces_message() {
+        let line = json!({"type":"error","sessionID":"s1",
+            "error":{"name":"APIError","data":{"message":"Rate limit exceeded","statusCode":429}}});
+        let evs = events_from_opencode(&line);
+        assert!(
+            matches!(&evs[1], AgentEvent::Done { error: Some(e) } if e == "Rate limit exceeded")
+        );
     }
 
     #[test]
