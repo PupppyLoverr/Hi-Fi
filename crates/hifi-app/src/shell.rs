@@ -80,6 +80,8 @@ pub struct Shell {
     /// Root focus target so window-level key bindings dispatch when no
     /// input or terminal holds focus.
     focus: gpui::FocusHandle,
+    last_window_title: String,
+    context_menu: Option<(f32, f32, Vec<crate::menu::ContextMenuItem>)>,
 }
 
 impl Shell {
@@ -158,6 +160,8 @@ impl Shell {
             inbox_ipc: Vec::new(),
             wake,
             focus: cx.focus_handle(),
+            last_window_title: String::new(),
+            context_menu: None,
         }
     }
 
@@ -261,6 +265,63 @@ impl Shell {
                         s.open_tab(&url, None, None, cx);
                     });
                 }
+                WebEvent::ContextMenu {
+                    tab,
+                    x,
+                    y,
+                    href,
+                    src,
+                    selection,
+                } => {
+                    let mut items = vec![
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-back".into(),
+                            label: "Back".into(),
+                        },
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-forward".into(),
+                            label: "Forward".into(),
+                        },
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-reload".into(),
+                            label: "Reload".into(),
+                        },
+                    ];
+                    if !href.is_empty() {
+                        items.push(crate::menu::ContextMenuItem {
+                            id: "ctx-copy-link".into(),
+                            label: "Copy Link".into(),
+                        });
+                    }
+                    if !src.is_empty() {
+                        items.push(crate::menu::ContextMenuItem {
+                            id: "ctx-copy-image".into(),
+                            label: "Copy Image URL".into(),
+                        });
+                    }
+                    if !selection.is_empty() {
+                        items.push(crate::menu::ContextMenuItem {
+                            id: "ctx-copy-selection".into(),
+                            label: "Copy Selection".into(),
+                        });
+                    }
+                    items.extend([
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-split-right".into(),
+                            label: "Split Right".into(),
+                        },
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-split-down".into(),
+                            label: "Split Down".into(),
+                        },
+                        crate::menu::ContextMenuItem {
+                            id: "ctx-close".into(),
+                            label: "Close Pane".into(),
+                        },
+                    ]);
+                    let _ = tab;
+                    self.context_menu = Some((x as f32, y as f32, items));
+                }
                 WebEvent::Keystroke { combo } => {
                     let (key, _tab) = combo.rsplit_once('|').unwrap_or((&combo, ""));
                     if let Ok(ks) = gpui::Keystroke::parse(key) {
@@ -289,7 +350,7 @@ impl Shell {
                     self.store.update(cx, |s, cx| {
                         s.tab_meta_update(
                             &tab,
-                            Some(format!("⚠ {message}")),
+                            Some(format!("Warning: {message}")),
                             None,
                             Some(false),
                             None,
@@ -440,7 +501,7 @@ impl Shell {
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
-        let ipc = matches!(tab.kind, TabKind::Notes);
+        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes);
         // hifi:// urls never reach the network — the nav delegate would
         // cancel them into WebEvent::Url and open a duplicate tab.
         let load_url = if tab.url.starts_with("hifi://") {
@@ -932,7 +993,7 @@ impl Shell {
                         .justify_center()
                         .text_color(p.danger)
                         .text_size(px(12.))
-                        .child(format!("⚠ {err}"))
+                        .child(format!("Warning: {err}"))
                         .into_any()
                 }
             },
@@ -993,7 +1054,7 @@ impl Shell {
                         .text_color(p.danger)
                         .text_size(px(12.))
                         .child(format!(
-                            "⚠ {}",
+                            "Warning: {}",
                             self.pane_errors
                                 .get(&tab.id)
                                 .cloned()
@@ -1111,37 +1172,40 @@ impl Shell {
             .relative()
             .when(docked, |d| d.border_t_0());
 
-        if tab.kind == TabKind::Web {
-            let nav = |name: &'static str,
-                       icon: &'static str,
-                       enabled: bool,
-                       op: fn(&mut Store, TabId)| {
+        let nav =
+            |name: &'static str, icon: &'static str, enabled: bool, op: fn(&mut Store, TabId)| {
                 let store = store.clone();
                 let id = id.clone();
                 toolbar_button(name, icon, enabled, p, move |cx| {
                     store.update(cx, |s, cx| {
                         op(s, id.clone());
                         cx.notify();
-                    });
+                    })
                 })
             };
-            header = header
-                .child(nav(
-                    "nav-back",
-                    icons::ARROW_LEFT,
-                    tab.can_go_back,
-                    |s, id| s.pending_back.push(id),
-                ))
-                .child(nav(
-                    "nav-fwd",
-                    icons::ARROW_RIGHT,
-                    tab.can_go_forward,
-                    |s, id| s.pending_forward.push(id),
-                ))
-                .child(nav("nav-reload", icons::REFRESH, true, |s, id| {
-                    s.pending_reload.push(id)
-                }));
-        }
+        header = header
+            .child(nav(
+                "nav-back",
+                icons::ARROW_LEFT,
+                tab.kind == TabKind::Web && tab.can_go_back,
+                |s, id| s.pending_back.push(id),
+            ))
+            .child(nav(
+                "nav-fwd",
+                icons::ARROW_RIGHT,
+                tab.kind == TabKind::Web && tab.can_go_forward,
+                |s, id| s.pending_forward.push(id),
+            ))
+            .child(nav(
+                "nav-reload",
+                if tab.loading {
+                    icons::CLOSE
+                } else {
+                    icons::REFRESH
+                },
+                tab.kind == TabKind::Web,
+                |s, id| s.pending_reload.push(id),
+            ));
 
         let basename = |path: &str| {
             path.trim_end_matches('/')
@@ -1156,15 +1220,22 @@ impl Shell {
                     .url
                     .split_once("://")
                     .map_or(tab.url.as_str(), |(_, r)| r);
-                let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+                let (host, _) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
                 let host = host.strip_prefix("www.").unwrap_or(host).to_string();
-                let path = if path == "/" { "" } else { path };
                 let icon = if tab.url.starts_with("https://") {
                     icons::LOCK
                 } else {
                     icons::GLOBE
                 };
-                (icon, host, path.to_string())
+                (
+                    icon,
+                    tab.short_title(),
+                    if tab.short_title() == host {
+                        String::new()
+                    } else {
+                        host
+                    },
+                )
             }
             TabKind::Terminal => (
                 sidebar::kind_icon(tab),
@@ -1185,7 +1256,7 @@ impl Shell {
                 if tab.title.is_empty() || tab.title == "Notes" {
                     "Untitled".into()
                 } else {
-                    tab.title.clone()
+                    tab.short_title()
                 },
                 String::new(),
             ),
@@ -1232,6 +1303,11 @@ impl Shell {
                 surface_chrome::input(&p)
                     .id("addr")
                     .cursor_text()
+                    .when(focused, |s| {
+                        s.bg(p.ink(0.08))
+                            .border_1()
+                            .border_color(p.accent.opacity(0.35))
+                    })
                     .hover(|s| s.bg(p.ink(0.06)))
                     .child(glyph(lead_icon, 12., p.faint))
                     .child(label)
@@ -1260,72 +1336,118 @@ impl Shell {
             );
         }
 
+        let peek_count = if docked {
+            self.store
+                .read(cx)
+                .state
+                .active_space()
+                .and_then(|space| {
+                    let gid = space
+                        .active_group
+                        .clone()
+                        .or_else(|| space.groups.first().map(|g| g.id.clone()))?;
+                    space
+                        .groups
+                        .iter()
+                        .find(|group| group.id == gid)
+                        .map(|group| group.dock.tabs.len())
+                })
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        header = header.child(
+            div()
+                .id("tab-peek")
+                .size(px(surface_chrome::CONTROL_SIZE))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(surface_chrome::CONTROL_RADIUS))
+                .cursor_pointer()
+                .hover(|s| s.bg(p.wash(0.14)))
+                .child(glyph(icons::WIDGET, surface_chrome::ICON_SIZE, p.muted))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-2.))
+                        .right(px(-2.))
+                        .min_w(px(10.))
+                        .h(px(10.))
+                        .px(px(2.))
+                        .rounded_full()
+                        .bg(p.accent)
+                        .text_size(px(8.))
+                        .text_color(gpui::white())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(peek_count.to_string()),
+                ),
+        );
+
         let split = |name: &'static str, icon: &'static str, side: hifi_core::SplitSide| {
             let store = store.clone();
             let id = id.clone();
-            toolbar_button(name, icon, true, p, move |cx| {
+            toolbar_button(name, icon, focused, p, move |cx| {
                 store.update(cx, |s, cx| {
                     s.open_tab("hifi://newtab", None, Some((id.clone(), side)), cx);
                 });
             })
         };
-        if !docked && focused {
-            header = header
-                .child(split(
-                    "split-r",
-                    icons::SPLIT_COLUMNS,
-                    hifi_core::SplitSide::Right,
-                ))
-                .child(split(
-                    "split-b",
-                    icons::FOLD_VERTICAL,
-                    hifi_core::SplitSide::Below,
-                ));
-        }
-        if focused {
-            header = header
-                .child({
-                    let store = store.clone();
-                    let id = id.clone();
-                    toolbar_button(
-                        "dock-move",
-                        if docked {
-                            icons::SIDEBAR_LEFT
-                        } else {
-                            icons::SIDEBAR_RIGHT
-                        },
-                        true,
-                        p,
-                        move |cx| {
-                            store.update(cx, |s, cx| {
-                                if docked {
-                                    s.undock_tab(&id, cx)
-                                } else {
-                                    s.dock_tab(&id, cx)
-                                }
-                            });
-                        },
-                    )
-                })
-                .child({
-                    let store = store.clone();
-                    let id = id.clone();
-                    toolbar_button(
-                        "pin",
-                        icons::PIN,
-                        true,
-                        if tab.pinned {
-                            crate::theme::Palette {
-                                muted: p.accent,
-                                ..p
+        header = header
+            .child(split(
+                "split-r",
+                icons::SPLIT_COLUMNS,
+                hifi_core::SplitSide::Right,
+            ))
+            .child(split(
+                "split-b",
+                icons::FOLD_VERTICAL,
+                hifi_core::SplitSide::Below,
+            ))
+            .child({
+                let store = store.clone();
+                let id = id.clone();
+                toolbar_button(
+                    "dock-move",
+                    if docked {
+                        icons::SIDEBAR_LEFT
+                    } else {
+                        icons::SIDEBAR_RIGHT
+                    },
+                    focused,
+                    p,
+                    move |cx| {
+                        store.update(cx, |s, cx| {
+                            if docked {
+                                s.undock_tab(&id, cx)
+                            } else {
+                                s.dock_tab(&id, cx)
                             }
-                        } else {
-                            p
-                        },
-                        move |cx| store.update(cx, |s, cx| s.toggle_pin(&id, cx)),
-                    )
-                });
-        }
+                        });
+                    },
+                )
+            })
+            .child({
+                let store = store.clone();
+                let id = id.clone();
+                toolbar_button(
+                    "pin",
+                    icons::PIN,
+                    focused,
+                    if tab.pinned {
+                        crate::theme::Palette {
+                            muted: p.accent,
+                            ..p
+                        }
+                    } else {
+                        p
+                    },
+                    move |cx| store.update(cx, |s, cx| s.toggle_pin(&id, cx)),
+                )
+            });
         header = header.child({
             let store = store.clone();
             let id = id.clone();
@@ -1436,6 +1558,8 @@ impl Shell {
                         .join(".")
                 )
                 .into();
+                let reset_path = my_path.clone();
+                let reset_store = store.clone();
                 let handle = div()
                     .id(handle_id)
                     .group("split-handle")
@@ -1443,16 +1567,23 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(horizontal, |d| d.w(px(6.)).h_full().cursor_col_resize())
-                    .when(!horizontal, |d| d.h(px(6.)).w_full().cursor_row_resize())
+                    .when(horizontal, |d| d.w(px(33.)).h_full().cursor_col_resize())
+                    .when(!horizontal, |d| d.h(px(33.)).w_full().cursor_row_resize())
                     .child(
                         div()
-                            .rounded_full()
+                            .bg(p.border)
                             .when(horizontal, |d| d.w(px(2.)).h(px(32.)))
                             .when(!horizontal, |d| d.h(px(2.)).w(px(32.)))
-                            .group_hover("split-handle", |s| s.bg(p.accent.opacity(0.7))),
+                            .group_hover("split-handle", |s| s.bg(p.accent.opacity(0.5))),
                     )
                     .occlude()
+                    .on_click(move |event, _, cx| {
+                        if event.click_count() == 2 {
+                            reset_store.update(cx, |s, cx| {
+                                s.resize_split(&reset_path, 0.5, cx);
+                            });
+                        }
+                    })
                     .on_drag(
                         SplitDrag {
                             path: my_path.clone(),
@@ -1516,8 +1647,15 @@ impl Shell {
                     if span > 1.0 {
                         let lo = (min_first / span).min(0.5);
                         let hi = (1. - min_second / span).max(lo);
+                        let mut next = (frac / span).clamp(lo, hi);
+                        for snap in [0.333, 0.5, 0.667] {
+                            if (next - snap).abs() <= 12. / span {
+                                next = snap;
+                                break;
+                            }
+                        }
                         store.update(cx, |s, cx| {
-                            s.resize_split(&path, (frac / span).clamp(lo, hi), cx);
+                            s.resize_split(&path, next.clamp(lo, hi), cx);
                         });
                     }
                 });
@@ -1600,7 +1738,9 @@ impl Shell {
             .filter(|id| !visible.iter().any(|visible_id| visible_id == *id))
             .cloned()
             .collect::<Vec<_>>();
-        let mut strip = surface_chrome::toolbar(&p).overflow_hidden();
+        // Dock tabs use the same pane toolbar below; retain the existing
+        // overflow state only for its deferred menu data.
+        let mut strip = div().h(px(0.)).overflow_hidden();
         for id in &visible {
             let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
                 continue;
@@ -1727,8 +1867,7 @@ impl Shell {
             .and_then(|id| self.store.read(cx).state.tab(id).cloned())
         {
             Some(tab) => {
-                let header =
-                    (tab.kind == TabKind::Web).then(|| self.pane_header(&tab, true, true, cx));
+                let header = Some(self.pane_header(&tab, true, true, cx));
                 let body = self.pane_body(&tab, window, cx);
                 div()
                     .flex_1()
@@ -1976,16 +2115,19 @@ impl Shell {
         .into_any()
     }
 
-    /// The unified window titlebar (cosmos `render_title_bar` +
-    /// `render_titlebar_cluster`): past the traffic lights, the sidebar
-    /// toggle, history and new-tab controls, then the active tab's identity,
-    /// then the trailing actions — all on the glass shell.
-    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// Thin drag strip containing only the sidebar and dock toggles.
+    fn render_title_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store = self.store.clone();
-        let (tab, dock_open) = {
+        let (space_name, focused_title, dock_open) = {
             let s = self.store.read(cx);
-            let tab = s.active_tab_id().and_then(|id| s.state.tab(&id).cloned());
+            let space_name = s
+                .state
+                .active_space()
+                .map(|space| space.name.clone())
+                .unwrap_or_else(|| "Hi-Fi".into());
+            let tab = s.active_tab_id().and_then(|id| s.state.tab(&id));
+            let title = tab.map_or_else(|| "New Tab".into(), |tab| tab.short_title());
             let dock_open = s
                 .state
                 .active_space()
@@ -1997,36 +2139,25 @@ impl Shell {
                     sp.groups.iter().find(|g| g.id == gid).map(|g| g.dock.open)
                 })
                 .unwrap_or(false);
-            (tab, dock_open)
+            (space_name, title, dock_open)
         };
-        let (can_back, can_fwd) = tab
-            .as_ref()
-            .map_or((false, false), |t| (t.can_go_back, t.can_go_forward));
-        let nav =
-            |id: &'static str, icon: &'static str, enabled: bool, op: fn(&mut Store, TabId)| {
-                let store = store.clone();
-                nav_history_button(id, icon, enabled, p, move |cx| {
-                    store.update(cx, |s, cx| {
-                        if let Some(id) = s.active_tab_id() {
-                            op(s, id);
-                            cx.notify();
-                        }
-                    });
-                })
-            };
-        let spacer = if cfg!(target_os = "macos") {
-            TITLEBAR_CLUSTER_START - TITLEBAR_CLUSTER_PAD
-        } else {
-            0.
-        };
+        let window_title = format!("{space_name} — {focused_title}");
+        if self.last_window_title != window_title {
+            window.set_window_title(&window_title);
+            self.last_window_title = window_title;
+        }
         let store_sb = store.clone();
-        let store_nt = store.clone();
-        let cluster = div()
-            .flex_none()
+        let store_dk = store.clone();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .pt(px(Theme::TITLEBAR_TOP_PAD))
+            .pl(px(TITLEBAR_CLUSTER_PAD))
             .flex()
-            .flex_row()
             .items_center()
-            .child(div().flex_none().w(px(spacer)))
             .child(window_control_button(
                 "toggle-sidebar",
                 icons::SIDEBAR_LEFT,
@@ -2040,109 +2171,12 @@ impl Shell {
             ))
             .child(
                 div()
-                    .ml(px(Theme::SPACE_SM))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(nav("nav-back", icons::ARROW_LEFT, can_back, |s, id| {
-                        s.pending_back.push(id)
-                    }))
-                    .child(nav("nav-forward", icons::ARROW_RIGHT, can_fwd, |s, id| {
-                        s.pending_forward.push(id)
-                    })),
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
             )
-            .child(div().ml(px(Theme::SPACE_SM)).child(window_control_button(
-                "titlebar-new-tab",
-                icons::PLUS,
-                p,
-                move |cx| {
-                    store_nt.update(cx, |s, cx| {
-                        s.open_tab("hifi://newtab", None, None, cx);
-                    });
-                },
-            )));
-
-        let identity = tab.map(|t| {
-            let new_tab = t.kind == TabKind::NewTab;
-            let title = if new_tab {
-                "Search Google or type a URL".to_string()
-            } else if t.kind == TabKind::Web {
-                format!("{}  ·  {}", t.display_title(), hifi_core::host_of(&t.url))
-            } else {
-                t.display_title()
-            };
-            let tid = t.id.clone();
-            div()
-                .id("tb-omnibox")
-                .ml(px(Theme::SPACE_SM))
-                .h(px(26.))
-                .px(px(8.))
-                .rounded(px(7.))
-                .min_w(px(0.))
-                .flex_shrink(1.)
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .cursor_text()
-                .occlude()
-                .hover(|s| s.bg(p.glass_hover()))
-                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                    this.open_address(Some(tid.clone()), cx);
-                }))
-                .child(if new_tab {
-                    glyph(icons::MAGNIFER, 14., p.muted).into_any_element()
-                } else {
-                    sidebar::tab_badge(&t, 13., &p)
-                })
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(13.))
-                        .font_weight(if new_tab {
-                            gpui::FontWeight::NORMAL
-                        } else {
-                            gpui::FontWeight::MEDIUM
-                        })
-                        .text_color(if new_tab { p.faint } else { p.text })
-                        .child(title),
-                )
-        });
-
-        let store_ag = store.clone();
-        let store_pg = store.clone();
-        let store_dk = store.clone();
-        let trailing = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .pr(px(TITLEBAR_ACTION_EDGE_INSET))
             .child(window_control_button(
-                "tb-agent",
-                icons::BOT,
-                p,
-                move |cx| {
-                    store_ag.update(cx, |s, cx| {
-                        s.dock_open("hifi://agent", cx);
-                    });
-                },
-            ))
-            .child(window_control_button(
-                "tb-page",
-                icons::DOCUMENT_ADD,
-                p,
-                move |cx| {
-                    store_pg.update(cx, |s, cx| {
-                        s.open_tab("hifi://notes", None, None, cx);
-                    });
-                },
-            ))
-            .child(window_control_button(
-                "tb-dock",
+                "toggle-dock",
                 if dock_open {
                     icons::SIDEBAR_RIGHT
                 } else {
@@ -2150,28 +2184,7 @@ impl Shell {
                 },
                 p,
                 move |cx| store_dk.update(cx, |s, cx| s.toggle_dock(cx)),
-            ));
-
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(Theme::TITLEBAR_HEIGHT))
-            .pt(px(Theme::TITLEBAR_TOP_PAD))
-            .pl(px(TITLEBAR_CLUSTER_PAD))
-            .flex()
-            .flex_row()
-            .items_center()
-            .child(cluster)
-            .children(identity)
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            )
-            .child(trailing)
+            ))
             .into_any()
     }
 }
@@ -2206,12 +2219,8 @@ fn min_extent(node: &SplitNode, horizontal: bool) -> f32 {
     }
 }
 
-/// Where the titlebar control cluster starts on macOS: past the traffic
-/// lights at {14,14} (cosmos `titlebar_cluster_start`).
-const TITLEBAR_CLUSTER_START: f32 = 88.0;
 /// Horizontal inset owned by the titlebar control row itself.
 const TITLEBAR_CLUSTER_PAD: f32 = 10.0;
-const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
 
 /// cosmos `window_control_button`: a 24px glass-hover icon control that
 /// occludes the titlebar drag strip beneath it.
@@ -2238,29 +2247,6 @@ fn window_control_button(
             on_click(cx)
         })
         .child(glyph(icon_path, 16.0, p.muted))
-}
-
-/// cosmos `nav_history_button`: a disabled history control still occludes
-/// the strip but dims its glyph.
-fn nav_history_button(
-    id: &'static str,
-    icon_path: &'static str,
-    enabled: bool,
-    p: crate::theme::Palette,
-    on_click: impl Fn(&mut App) + 'static,
-) -> AnyElement {
-    if !enabled {
-        return div()
-            .size(px(24.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .occlude()
-            .child(glyph(icon_path, 16.0, p.muted.opacity(0.35)))
-            .into_any_element();
-    }
-    window_control_button(id, icon_path, p, on_click).into_any_element()
 }
 
 /// cosmos `files::toolbar_button`: a surface-toolbar icon control.
@@ -2379,7 +2365,7 @@ impl gpui::Render for Shell {
                 .justify_center()
                 .text_color(p.faint)
                 .text_size(px(13.))
-                .child("No tabs — ⌘T to open one")
+                .child("No tabs - press the new-tab shortcut to open one")
                 .into_any(),
         };
 
@@ -2570,7 +2556,6 @@ impl gpui::Render for Shell {
                     .flex_row()
                     .flex_1()
                     .min_h(px(0.))
-                    .pt(px(Theme::TITLEBAR_HEIGHT))
                     .relative()
                     .on_drag_move::<SidebarResize>(move |event, w, cx| {
                         if event.event.pressed_button != Some(gpui::MouseButton::Left) {
@@ -2592,7 +2577,12 @@ impl gpui::Render for Shell {
                         });
                     });
                 if !collapsed {
-                    row = row.child(div().h_full().child(self.sidebar.clone()));
+                    row = row.child(
+                        div()
+                            .h_full()
+                            .pt(px(Theme::SIDEBAR_TOP_PAD))
+                            .child(self.sidebar.clone()),
+                    );
                 }
                 if !collapsed && !sb_compact {
                     row = row.child(
@@ -2611,9 +2601,22 @@ impl gpui::Render for Shell {
                             }),
                     );
                 }
-                row = row.child(div().flex_1().min_w(px(0.)).h_full().flex().child(content));
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .pt(px(Theme::TITLEBAR_HEIGHT))
+                        .flex()
+                        .child(content),
+                );
                 if dock_open {
-                    row = row.child(self.render_dock(dock_width, window, cx));
+                    row = row.child(
+                        div()
+                            .h_full()
+                            .pt(px(Theme::TITLEBAR_HEIGHT))
+                            .child(self.render_dock(dock_width, window, cx)),
+                    );
                     row = row.child(
                         div()
                             .id("dock-resize")
@@ -2632,7 +2635,16 @@ impl gpui::Render for Shell {
                 }
                 row
             });
-        root = root.child(self.render_title_bar(cx));
+        root = root.child(self.render_title_bar(window, cx));
+        if let Some((x, y, items)) = &self.context_menu {
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(px(*x))
+                    .top(px(*y))
+                    .child(crate::menu::context_menu(items.clone(), cx)),
+            );
+        }
 
         // Find bar — deferred overlay top-right so it floats over webviews.
         if self.store.read(cx).find_bar_open
