@@ -109,17 +109,26 @@ fn prune_empty_note_tabs(state: &mut WorkspaceState, paths: &HifiPaths) {
         .tabs
         .iter()
         .filter_map(|tab| {
-            if tab.kind != TabKind::Notes || !(tab.title.is_empty() || tab.title == "Untitled") {
+            if tab.kind != TabKind::Notes {
                 return None;
             }
             let raw = std::fs::read_to_string(paths.notes_dir().join(format!("{}.html", tab.id)))
                 .unwrap_or_default();
-            let (title, body) = serde_json::from_str::<crate::notes::PageSave>(&raw)
-                .map(|page| (page.title, page.html))
-                .unwrap_or_else(|_| (String::new(), raw));
-            ((title.is_empty() || title == "Untitled")
-                && matches!(body.trim(), "" | "<div><br></div>"))
-            .then(|| tab.id.clone())
+            let (title, body, had_unsafe_title) =
+                serde_json::from_str::<crate::notes::PageSave>(&raw)
+                    .map(|page| {
+                        let title = crate::notes::sanitize_title(&page.title);
+                        let had_unsafe_title = title != page.title;
+                        (title, page.html, had_unsafe_title)
+                    })
+                    .unwrap_or_else(|_| (String::new(), raw, false));
+            let empty_body = matches!(body.trim(), "" | "<div><br></div>");
+            ((title.is_empty()
+                || title == "Untitled"
+                || title == "Notes"
+                || (had_unsafe_title && empty_body))
+                && empty_body)
+                .then(|| tab.id.clone())
         })
         .collect();
     if empty.is_empty() {
@@ -169,12 +178,35 @@ fn prune_empty_note_tabs(state: &mut WorkspaceState, paths: &HifiPaths) {
     state.tabs.retain(|tab| !remove.contains(&tab.id));
 }
 
+fn hydrate_note_titles(state: &mut WorkspaceState, paths: &HifiPaths) {
+    for tab in &mut state.tabs {
+        if tab.kind != TabKind::Notes {
+            continue;
+        }
+        tab.title = crate::notes::sanitize_title(&tab.title);
+        let raw = std::fs::read_to_string(paths.notes_dir().join(format!("{}.html", tab.id)));
+        let Ok(raw) = raw else {
+            continue;
+        };
+        let Ok(page) = serde_json::from_str::<crate::notes::PageSave>(&raw) else {
+            continue;
+        };
+        let title = crate::notes::sanitize_title(&page.title);
+        if !title.is_empty() {
+            tab.title = title;
+        } else if tab.title == "Notes" || tab.title == "Untitled" {
+            tab.title.clear();
+        }
+    }
+}
+
 impl Store {
     pub fn load(cx: &mut App) -> Entity<Store> {
         let paths = HifiPaths::detect();
         let _ = paths.ensure_dirs();
         let file = hifi_core::StateFile::new(paths.state_file());
         let mut state = file.load();
+        hydrate_note_titles(&mut state, &paths);
         prune_empty_dock_tabs(&mut state, true);
         prune_empty_note_tabs(&mut state, &paths);
         if state.spaces.is_empty() {
@@ -550,15 +582,15 @@ impl Store {
             std::fs::read_to_string(self.paths.notes_dir().join(format!("{tab_id}.html"))).ok()?;
         serde_json::from_str::<crate::notes::PageSave>(&raw)
             .ok()
-            .map(|page| page.title)
-            .filter(|title| !title.is_empty())
+            .map(|page| crate::notes::sanitize_title(&page.title))
+            .filter(|title| !title.is_empty() && title != "Notes")
     }
 
     pub fn notes_save(&mut self, tab_id: &str, title: &str, html: &str) {
         let dir = self.paths.notes_dir();
         let _ = std::fs::create_dir_all(&dir);
         let page = crate::notes::PageSave {
-            title: title.to_string(),
+            title: crate::notes::sanitize_title(title),
             html: html.to_string(),
         };
         let _ = std::fs::write(
@@ -705,6 +737,7 @@ impl Store {
     }
 
     pub fn set_title(&mut self, tab_id: &str, title: String, cx: &mut Context<Self>) {
+        let title = crate::notes::sanitize_title(&title);
         if let Some(tab) = self.state.tab_mut(tab_id)
             && tab.title != title
         {
@@ -723,6 +756,9 @@ impl Store {
     }
 
     pub fn navigate(&mut self, id: &str, url: &str, cx: &mut Context<Self>) {
+        if !hifi_core::schemes::allowed_navigation(url) {
+            return;
+        }
         if let Some(tab) = self.state.tab_mut(id) {
             tab.url = url.to_string();
             tab.loading = true;

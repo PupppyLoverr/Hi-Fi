@@ -53,10 +53,17 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - A simple browse task (example.com → Learn more) finishes in ~20s; a 3-site task gives time to click stop. After stop, `pgrep -fl opencode` should be empty.
 - Guard checks: Strict = file must not exist; Balanced = `rm -rf` row turns red with the deny text; Full = file exists (delete it after).
 - Restart with `pkill -f hifi-app` and relaunch; restored chats should show saved rows, not replay.
-- Pages editor: the End key may insert tofu glyphs into the title; prefer clicking at the text end.
+- Pages editor: the End key used to insert tofu glyphs into the title (fixed on ee515a8); re-check after editor changes.
+
+## IPC / MCP checks (shell, no recording)
+- Socket `~/Library/Application Support/HiFi/ipc.sock`, token `~/Library/Application Support/HiFi/ipc.token`. Raw request: `printf '{"id":"x","method":"tab.list","params":{},"token":"bad"}\n' | nc -U <sock>` should return `unauthorized`. Moving the token file away makes `target/debug/hifi tab list` say "Hi-Fi is not running" — restore it afterwards.
+- `target/debug/hifi tab list` JSON has `agentOf` (owner chat id, null for user tabs). MCP: pipe an `initialize` line then a `tools/call` line into `HIFI_AGENT_TAB=<chat id> target/debug/hifi mcp`; browser tools take the argument `tab` (not `tab_id`). A user tab returns "tab is not owned by this agent".
+- Empty-page dedupe on restart only removes Notes tabs whose saved HTML is empty (`<div><br></div>`); check `notes/<id>.html` before assuming pages are duplicates.
+- Open a shell terminal via File > New Terminal (the sidebar "Terminal" tab may be an old harness terminal showing a `claude` spawn error). Typing "New term" + Enter in the command bar runs a web search instead.
+- The `computer` tool coordinate space is 1024x768 for a 1600pt-wide window; do not double coordinates from half-scale screenshots.
 
 ## Agent chat
-- Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+T opens the command bar instead, and pressing Enter on its "New tab" item may just run an empty web search.
+- Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+T opens the command bar; Enter on the highlighted "New tab" opens a New Tab.
 - Choose OpenCode in the harness chip, then send a prompt. Browser tasks run through the Hi-Fi MCP bridge and may take about 20s.
 - To test stop, send a message and click the stop button (same spot as send) within about 0.3s, then wait 5s to confirm nothing appears after "Stopped".
 - Sidebar "New Chat" opens a chat in the dock. Close split panes first to give the chat room.

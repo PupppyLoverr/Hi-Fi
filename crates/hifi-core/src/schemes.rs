@@ -38,8 +38,7 @@ pub fn route(input: &str) -> RoutedUrl {
 
 /// Bare input → http(s) URL or search query via the engine template.
 pub fn normalize_url(input: &str) -> String {
-    if input.starts_with("http://") || input.starts_with("https://") || input.starts_with("file://")
-    {
+    if input.starts_with("http://") || input.starts_with("https://") {
         return input.to_string();
     }
     if url::Url::parse(&format!("https://{input}"))
@@ -75,4 +74,14 @@ fn urlencoding(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url;
+
+    #[test]
+    fn file_urls_are_searches() {
+        assert_eq!(normalize_url("file:///x"), "search:file:///x");
+    }
 }

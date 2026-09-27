@@ -223,9 +223,17 @@ impl Shell {
         for ev in web {
             match ev {
                 WebEvent::Title { tab, title } => {
-                    self.store.update(cx, |s, cx| {
-                        s.tab_meta_update(&tab, Some(title), None, None, None, None, cx);
-                    });
+                    let is_empty_notes_title = self
+                        .store
+                        .read(cx)
+                        .state
+                        .tab(&tab)
+                        .is_some_and(|tab| tab.kind == TabKind::Notes && title.is_empty());
+                    if !is_empty_notes_title {
+                        self.store.update(cx, |s, cx| {
+                            s.tab_meta_update(&tab, Some(title), None, None, None, None, cx);
+                        });
+                    }
                 }
                 WebEvent::Url { tab, url } => {
                     if url.starts_with("hifi://") {
@@ -524,6 +532,9 @@ impl Shell {
                 } else {
                     url
                 };
+                if !hifi_core::schemes::allowed_navigation(&target_url) {
+                    return self.finish_ipc(job, Err("navigation scheme is not allowed".into()));
+                }
                 if let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf")) {
                     let id = self
                         .store

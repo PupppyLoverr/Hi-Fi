@@ -11,6 +11,20 @@ pub struct PageSave {
     pub html: String,
 }
 
+pub fn sanitize_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|&ch| {
+            !ch.is_control()
+                && !(('\u{e000}'..='\u{f8ff}').contains(&ch)
+                    || ('\u{f0000}'..='\u{ffffd}').contains(&ch)
+                    || ('\u{100000}'..='\u{10fffd}').contains(&ch))
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// The full document for a page. `body` is previously-saved innerHTML and
 /// `title` the page title; `dark` matches the app theme so nothing flashes.
 pub fn editor_html(body: &str, title: &str, dark: bool) -> String {
