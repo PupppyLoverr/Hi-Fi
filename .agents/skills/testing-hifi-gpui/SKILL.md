@@ -30,7 +30,6 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - Dock: resize by dragging the narrow GPUI gutter exactly on the dock's left edge (shell.rs `DockResize`). Zoom in on the edge first to find it.
 - Maximise the window: osascript window control is not permitted, so Option-click the green traffic-light button.
 - Before testing, check `pgrep -fl hifi` for other builds (e.g. `target-redesign/debug/hifi-app`) and kill them.
-- Agent harness binaries (claude, codex, opencode...) are not installed on the VM. The agent tab shows "Failed to spawn command"; that is expected.
 - After resizing a split that contains a web pane, check that the web content reflows to the new width and is not just clipped.
 - Leftover dock tabs (earlier Notes pages) persist across launches, so tab positions shift. Re-screenshot before clicking.
 
@@ -48,10 +47,18 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - After any change to macOS mouse routing, test a held text-selection drag in *every* web pane, not just one. Also double-click a word to separate "no press delivered" from "no drag delivered". On 9ef846f, selection drags worked in the rightmost pane but not in the middle one.
 - If a web pane's text looks cut off on the left, scroll left inside the pane. If nothing more appears, the WKWebView frame is being clipped; it is not a horizontal scroll offset. Pages with wide tables, such as iana.org/domains/reserved, show this in narrow panes.
 
-## Agent chat (scripted mock agent)
+## Real agent harness (OpenCode)
+- OpenCode lives at `~/.opencode/bin/opencode`; build `cargo build -p hifi-app -p hifi-cli` (the CLI is the MCP browser bridge). Free models: `big-pickle`, `mimo-v2.6-flash-free` from the model chip menu.
+- New Tab chips: Home/folder (native dialog; Cmd+Shift+G then type a path), `Guard · X` (click cycles Strict→Balanced→Full), model chip (menu opens over Recent tasks). Guard/folder/model are global settings; open a fresh New Tab per guard level.
+- A simple browse task (example.com → Learn more) finishes in ~20s; a 3-site task gives time to click stop. After stop, `pgrep -fl opencode` should be empty.
+- Guard checks: Strict = file must not exist; Balanced = `rm -rf` row turns red with the deny text; Full = file exists (delete it after).
+- Restart with `pkill -f hifi-app` and relaunch; restored chats should show saved rows, not replay.
+- Pages editor: the End key may insert tofu glyphs into the title; prefer clicking at the text end.
+
+## Agent chat
 - Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+T opens the command bar instead, and pressing Enter on its "New tab" item may just run an empty web search.
-- In Ask mode, Enter turns the same tab into an agent chat. The first-turn script takes about 9s and a follow-up about 3s, so take the mid-run screenshot 1–3s after sending.
+- Choose OpenCode in the harness chip, then send a prompt. Browser tasks run through the Hi-Fi MCP bridge and may take about 20s.
 - To test stop, send a message and click the stop button (same spot as send) within about 0.3s, then wait 5s to confirm nothing appears after "Stopped".
 - Sidebar "New Chat" opens a chat in the dock. Close split panes first to give the chat room.
-- "Run in terminal" needs the `claude` CLI; without it the Terminal tab shows "Failed to spawn command 'claude'".
+- "Run in terminal" launches the selected harness in a terminal tab.
 - Check the page preview card after later items arrive: the card may shrink and clip.
