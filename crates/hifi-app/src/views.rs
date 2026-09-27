@@ -413,6 +413,7 @@ impl gpui::Render for NewTabView {
                         },
                     )),
                 )
+                .child(composer_pill("ctl-effort", icons::GAUGE, "High", true, &p))
             });
 
         let mut hero = div()

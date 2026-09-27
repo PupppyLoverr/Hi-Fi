@@ -389,6 +389,17 @@ impl Store {
         cx.notify();
     }
 
+    /// Open a terminal tab running `harness` with `prompt` as its argument.
+    pub fn open_harness(&mut self, harness: &str, prompt: &str, cx: &mut Context<Self>) {
+        let id = self.open_tab("hifi://terminal", None, None, cx);
+        if let Some(tab) = self.state.tab_mut(&id) {
+            tab.command = harness.to_string();
+            tab.prompt = prompt.to_string();
+        }
+        self.save();
+        cx.notify();
+    }
+
     pub fn set_title(&mut self, tab_id: &str, title: String, cx: &mut Context<Self>) {
         if let Some(tab) = self.state.tab_mut(tab_id)
             && tab.title != title

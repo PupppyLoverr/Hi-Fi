@@ -1,6 +1,7 @@
 //! Hi-Fi — a GPUI browser. `gpui` shell + wry(WKWebView) content +
 //! `alacritty_terminal` panes, on the exact stack cosmos runs.
 
+mod agent_chat;
 mod assets;
 mod command_bar;
 mod frost;

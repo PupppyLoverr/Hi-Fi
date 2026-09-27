@@ -842,22 +842,26 @@ impl Shell {
                         .into_any()
                 }
             },
-            TabKind::Terminal | TabKind::Agent => {
+            TabKind::Agent => {
+                let store = self.store.clone();
+                let view = self.view_pane(
+                    tab.id.clone(),
+                    move |tab_id, w, cx| {
+                        crate::agent_chat::AgentChatView::new(store.clone(), tab_id, w, cx)
+                    },
+                    window,
+                    cx,
+                );
+                div().size_full().child(view).into_any()
+            }
+            TabKind::Terminal => {
                 let view = match self.panes.entry(tab.id.clone()) {
                     std::collections::hash_map::Entry::Occupied(e) => match e.get() {
                         Pane::Term(v) => Some(v.clone()),
                         _ => None,
                     },
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let cmd = if tab.kind == TabKind::Agent {
-                            Some(if tab.command.is_empty() {
-                                "claude".to_string()
-                            } else {
-                                tab.command.clone()
-                            })
-                        } else {
-                            (!tab.command.is_empty()).then(|| tab.command.clone())
-                        };
+                        let cmd = (!tab.command.is_empty()).then(|| tab.command.clone());
                         let cwd = (!tab.cwd.is_empty()).then(|| tab.cwd.clone());
                         let spawned = match (&cmd, tab.prompt.is_empty()) {
                             (Some(c), false) => {
@@ -1251,7 +1255,7 @@ impl Shell {
     ) -> gpui::AnyView {
         match self.panes.entry(id.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => match e.get() {
-                Pane::View(v) => return v.clone(),
+                Pane::View(v) if v.clone().downcast::<T>().is_ok() => return v.clone(),
                 // Kind changed under this id — rebuild below.
                 _ => {
                     e.remove();
