@@ -226,7 +226,17 @@ impl Sidebar {
                                 .text_ellipsis()
                                 .text_size(px(13.))
                                 .line_height(px(17.))
-                                .text_color(if active { p.text } else { p.text.opacity(0.8) })
+                                .text_color(
+                                    if tab.kind == TabKind::Notes
+                                        && (tab.title.is_empty() || tab.title == "Untitled")
+                                    {
+                                        p.muted
+                                    } else if active {
+                                        p.text
+                                    } else {
+                                        p.text.opacity(0.8)
+                                    },
+                                )
                                 .child(row_title(tab)),
                         )
                         .when_some(sub, |d, sub| {

@@ -1567,8 +1567,25 @@ impl Shell {
             })
             .unwrap_or((460., vec![], None));
 
+        let active_index = active
+            .as_ref()
+            .and_then(|id| tabs.iter().position(|tab_id| tab_id == id));
+        let visible_count = 8.min(tabs.len());
+        let mut visible = tabs.iter().take(visible_count).cloned().collect::<Vec<_>>();
+        if let Some(index) = active_index
+            && index >= visible_count
+            && !visible.is_empty()
+        {
+            let last = visible.len() - 1;
+            visible[last] = tabs[index].clone();
+        }
+        let collapsed = tabs
+            .iter()
+            .filter(|id| !visible.iter().any(|visible_id| visible_id == *id))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut strip = surface_chrome::toolbar(&p).overflow_hidden();
-        for id in &tabs {
+        for id in &visible {
             let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
                 continue;
             };
@@ -1585,7 +1602,8 @@ impl Shell {
                     .id(cid)
                     .group("dock-chip")
                     .h(px(surface_chrome::CONTROL_SIZE))
-                    .max_w(px(160.))
+                    .when(is_active, |d| d.max_w(px(140.)))
+                    .when(!is_active, |d| d.w(px(30.)))
                     .min_w(px(0.))
                     .flex_shrink(1.)
                     .flex()
@@ -1602,17 +1620,19 @@ impl Shell {
                         12.,
                         if is_active { p.text } else { p.faint },
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_size(px(11.5))
-                            .text_color(if is_active { p.text } else { p.muted })
-                            .child(title),
-                    )
+                    .when(is_active, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(11.5))
+                                .text_color(p.text)
+                                .child(title),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("dockchip-x:{id}")))
@@ -1637,8 +1657,34 @@ impl Shell {
             );
         }
         let store_p = store_e.clone();
+        let store_overflow = store_e.clone();
         let store_close = store_e.clone();
         strip = strip
+            .when(!collapsed.is_empty(), |strip| {
+                strip.child(
+                    div()
+                        .id("dock-overflow")
+                        .h(px(surface_chrome::CONTROL_SIZE))
+                        .px(px(7.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(surface_chrome::CONTROL_RADIUS))
+                        .text_size(px(11.))
+                        .text_color(p.muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(p.wash(0.14)))
+                        .child(format!("+{}", collapsed.len()))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            store_overflow.update(cx, |s, cx| {
+                                s.dock_overflow_open = !s.dock_overflow_open;
+                                cx.notify();
+                            });
+                        }),
+                )
+            })
             .child(toolbar_button(
                 "dock-plus",
                 icons::PLUS,
@@ -1685,6 +1731,11 @@ impl Shell {
             .read(cx)
             .dock_menu_open
             .then(|| self.render_dock_menu(cx));
+        let overflow_menu: Option<AnyElement> = self
+            .store
+            .read(cx)
+            .dock_overflow_open
+            .then(|| self.render_dock_overflow_menu(&collapsed, cx));
 
         div()
             .h_full()
@@ -1706,6 +1757,7 @@ impl Shell {
                         p.bg
                     })
                     .child(strip)
+                    .children(overflow_menu.map(|m| gpui::deferred(m).with_priority(1)))
                     .child(body),
             )
             .when_some(menu, |d, m| d.child(m))
@@ -1771,6 +1823,66 @@ impl Shell {
             .items_center()
             .justify_center()
             .p(px(16.0))
+            .child(col)
+            .into_any()
+    }
+
+    fn render_dock_overflow_menu(&mut self, ids: &[TabId], cx: &mut Context<Self>) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let store = self.store.clone();
+        let mut col = div()
+            .w(px(220.))
+            .max_h(px(260.))
+            .overflow_hidden()
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .rounded(px(10.))
+            .bg(p.glass_overlay())
+            .border_1()
+            .border_color(p.border)
+            .shadow_lg();
+        for id in ids {
+            let Some(tab) = self.store.read(cx).state.tab(id).cloned() else {
+                continue;
+            };
+            let store = store.clone();
+            let tab_id = id.clone();
+            col = col.child(
+                div()
+                    .id(SharedString::from(format!("dock-overflow-{id}")))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.glass_hover()))
+                    .child(glyph(sidebar::kind_icon(&tab), 13., p.muted))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(p.text)
+                            .child(tab.display_title()),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        store.update(cx, |s, cx| {
+                            s.dock_overflow_open = false;
+                            s.dock_focus(&tab_id, cx);
+                        });
+                    }),
+            );
+        }
+        div()
+            .absolute()
+            .top(px(surface_chrome::CONTROL_SIZE + 4.))
+            .left(px(DOCK_GUTTER + 4.))
             .child(col)
             .into_any()
     }

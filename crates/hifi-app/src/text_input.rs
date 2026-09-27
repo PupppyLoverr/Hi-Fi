@@ -43,6 +43,7 @@ pub struct TextField {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    compact_placeholder: Option<SharedString>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -62,6 +63,7 @@ impl TextField {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             placeholder: placeholder.into(),
+            compact_placeholder: None,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -79,6 +81,15 @@ impl TextField {
 
     pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.placeholder = text.into();
+        cx.notify();
+    }
+
+    pub fn set_compact_placeholder(
+        &mut self,
+        text: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.compact_placeholder = Some(text.into());
         cx.notify();
     }
 
@@ -507,9 +518,17 @@ impl Element for TextElement {
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
+        let placeholder = if window.viewport_size().width < px(360.) {
+            input
+                .compact_placeholder
+                .as_ref()
+                .unwrap_or(&input.placeholder)
+        } else {
+            &input.placeholder
+        };
         let (display_text, text_color) = if content.is_empty() {
             (
-                input.placeholder.clone(),
+                placeholder.clone(),
                 input.placeholder_color.unwrap_or(hsla(0., 0., 0., 0.35)),
             )
         } else {

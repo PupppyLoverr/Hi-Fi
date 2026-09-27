@@ -29,7 +29,8 @@ pub struct NewTabView {
     picker_open: bool,
 }
 
-const ASK_PLACEHOLDER: &str = "Ask AI a task, @ for context";
+const ASK_PLACEHOLDER: &str = "Ask anything or search…";
+const ASK_COMPACT_PLACEHOLDER: &str = "Ask or search…";
 const SEARCH_PLACEHOLDER: &str = "Search Google or type a URL";
 
 impl NewTabView {
@@ -40,6 +41,9 @@ impl NewTabView {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| TextField::new(ASK_PLACEHOLDER, cx));
+        input.update(cx, |input, cx| {
+            input.set_compact_placeholder(ASK_COMPACT_PLACEHOLDER, cx);
+        });
         cx.subscribe(&input, move |me: &mut NewTabView, input, event, cx| {
             let TextFieldEvent::Submitted(text) = event else {
                 return;
@@ -153,7 +157,7 @@ struct TaskCard {
 }
 
 impl gpui::Render for NewTabView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::of(cx).palette;
         let store = self.store.read(cx);
         let settings = &store.state.settings;
@@ -312,7 +316,11 @@ impl gpui::Render for NewTabView {
                 gpui::white().opacity(0.96)
             })
             .border_1()
-            .border_color(p.hairline(0.07))
+            .border_color(if self.input.read(cx).focus_handle(cx).is_focused(window) {
+                p.accent
+            } else {
+                p.hairline(0.07)
+            })
             .shadow_md()
             .capture_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
                 let k = &e.keystroke;
@@ -418,6 +426,7 @@ impl gpui::Render for NewTabView {
             .max_w(px(620.))
             .px(px(4.))
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(2.))
             .child(
@@ -482,6 +491,8 @@ impl gpui::Render for NewTabView {
                         true,
                         &p,
                     )
+                    .max_w(px(150.))
+                    .overflow_hidden()
                     .on_click(cx.listener(
                         |this, _: &gpui::ClickEvent, _, cx| {
                             this.picker_open = !this.picker_open;

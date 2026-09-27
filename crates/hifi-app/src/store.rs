@@ -28,6 +28,7 @@ pub struct Store {
     pub sidebar_collapsed: bool,
     /// The dock `+` surface picker popup.
     pub dock_menu_open: bool,
+    pub dock_overflow_open: bool,
     pub history: Vec<HistoryEntry>,
     /// Pending navigations the webview layer picks up (drained by WebPaneView).
     pub pending_navs: Vec<(TabId, String)>,
@@ -103,6 +104,71 @@ fn prune_empty_dock_tabs(state: &mut WorkspaceState, keep_one_per_dock: bool) {
     });
 }
 
+fn prune_empty_note_tabs(state: &mut WorkspaceState, paths: &HifiPaths) {
+    let empty: HashSet<TabId> = state
+        .tabs
+        .iter()
+        .filter_map(|tab| {
+            if tab.kind != TabKind::Notes || !(tab.title.is_empty() || tab.title == "Untitled") {
+                return None;
+            }
+            let raw = std::fs::read_to_string(paths.notes_dir().join(format!("{}.html", tab.id)))
+                .unwrap_or_default();
+            let (title, body) = serde_json::from_str::<crate::notes::PageSave>(&raw)
+                .map(|page| (page.title, page.html))
+                .unwrap_or_else(|_| (String::new(), raw));
+            ((title.is_empty() || title == "Untitled")
+                && matches!(body.trim(), "" | "<div><br></div>"))
+            .then(|| tab.id.clone())
+        })
+        .collect();
+    if empty.is_empty() {
+        return;
+    }
+    let mut remove = HashSet::new();
+    for space in &mut state.spaces {
+        for group in &mut space.groups {
+            let mut kept = false;
+            for id in group
+                .tab_ids()
+                .into_iter()
+                .chain(group.dock.tabs.iter().cloned())
+            {
+                if !empty.contains(&id) {
+                    continue;
+                }
+                if kept {
+                    remove.insert(id);
+                } else {
+                    kept = true;
+                }
+            }
+            if let Some(root) = &mut group.root {
+                for id in &remove {
+                    root.remove(id);
+                }
+            }
+            group.dock.tabs.retain(|id| !remove.contains(id));
+            if group
+                .active_tab
+                .as_ref()
+                .is_some_and(|id| remove.contains(id))
+            {
+                group.active_tab = group.tab_ids().first().cloned();
+            }
+            if group
+                .dock
+                .active
+                .as_ref()
+                .is_some_and(|id| remove.contains(id))
+            {
+                group.dock.active = group.dock.tabs.first().cloned();
+            }
+        }
+    }
+    state.tabs.retain(|tab| !remove.contains(&tab.id));
+}
+
 impl Store {
     pub fn load(cx: &mut App) -> Entity<Store> {
         let paths = HifiPaths::detect();
@@ -110,6 +176,7 @@ impl Store {
         let file = hifi_core::StateFile::new(paths.state_file());
         let mut state = file.load();
         prune_empty_dock_tabs(&mut state, true);
+        prune_empty_note_tabs(&mut state, &paths);
         if state.spaces.is_empty() {
             let mut space = Space::new("Personal");
             let mut group = Group::new("Tabs");
@@ -130,6 +197,7 @@ impl Store {
             find_bar_open: false,
             sidebar_collapsed: false,
             dock_menu_open: false,
+            dock_overflow_open: false,
             history: Vec::new(),
             pending_navs: Vec::new(),
             pending_reload: Vec::new(),

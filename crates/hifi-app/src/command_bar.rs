@@ -1,7 +1,10 @@
 //! `⌘T` command bar — Spotlight-style launcher floating above content
 //! (deferred element, so it composites over native webviews).
 
-use gpui::{Context, Entity, KeyDownEvent, MouseButton, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    Context, Entity, Focusable, KeyDownEvent, MouseButton, SharedString, Window, div, prelude::*,
+    px,
+};
 
 use crate::assets::icons;
 use crate::store::Store;
@@ -206,9 +209,10 @@ impl CommandBar {
 }
 
 impl gpui::Render for CommandBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh(cx);
         let p = Theme::of(cx).palette;
+        let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let mut list = div().flex().flex_col().max_h(px(320.)).overflow_y_hidden();
         for (i, cand) in self.candidates.iter().enumerate() {
             let (icon, label, sub) = match cand {
@@ -263,7 +267,7 @@ impl gpui::Render for CommandBar {
             .rounded(radius::BUBBLE)
             .bg(p.dialog.opacity(0.92))
             .border_1()
-            .border_color(p.border_strong)
+            .border_color(if focused { p.accent } else { p.border_strong })
             .shadow_lg()
             .flex()
             .flex_col()

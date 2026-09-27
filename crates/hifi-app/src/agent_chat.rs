@@ -511,7 +511,7 @@ pub fn chip(
         .cursor_pointer()
         .hover(|s| s.bg(p.wash(0.06)).text_color(p.text))
         .child(glyph(icon, 13., p.text.opacity(0.8)))
-        .child(label.into())
+        .child(div().min_w(px(0.)).truncate().child(label.into()))
         .when(chevron, |d| {
             d.child(glyph(icons::ALT_ARROW_DOWN, 9., p.faint))
         })
@@ -640,7 +640,7 @@ fn step_row(
 }
 
 impl gpui::Render for AgentChatView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::of(cx).palette;
         let tab = self.tab(cx);
         let harness = tab
@@ -990,7 +990,11 @@ impl gpui::Render for AgentChatView {
                     .rounded(px(16.))
                     .bg(p.glass_overlay())
                     .border_1()
-                    .border_color(p.hairline(0.10))
+                    .border_color(if self.input.read(cx).focus_handle(cx).is_focused(window) {
+                        p.accent
+                    } else {
+                        p.hairline(0.10)
+                    })
                     .shadow_md()
                     .child(
                         div()
