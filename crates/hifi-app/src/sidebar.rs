@@ -65,6 +65,8 @@ pub fn mark_icon(command: &str) -> &'static str {
         icons::PI_MARK
     } else if c.contains("antigravity") {
         icons::ANTIGRAVITY_MARK
+    } else if c.contains("hermes") {
+        icons::HERMES_MARK
     } else {
         icons::TERMINAL
     }

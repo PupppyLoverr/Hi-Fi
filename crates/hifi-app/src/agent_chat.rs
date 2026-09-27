@@ -541,7 +541,7 @@ pub fn model_menu(
         .flex()
         .flex_col();
     for h in HARNESSES {
-        let installed = agent_runner::find_binary(h.command).is_some();
+        let installed = agent_runner::installed(h);
         menu = menu.child(
             div()
                 .px(px(8.))
@@ -553,21 +553,22 @@ pub fn model_menu(
                 .text_size(px(10.5))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(p.faint)
-                .child(glyph(crate::sidebar::mark_icon(h.command), 11., p.faint))
+                .child(glyph(crate::sidebar::mark_icon(h.id), 11., p.faint))
                 .child(h.label.to_uppercase())
                 .when(!installed, |d| {
                     d.child(
                         div()
                             .ml_auto()
                             .font_weight(gpui::FontWeight::NORMAL)
-                            .child("not installed"),
+                            .text_color(p.muted)
+                            .child("Not installed"),
                     )
                 }),
         );
         for m in h.models {
-            let selected = h.command == current_harness && *m == current_model;
+            let selected = h.id == current_harness && *m == current_model;
             let on_pick = on_pick.clone();
-            let (hc, mm) = (h.command, *m);
+            let (hc, mm) = (h.id, *m);
             menu = menu.child(
                 div()
                     .id(SharedString::from(format!("model-{hc}-{mm}")))
