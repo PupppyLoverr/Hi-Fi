@@ -26,17 +26,8 @@ pub struct NewTabView {
     input: Entity<TextField>,
     /// Ask = start an agent task; Search = navigate / web search.
     ask: bool,
-    harness: usize,
+    picker_open: bool,
 }
-
-/// Agent harnesses the composer can start: label, command, brand mark.
-const HARNESSES: &[(&str, &str, &str)] = &[
-    ("Claude Code", "claude", icons::CLAUDE_MARK),
-    ("Codex", "codex", icons::OPENAI_MARK),
-    ("Devin", "devin", icons::DEVIN_MARK),
-    ("OpenCode", "opencode", icons::OPENCODE_MARK),
-    ("Amp", "amp", icons::AMP_MARK),
-];
 
 const ASK_PLACEHOLDER: &str = "Ask AI a task, @ for context";
 const SEARCH_PLACEHOLDER: &str = "Search Google or type a URL";
@@ -58,10 +49,11 @@ impl NewTabView {
                 return;
             }
             let tab = tab_id.clone();
-            let (ask, harness) = (me.ask, HARNESSES[me.harness].1);
+            let ask = me.ask;
             me.store.update(cx, |store, cx| {
+                let harness = store.state.settings.agent_harness.clone();
                 if ask && !looks_like_address(&text) {
-                    store.start_agent_in(&tab, harness, &text, cx);
+                    store.start_agent_in(&tab, &harness, &text, cx);
                 } else {
                     let url = resolve_input(store, &text);
                     store.navigate(&tab, &url, cx);
@@ -75,7 +67,7 @@ impl NewTabView {
             store,
             input,
             ask: true,
-            harness: 0,
+            picker_open: false,
         }
     }
 
@@ -268,7 +260,16 @@ impl gpui::Render for NewTabView {
             });
         }
 
-        let (h_label, _, h_icon) = HARNESSES[self.harness];
+        let (harness, model, guard, cwd) = {
+            let st = &self.store.read(cx).state.settings;
+            (
+                st.agent_harness.clone(),
+                st.agent_model.clone(),
+                st.agent_guard,
+                st.agent_cwd.clone(),
+            )
+        };
+        let h_icon = crate::sidebar::mark_icon(&harness);
         let ask = self.ask;
 
         let mode_seg = |label: &'static str, on: bool, id: &'static str| {
@@ -372,8 +373,47 @@ impl gpui::Render for NewTabView {
             );
 
         let store_ctx = self.store.clone();
-        let store_term = self.store.clone();
+        let store_cwd = self.store.clone();
+        let store_guard = self.store.clone();
+        let store_model = self.store.clone();
+        let this_m = cx.entity().downgrade();
+        let folder = if cwd.is_empty() {
+            "Home".to_string()
+        } else {
+            std::path::Path::new(&cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(cwd.clone())
+        };
+        let menu = (ask && self.picker_open).then(|| {
+            div()
+                .absolute()
+                .top(px(28.))
+                .right(px(4.))
+                .child(crate::agent_chat::model_menu(
+                    &harness,
+                    &model,
+                    380.,
+                    &p,
+                    move |h, m, cx| {
+                        store_model.update(cx, |s, cx| {
+                            s.update_settings(
+                                |st| {
+                                    st.agent_harness = h.to_string();
+                                    st.agent_model = m.to_string();
+                                },
+                                cx,
+                            )
+                        });
+                        let _ = this_m.update(cx, |v: &mut NewTabView, cx| {
+                            v.picker_open = false;
+                            cx.notify();
+                        });
+                    },
+                ))
+        });
         let controls = div()
+            .relative()
             .w_full()
             .max_w(px(620.))
             .px(px(4.))
@@ -388,33 +428,69 @@ impl gpui::Render for NewTabView {
                 ),
             )
             .child(
-                composer_pill("ctl-local", icons::LAPTOP, "Local", false, &p).on_click(
+                composer_pill("ctl-local", icons::FOLDER, folder, true, &p).on_click(
                     move |_, _, cx| {
-                        store_term.update(cx, |s, cx| {
-                            s.open_tab("hifi://terminal", None, None, cx);
+                        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+                            files: false,
+                            directories: true,
+                            multiple: false,
+                            prompt: Some("Use folder".into()),
                         });
+                        let store = store_cwd.clone();
+                        cx.spawn(async move |cx| {
+                            if let Ok(Ok(Some(paths))) = rx.await
+                                && let Some(path) = paths.first()
+                            {
+                                let cwd = path.display().to_string();
+                                cx.update(|cx| {
+                                    store.update(cx, |s, cx| {
+                                        s.update_settings(|st| st.agent_cwd = cwd, cx)
+                                    })
+                                });
+                            }
+                        })
+                        .detach();
                     },
                 ),
             )
-            .child(composer_pill(
-                "ctl-guard",
-                icons::SHIELD,
-                "Guard",
-                false,
-                &p,
-            ))
+            .child(
+                composer_pill(
+                    "ctl-guard",
+                    icons::SHIELD,
+                    format!("Guard · {}", guard.label()),
+                    true,
+                    &p,
+                )
+                .on_click(move |_, _, cx| {
+                    let i = hifi_core::Guard::ALL
+                        .iter()
+                        .position(|g| *g == guard)
+                        .unwrap_or(0);
+                    let next = hifi_core::Guard::ALL[(i + 1) % hifi_core::Guard::ALL.len()];
+                    store_guard.update(cx, |s, cx| {
+                        s.update_settings(|st| st.agent_guard = next, cx)
+                    });
+                }),
+            )
             .child(div().flex_1())
             .when(ask, |d| {
                 d.child(
-                    composer_pill("ctl-harness", h_icon, h_label, true, &p).on_click(cx.listener(
+                    composer_pill(
+                        "ctl-model",
+                        h_icon,
+                        crate::agent_runner::model_short(&model).to_string(),
+                        true,
+                        &p,
+                    )
+                    .on_click(cx.listener(
                         |this, _: &gpui::ClickEvent, _, cx| {
-                            this.harness = (this.harness + 1) % HARNESSES.len();
+                            this.picker_open = !this.picker_open;
                             cx.notify();
                         },
                     )),
                 )
-                .child(composer_pill("ctl-effort", icons::GAUGE, "High", true, &p))
-            });
+            })
+            .children(menu.map(|m| gpui::deferred(m).with_priority(1)));
 
         let mut hero = div()
             .relative()

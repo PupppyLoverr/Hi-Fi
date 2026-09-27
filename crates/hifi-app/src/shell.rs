@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable, MouseButton, SharedString, Window,
-    WindowControlArea, Bounds, deferred, div, point, prelude::*, px, relative, size,
+    AnyElement, App, Bounds, Context, Entity, Focusable, MouseButton, SharedString, Window,
+    WindowControlArea, deferred, div, point, prelude::*, px, relative, size,
 };
 
 use crate::assets::icons;
@@ -629,7 +629,11 @@ impl Shell {
                 }
                 Ok(json!({"ok": true}))
             }
-            m::TAB_EXEC | m::TAB_SNAPSHOT | m::TAB_CLICK | m::TAB_TYPE | m::TAB_READ
+            m::TAB_EXEC
+            | m::TAB_SNAPSHOT
+            | m::TAB_CLICK
+            | m::TAB_TYPE
+            | m::TAB_READ
             | m::TAB_SCROLL => {
                 if let Some(id) = get("id") {
                     self.ensure_headless_host(&id, _window, cx);

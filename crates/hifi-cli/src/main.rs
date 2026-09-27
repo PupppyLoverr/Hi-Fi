@@ -8,6 +8,8 @@ use hifi_core::HifiPaths;
 use hifi_core::ipc::{client, methods};
 use serde_json::{Value, json};
 
+mod mcp;
+
 #[derive(Parser)]
 #[command(name = "hifi", version, about = "Hi-Fi browser CLI")]
 struct Cli {
@@ -57,6 +59,8 @@ enum Command {
         #[command(subcommand)]
         command: BrowserCommand,
     },
+    /// MCP stdio server exposing Hi-Fi browser tools to agent harnesses.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -183,6 +187,7 @@ fn main() -> Result<()> {
     let t = cli.timeout;
 
     let (method, params) = match cli.command {
+        Command::Mcp => return mcp::run(&socket),
         Command::Ping => (methods::PING, json!({})),
         Command::Tab { command } => match command {
             TabCommand::Open {

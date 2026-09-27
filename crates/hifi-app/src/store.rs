@@ -429,12 +429,26 @@ impl Store {
         if !self.live_agents.iter().any(|t| t == id) {
             self.live_agents.push(id.to_string());
         }
+        let defaults = self.state.settings.clone();
         if let Some(tab) = self.state.tab_mut(id) {
             tab.kind = TabKind::Agent;
             tab.url = "hifi://agent".into();
             tab.command = harness.to_string();
             tab.prompt = prompt.to_string();
             tab.loading = false;
+            if tab.model.is_empty() {
+                tab.model = if harness == defaults.agent_harness {
+                    defaults.agent_model.clone()
+                } else {
+                    crate::agent_runner::harness(harness).models[0].to_string()
+                };
+            }
+            if tab.guard.is_none() {
+                tab.guard = Some(defaults.agent_guard);
+            }
+            if tab.cwd.is_empty() {
+                tab.cwd = defaults.agent_cwd.clone();
+            }
             tab.title = if prompt.is_empty() {
                 "Agent".into()
             } else {
@@ -445,7 +459,54 @@ impl Store {
         cx.notify();
     }
 
-    /// Open a terminal tab running `harness` with `prompt` as its argument.
+    /// Pick harness + model for a chat; also becomes the default for new chats.
+    pub fn set_agent_model(
+        &mut self,
+        id: &str,
+        harness: &str,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.state.tab_mut(id) {
+            tab.command = harness.to_string();
+            tab.model = model.to_string();
+            // A new harness means a fresh thread on its side.
+            tab.session.clear();
+        }
+        self.state.settings.agent_harness = harness.to_string();
+        self.state.settings.agent_model = model.to_string();
+        self.save();
+        cx.notify();
+    }
+
+    pub fn set_agent_guard(&mut self, id: &str, guard: hifi_core::Guard, cx: &mut Context<Self>) {
+        if let Some(tab) = self.state.tab_mut(id) {
+            tab.guard = Some(guard);
+        }
+        self.state.settings.agent_guard = guard;
+        self.save();
+        cx.notify();
+    }
+
+    pub fn set_agent_cwd(&mut self, id: &str, cwd: &str, cx: &mut Context<Self>) {
+        if let Some(tab) = self.state.tab_mut(id) {
+            tab.cwd = cwd.to_string();
+        }
+        self.state.settings.agent_cwd = cwd.to_string();
+        self.save();
+        cx.notify();
+    }
+
+    pub fn set_agent_session(&mut self, id: &str, session: &str, cx: &mut Context<Self>) {
+        if let Some(tab) = self.state.tab_mut(id)
+            && tab.session != session
+        {
+            tab.session = session.to_string();
+            self.save();
+            cx.notify();
+        }
+    }
+
     pub fn open_harness(&mut self, harness: &str, prompt: &str, cx: &mut Context<Self>) {
         let id = self.open_tab("hifi://terminal", None, None, cx);
         if let Some(tab) = self.state.tab_mut(&id) {

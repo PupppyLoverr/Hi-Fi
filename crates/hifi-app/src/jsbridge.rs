@@ -11,9 +11,8 @@ pub const SNAPSHOT_JS: &str = r#"(() => {
     if (r.width === 0 || r.height === 0) continue;
     const label = el.getAttribute('aria-label') || el.innerText || el.value || el.name || el.id || el.tagName;
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    const sel = el.id ? '#' + el.id
-      : el.name ? `[name="${el.name}"]`
-      : role + ':nth-of-type(' + (Array.from(el.parentElement?.children || []).filter(c => c.tagName === el.tagName).indexOf(el) + 1) + ')';
+    el.setAttribute('data-hifi', out.length);
+    const sel = '[data-hifi="' + out.length + '"]';
     out.push({ i: out.length, role, sel, label: String(label).slice(0, 80).trim(), x: Math.round(r.x), y: Math.round(r.y) });
   }
   return JSON.stringify({ url: location.href, title: document.title, elements: out });
@@ -28,7 +27,19 @@ pub const READ_JS: &str = r#"(() => {
 
 /// Human-style click: scroll into view, then dispatch the pointer sequence
 /// a real click produces (so pages listening for pointer/mouse events react).
+/// A bare snapshot index ("3") addresses the element tagged by the last
+/// snapshot; anything else is a CSS selector.
+fn target_selector(target: &str) -> String {
+    let t = target.trim();
+    if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+        format!("[data-hifi=\"{t}\"]")
+    } else {
+        t.to_string()
+    }
+}
+
 pub fn click_js(selector: &str) -> String {
+    let selector = target_selector(selector);
     format!(
         r#"(() => {{
   const el = document.querySelector({sel});
@@ -41,13 +52,14 @@ pub fn click_js(selector: &str) -> String {
   el.click();
   return JSON.stringify({{ ok: true, label: (el.innerText || el.value || el.getAttribute('aria-label') || '').slice(0, 80) }});
 }})()"#,
-        sel = serde_json::to_string(selector).unwrap_or_default()
+        sel = serde_json::to_string(&selector).unwrap_or_default()
     )
 }
 
 /// Human-style typing: focus, replace the value, fire input/change; `submit`
 /// presses Enter afterwards (form submit or keydown handlers).
 pub fn type_js(selector: &str, text: &str, submit: bool) -> String {
+    let selector = target_selector(selector);
     format!(
         r#"(() => {{
   const el = document.querySelector({sel});
@@ -70,7 +82,7 @@ pub fn type_js(selector: &str, text: &str, submit: bool) -> String {
   }}
   return JSON.stringify({{ ok: true }});
 }})()"#,
-        sel = serde_json::to_string(selector).unwrap_or_default(),
+        sel = serde_json::to_string(&selector).unwrap_or_default(),
         text = serde_json::to_string(text).unwrap_or_default(),
         submit = submit
     )

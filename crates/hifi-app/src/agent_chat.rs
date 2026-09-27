@@ -1,36 +1,49 @@
-//! Agent chat surface: a transcript of the task (user turns, tool steps, page
-//! previews, subagent fan-out, streamed replies) over a reply composer.
-//!
-//! Replies come from a built-in scripted agent so the surface is usable
-//! without a harness installed; "Run in terminal" hands the same prompt to the
-//! real CLI harness.
+//! Agent chat surface: a transcript of the task (user turns, tool steps,
+//! streamed replies) over a reply composer, backed by a real CLI harness via
+//! [`crate::agent_runner`]. The transcript persists per chat under
+//! `chats/<tab>.json` so it survives restarts.
 
 use gpui::{
-    Context, Entity, Focusable, MouseButton, ScrollHandle, SharedString, Window, div, prelude::*,
-    px,
+    Context, Entity, Focusable, MouseButton, PathPromptOptions, ScrollHandle, SharedString, Window,
+    div, prelude::*, px,
 };
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+
+use crate::agent_runner::{self, AgentEvent, HARNESSES, RunConfig};
 use crate::assets::icons;
 use crate::store::Store;
 use crate::text_input::{TextField, TextFieldEvent};
 use crate::theme::{Palette, Theme};
 use crate::views::glyph;
+use hifi_core::Guard;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
 enum Item {
-    User(String),
-    Step {
-        icon: &'static str,
+    User {
         text: String,
-        link: Option<String>,
     },
-    Page {
-        host: String,
+    Step {
+        id: String,
+        tool: String,
         title: String,
+        #[serde(default)]
+        output: String,
+        #[serde(default)]
+        done: bool,
+        #[serde(default)]
+        error: Option<String>,
     },
-    Text(String),
-    Spawn(Vec<(&'static str, String, &'static str)>),
+    Text {
+        id: String,
+        text: String,
+    },
+    Note {
+        text: String,
+    },
 }
 
 pub struct AgentChatView {
@@ -38,20 +51,15 @@ pub struct AgentChatView {
     tab_id: String,
     input: Entity<TextField>,
     items: Vec<Item>,
-    /// Bumped on every run/stop so a superseded script stops emitting.
+    /// Bumped on every run/stop so a superseded reader stops applying events.
     run: u64,
-    running: bool,
+    active: Option<agent_runner::Run>,
     started: Option<Instant>,
     scroll: ScrollHandle,
+    picker_open: bool,
+    /// Steps whose output is expanded.
+    expanded: Vec<String>,
 }
-
-const MODELS: &[(&str, &str)] = &[
-    ("Claude Code", "claude"),
-    ("Codex", "codex"),
-    ("Devin", "devin"),
-    ("OpenCode", "opencode"),
-    ("Amp", "amp"),
-];
 
 impl AgentChatView {
     pub fn new(
@@ -66,7 +74,7 @@ impl AgentChatView {
                 return;
             };
             let text = text.trim().to_string();
-            if text.is_empty() {
+            if text.is_empty() || me.active.is_some() {
                 return;
             }
             input.update(cx, |i, cx| i.reset(cx));
@@ -74,146 +82,125 @@ impl AgentChatView {
         })
         .detach();
         window.focus(&input.read(cx).focus_handle(cx), cx);
-        let prompt = store
-            .read(cx)
-            .state
-            .tabs
-            .iter()
-            .find(|t| t.id == tab_id)
-            .map(|t| t.prompt.clone())
-            .unwrap_or_default();
+        let (prompt, live) = {
+            let s = store.read(cx);
+            (
+                s.state
+                    .tab(&tab_id)
+                    .map(|t| t.prompt.clone())
+                    .unwrap_or_default(),
+                s.live_agents.contains(&tab_id),
+            )
+        };
         let mut me = Self {
             store,
             tab_id,
             input,
             items: Vec::new(),
             run: 0,
-            running: false,
+            active: None,
             started: None,
             scroll: ScrollHandle::new(),
+            picker_open: false,
+            expanded: Vec::new(),
         };
-        let live = me.store.read(cx).live_agents.contains(&me.tab_id);
-        if live && !prompt.trim().is_empty() {
+        me.items = me.load(cx);
+        let has_turns = me.items.iter().any(|i| matches!(i, Item::User { .. }));
+        if live && !has_turns && !prompt.trim().is_empty() {
             me.send(prompt, cx);
-        } else if !prompt.trim().is_empty() {
-            me.items.push(Item::User(prompt.clone()));
-            me.items.extend(first_turn(&prompt));
         }
         me
     }
 
-    fn harness(&self, cx: &Context<Self>) -> String {
+    fn chat_file(&self, cx: &Context<Self>) -> std::path::PathBuf {
         self.store
             .read(cx)
-            .state
-            .tabs
-            .iter()
-            .find(|t| t.id == self.tab_id)
-            .map(|t| t.command.clone())
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| "claude".into())
+            .paths
+            .chats_dir()
+            .join(format!("{}.json", self.tab_id))
+    }
+
+    fn load(&self, cx: &Context<Self>) -> Vec<Item> {
+        std::fs::read_to_string(self.chat_file(cx))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn persist(&self, cx: &Context<Self>) {
+        let path = self.chat_file(cx);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(s) = serde_json::to_string(&self.items) {
+            let _ = std::fs::write(path, s);
+        }
+    }
+
+    fn tab(&self, cx: &Context<Self>) -> Option<hifi_core::Tab> {
+        self.store.read(cx).state.tab(&self.tab_id).cloned()
     }
 
     fn send(&mut self, text: String, cx: &mut Context<Self>) {
-        let first = !self.items.iter().any(|i| matches!(i, Item::User(_)));
+        let first = !self.items.iter().any(|i| matches!(i, Item::User { .. }));
+        let tab = self.tab(cx);
+        let harness = tab
+            .as_ref()
+            .map(|t| t.command.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| self.store.read(cx).state.settings.agent_harness.clone());
         if first {
             let id = self.tab_id.clone();
-            let harness = self.harness(cx);
             let t = text.clone();
             self.store
                 .update(cx, |s, cx| s.start_agent_in(&id, &harness, &t, cx));
         }
-        self.items.push(Item::User(text.clone()));
-        let script = if first {
-            first_turn(&text)
-        } else {
-            follow_up(&text)
+        let tab = self.tab(cx);
+        self.items.push(Item::User { text: text.clone() });
+        self.picker_open = false;
+        let cfg = RunConfig {
+            harness,
+            model: tab.as_ref().map(|t| t.model.clone()).unwrap_or_default(),
+            cwd: tab.as_ref().map(|t| t.cwd.clone()).unwrap_or_default(),
+            guard: tab.as_ref().and_then(|t| t.guard).unwrap_or_default(),
+            session: tab.as_ref().map(|t| t.session.clone()).unwrap_or_default(),
+            prompt: text,
+            tab_id: self.tab_id.clone(),
+            first_turn: first || tab.as_ref().is_none_or(|t| t.session.is_empty()),
         };
-        self.play(script, cx);
-    }
-
-    fn stop(&mut self, cx: &mut Context<Self>) {
-        self.run += 1;
-        self.running = false;
-        self.started = None;
-        self.items.push(Item::Step {
-            icon: icons::STOP,
-            text: "Stopped".into(),
-            link: None,
-        });
-        cx.notify();
-    }
-
-    /// Emit each scripted item after a short "work" delay; text streams in
-    /// word by word.
-    fn play(&mut self, script: Vec<Item>, cx: &mut Context<Self>) {
         self.run += 1;
         let run = self.run;
-        self.running = true;
-        self.started = Some(Instant::now());
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<AgentEvent>();
+        match agent_runner::spawn(cfg, tx) {
+            Ok(handle) => {
+                self.active = Some(handle);
+                self.started = Some(Instant::now());
+            }
+            Err(e) => {
+                self.items.push(Item::Note { text: e });
+                self.persist(cx);
+                cx.notify();
+                return;
+            }
+        }
+        self.persist(cx);
         self.scroll.scroll_to_bottom();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            for item in script {
-                let pause = match item {
-                    Item::Text(_) => 350,
-                    Item::Page { .. } => 900,
-                    Item::Spawn(_) => 1100,
-                    _ => 700,
-                };
-                cx.background_executor()
-                    .timer(Duration::from_millis(pause))
-                    .await;
+            while let Some(ev) = rx.next().await {
                 let alive = this
-                    .update(cx, |v: &mut AgentChatView, _| v.run == run)
+                    .update(cx, |v: &mut AgentChatView, cx| {
+                        if v.run != run {
+                            return false;
+                        }
+                        v.apply(ev, cx);
+                        true
+                    })
                     .unwrap_or(false);
                 if !alive {
                     return;
                 }
-                if let Item::Text(full) = item {
-                    let words: Vec<&str> = full.split_inclusive(' ').collect();
-                    let _ = this.update(cx, |v: &mut AgentChatView, cx| {
-                        v.items.push(Item::Text(String::new()));
-                        cx.notify();
-                    });
-                    let mut shown = String::new();
-                    for w in words {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(28))
-                            .await;
-                        shown.push_str(w);
-                        let ok = this
-                            .update(cx, |v: &mut AgentChatView, cx| {
-                                if v.run != run {
-                                    return false;
-                                }
-                                if let Some(Item::Text(t)) = v.items.last_mut() {
-                                    t.clone_from(&shown);
-                                }
-                                v.scroll.scroll_to_bottom();
-                                cx.notify();
-                                true
-                            })
-                            .unwrap_or(false);
-                        if !ok {
-                            return;
-                        }
-                    }
-                } else {
-                    let _ = this.update(cx, |v: &mut AgentChatView, cx| {
-                        v.items.push(item);
-                        v.scroll.scroll_to_bottom();
-                        cx.notify();
-                    });
-                }
             }
-            let _ = this.update(cx, |v: &mut AgentChatView, cx| {
-                if v.run == run {
-                    v.running = false;
-                    v.started = None;
-                    cx.notify();
-                }
-            });
         })
         .detach();
         // Tick the "Working for Ns" label while running.
@@ -223,7 +210,7 @@ impl AgentChatView {
                 let go = this
                     .update(cx, |v: &mut AgentChatView, cx| {
                         cx.notify();
-                        v.running && v.run == run
+                        v.active.is_some() && v.run == run
                     })
                     .unwrap_or(false);
                 if !go {
@@ -233,20 +220,133 @@ impl AgentChatView {
         })
         .detach();
     }
-}
 
-fn host_in(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != ':'))
-        .find(|w| w.contains('.') && !w.ends_with('.') && w.len() > 3)
-        .map(|w| {
-            hifi_core::host_of(&if w.contains("://") {
-                w.to_string()
-            } else {
-                format!("https://{w}")
-            })
+    fn apply(&mut self, ev: AgentEvent, cx: &mut Context<Self>) {
+        match ev {
+            AgentEvent::Session(sid) => {
+                let id = self.tab_id.clone();
+                self.store
+                    .update(cx, |s, cx| s.set_agent_session(&id, &sid, cx));
+                return;
+            }
+            AgentEvent::ToolStart { id, tool, title } => {
+                if !self
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Step { id: sid, .. } if *sid == id))
+                {
+                    self.items.push(Item::Step {
+                        id,
+                        tool,
+                        title,
+                        output: String::new(),
+                        done: false,
+                        error: None,
+                    });
+                }
+            }
+            AgentEvent::ToolDone {
+                id,
+                tool,
+                title,
+                output,
+                error,
+            } => {
+                let existing = self
+                    .items
+                    .iter_mut()
+                    .find(|i| matches!(i, Item::Step { id: sid, .. } if *sid == id));
+                let output: String = output.chars().take(4000).collect();
+                match existing {
+                    Some(Item::Step {
+                        title: t,
+                        output: o,
+                        done,
+                        error: e,
+                        ..
+                    }) => {
+                        *t = title;
+                        *o = output;
+                        *done = true;
+                        *e = error;
+                    }
+                    _ => self.items.push(Item::Step {
+                        id,
+                        tool,
+                        title,
+                        output,
+                        done: true,
+                        error,
+                    }),
+                }
+                self.refresh_agent_tabs(cx);
+            }
+            AgentEvent::Text { id, text } => {
+                let existing = self
+                    .items
+                    .iter_mut()
+                    .find(|i| matches!(i, Item::Text { id: tid, .. } if *tid == id));
+                match existing {
+                    Some(Item::Text { text: t, .. }) => *t = text,
+                    _ => self.items.push(Item::Text { id, text }),
+                }
+            }
+            AgentEvent::Done { error } => {
+                if let Some(e) = error {
+                    self.items.push(Item::Note {
+                        text: format!("The harness stopped with an error: {}", short(&e, 600)),
+                    });
+                }
+                self.active = None;
+                self.started = None;
+            }
+        }
+        self.persist(cx);
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// Browser tools mutate the store from the IPC thread; poke it so the tab
+    /// strip picks up new agent tabs promptly.
+    fn refresh_agent_tabs(&self, cx: &mut Context<Self>) {
+        self.store.update(cx, |_, cx| cx.notify());
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        self.run += 1;
+        if let Some(run) = self.active.take() {
+            run.stop();
+        }
+        self.started = None;
+        self.items.push(Item::Note {
+            text: "Stopped".into(),
+        });
+        self.persist(cx);
+        cx.notify();
+    }
+
+    fn pick_folder(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Use folder".into()),
+        });
+        let store = self.store.clone();
+        let id = self.tab_id.clone();
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(p) = paths.first()
+            {
+                let cwd = p.display().to_string();
+                cx.update(|cx| {
+                    store.update(cx, |s, cx| s.set_agent_cwd(&id, &cwd, cx));
+                });
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
         })
-        .filter(|h| !h.is_empty())
+        .detach();
+    }
 }
 
 fn short(text: &str, n: usize) -> String {
@@ -258,189 +358,229 @@ fn short(text: &str, n: usize) -> String {
     }
 }
 
-fn first_turn(prompt: &str) -> Vec<Item> {
-    let host = host_in(prompt).unwrap_or_else(|| "www.google.com".into());
-    let topic = short(prompt, 48);
-    vec![
-        Item::Step {
-            icon: icons::MAGNIFER,
-            text: format!("Search the web for “{topic}”"),
-            link: None,
-        },
-        Item::Step {
-            icon: icons::GLOBE,
-            text: format!("Open {host}"),
-            link: None,
-        },
-        Item::Page {
-            title: format!("{topic} — results"),
-            host: host.clone(),
-        },
-        Item::Step {
-            icon: icons::KEY_MINIMALISTIC,
-            text: "Use saved sign-in for".into(),
-            link: Some(host.clone()),
-        },
-        Item::Step {
-            icon: icons::EYE,
-            text: "Read the page and extract the relevant sections".into(),
-            link: None,
-        },
-        Item::Text(format!(
-            "I found three good sources for “{topic}”. Next, I'll check each of them in parallel so we can compare before I write anything down."
-        )),
-        Item::Spawn(vec![
-            (icons::CLAUDE_MARK, "Summarise the top result".into(), "Opus 4.8"),
-            (icons::OPENAI_MARK, "Cross-check facts and dates".into(), "GPT-6 Astra"),
-            (icons::DEVIN_MARK, "Collect links into a page".into(), "Devin"),
-        ]),
-        Item::Step {
-            icon: icons::DOCUMENT_ADD,
-            text: "Save findings to Pages".into(),
-            link: Some("Untitled".into()),
-        },
-        Item::Text(
-            "Done. The three subagents agree on the main points, and I saved the summary with sources to a new page. Want me to turn it into a checklist or keep digging?"
-                .into(),
-        ),
-    ]
+fn tool_icon(tool: &str) -> &'static str {
+    let t = tool.to_lowercase();
+    if t.contains("browser_open") || t.contains("navigate") || t.contains("webfetch") {
+        icons::GLOBE
+    } else if t.contains("browser_click") || t.contains("browser_type") {
+        icons::KEYBOARD
+    } else if t.contains("browser") {
+        icons::EYE
+    } else if t == "bash" {
+        icons::TERMINAL
+    } else if t == "edit" || t == "write" || t == "patch" {
+        icons::PEN_NEW_SQUARE
+    } else if t == "read" {
+        icons::DOCUMENT
+    } else if t == "glob" || t == "grep" || t == "list" {
+        icons::MAGNIFER
+    } else if t == "todowrite" || t == "todoread" {
+        icons::CHECKLIST
+    } else if t == "task" {
+        icons::BOT
+    } else {
+        icons::SETTINGS
+    }
 }
 
-fn follow_up(text: &str) -> Vec<Item> {
-    vec![
-        Item::Step {
-            icon: icons::CHAT_ROUND_LINE,
-            text: "Reading your reply".into(),
-            link: None,
-        },
-        Item::Step {
-            icon: icons::CHECKLIST,
-            text: format!("Plan: {}", short(text, 56)),
-            link: None,
-        },
-        Item::Text(format!(
-            "Got it — “{}”. I've updated the plan and I'll keep the tabs I opened in this chat so you can follow along.",
-            short(text, 80)
-        )),
-    ]
+fn folder_label(cwd: &str) -> String {
+    if cwd.is_empty() {
+        return "Home".into();
+    }
+    std::path::Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.to_string())
 }
 
-fn step_row(icon: &'static str, text: String, link: Option<String>, p: &Palette) -> gpui::Div {
+/// Composer control: icon + label, text-weight only. Hi-Fi's own square-ish
+/// pill with a soft wash rather than a bordered capsule.
+pub fn chip(
+    id: impl Into<SharedString>,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    chevron: bool,
+    p: &Palette,
+) -> gpui::Stateful<gpui::Div> {
+    let p = *p;
+    div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(24.))
+        .pl(px(7.))
+        .pr(if chevron { px(5.) } else { px(8.) })
+        .rounded(px(8.))
+        .text_size(px(11.5))
+        .text_color(p.muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(p.wash(0.06)).text_color(p.text))
+        .child(glyph(icon, 13., p.text.opacity(0.8)))
+        .child(label.into())
+        .when(chevron, |d| {
+            d.child(glyph(icons::ALT_ARROW_DOWN, 9., p.faint))
+        })
+}
+
+/// Model menu shared by the chat composer and the New Tab composer: every
+/// harness with its models; picking one sets harness + model together.
+pub fn model_menu(
+    current_harness: &str,
+    current_model: &str,
+    max_h: f32,
+    p: &Palette,
+    on_pick: impl Fn(&'static str, &'static str, &mut gpui::App) + Clone + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let p = *p;
+    let mut menu = div()
+        .id("model-menu")
+        .w(px(250.))
+        .max_h(px(max_h))
+        .overflow_y_scroll()
+        .p(px(6.))
+        .rounded(px(12.))
+        .bg(p.glass_overlay())
+        .border_1()
+        .border_color(p.hairline(0.10))
+        .shadow_lg()
+        .flex()
+        .flex_col();
+    for h in HARNESSES {
+        let installed = agent_runner::find_binary(h.command).is_some();
+        menu = menu.child(
+            div()
+                .px(px(8.))
+                .pt(px(8.))
+                .pb(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(10.5))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(p.faint)
+                .child(glyph(crate::sidebar::mark_icon(h.command), 11., p.faint))
+                .child(h.label.to_uppercase())
+                .when(!installed, |d| {
+                    d.child(
+                        div()
+                            .ml_auto()
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .child("not installed"),
+                    )
+                }),
+        );
+        for m in h.models {
+            let selected = h.command == current_harness && *m == current_model;
+            let on_pick = on_pick.clone();
+            let (hc, mm) = (h.command, *m);
+            menu = menu.child(
+                div()
+                    .id(SharedString::from(format!("model-{hc}-{mm}")))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(7.))
+                    .text_size(px(12.5))
+                    .text_color(if selected { p.text } else { p.muted })
+                    .when(selected, |d| d.bg(p.wash(0.08)))
+                    .hover(|s| s.bg(p.wash(0.06)).text_color(p.text))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .child(agent_runner::model_short(m).to_string()),
+                    )
+                    .when(m.ends_with("-free") || *m == "opencode/big-pickle", |d| {
+                        d.child(
+                            div()
+                                .px(px(5.))
+                                .rounded(px(4.))
+                                .bg(p.accent.opacity(0.14))
+                                .text_size(px(9.5))
+                                .text_color(p.accent)
+                                .child("free"),
+                        )
+                    })
+                    .when(selected, |d| d.child(glyph(icons::CHECK, 12., p.accent)))
+                    .on_click(move |_, _, cx| on_pick(hc, mm, cx)),
+            );
+        }
+    }
+    menu
+}
+
+fn step_row(
+    icon: &'static str,
+    title: String,
+    done: bool,
+    error: Option<&str>,
+    p: &Palette,
+) -> gpui::Div {
     div()
         .flex()
         .items_center()
         .gap(px(9.))
         .py(px(4.))
         .text_size(px(13.))
-        .text_color(p.muted)
-        .child(glyph(icon, 14., p.faint))
-        .child(div().min_w_0().truncate().child(text))
-        .when_some(link, |d, l| d.child(div().text_color(p.accent).child(l)))
-}
-
-fn model_pill(label: &'static str, p: &Palette) -> gpui::Div {
-    div()
-        .flex_none()
-        .h(px(20.))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .rounded_full()
-        .bg(p.ink(0.05))
-        .border_1()
-        .border_color(p.hairline(0.06))
-        .text_size(px(11.))
-        .text_color(p.muted)
-        .child(label)
-}
-
-fn page_card(host: &str, title: &str, p: &Palette) -> gpui::Div {
-    let p = *p;
-    let bar = |w: f32, o: f32| div().h(px(6.)).w(px(w)).rounded(px(3.)).bg(p.ink(o));
-    div()
-        .ml(px(23.))
-        .my(px(4.))
-        .w(px(300.))
-        .rounded(px(10.))
-        .overflow_hidden()
-        .border_1()
-        .border_color(p.hairline(0.08))
-        .bg(if p.is_dark { p.dialog } else { gpui::white() })
-        .shadow_sm()
-        .child(
-            div()
-                .h(px(26.))
-                .px(px(9.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .bg(p.ink(0.035))
-                .border_b_1()
-                .border_color(p.hairline(0.06))
-                .child(div().size(px(6.)).rounded_full().bg(p.ink(0.18)))
-                .child(div().size(px(6.)).rounded_full().bg(p.ink(0.18)))
-                .child(
-                    div()
-                        .ml(px(4.))
-                        .flex_1()
-                        .h(px(16.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(4.))
-                        .bg(p.ink(0.05))
-                        .text_size(px(10.))
-                        .text_color(p.faint)
-                        .child(host.to_string()),
-                ),
-        )
-        .child(
-            div()
-                .p(px(12.))
-                .flex()
-                .flex_col()
-                .gap(px(7.))
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(px(12.5))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(p.text)
-                        .child(title.to_string()),
-                )
-                .child(
-                    div()
-                        .h(px(54.))
-                        .rounded(px(6.))
-                        .bg(p.accent.opacity(if p.is_dark { 0.16 } else { 0.10 })),
-                )
-                .child(bar(250., 0.08))
-                .child(bar(210., 0.06))
-                .child(bar(160., 0.05)),
-        )
+        .text_color(if error.is_some() { p.danger } else { p.muted })
+        .child(if done {
+            glyph(icon, 14., if error.is_some() { p.danger } else { p.faint })
+        } else {
+            glyph(icon, 14., p.accent)
+        })
+        .child(div().min_w_0().truncate().child(title))
+        .when_some(error, |d, e| {
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.5))
+                    .text_color(p.danger.opacity(0.8))
+                    .child(short(e, 90)),
+            )
+        })
 }
 
 impl gpui::Render for AgentChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::of(cx).palette;
-        let harness = self.harness(cx);
-        let (h_label, h_icon) = MODELS
-            .iter()
-            .find(|(_, c)| *c == harness)
-            .map(|(l, c)| (*l, crate::sidebar::mark_icon(c)))
-            .unwrap_or(("Claude Code", icons::CLAUDE_MARK));
+        let tab = self.tab(cx);
+        let harness = tab
+            .as_ref()
+            .map(|t| t.command.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| self.store.read(cx).state.settings.agent_harness.clone());
+        let model = tab
+            .as_ref()
+            .map(|t| t.model.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| self.store.read(cx).state.settings.agent_model.clone());
+        let guard = tab
+            .as_ref()
+            .and_then(|t| t.guard)
+            .unwrap_or(self.store.read(cx).state.settings.agent_guard);
+        let cwd = tab
+            .as_ref()
+            .map(|t| t.cwd.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| self.store.read(cx).state.settings.agent_cwd.clone());
+        let h_icon = crate::sidebar::mark_icon(&harness);
         let title = self
             .items
             .iter()
             .find_map(|i| match i {
-                Item::User(t) => Some(short(t, 90)),
+                Item::User { text } => Some(short(text, 90)),
                 _ => None,
             })
             .unwrap_or_else(|| "New chat".into());
 
         let mut transcript = div()
             .w_full()
-            .max_w(px(700.))
+            .max_w(px(720.))
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -468,14 +608,14 @@ impl gpui::Render for AgentChatView {
                         div()
                             .text_size(px(12.5))
                             .text_color(p.faint)
-                            .child("The agent browses, reads and writes pages for you."),
+                            .child("The agent browses in its own tabs, edits files and runs commands in your folder."),
                     ),
             );
         }
 
         for (i, item) in self.items.iter().enumerate() {
             let el = match item.clone() {
-                Item::User(t) => div()
+                Item::User { text } => div()
                     .w_full()
                     .flex()
                     .justify_end()
@@ -487,54 +627,74 @@ impl gpui::Render for AgentChatView {
                             .px(px(14.))
                             .py(px(9.))
                             .rounded(px(14.))
-                            .bg(if p.is_dark { p.raised } else { p.ink(0.055) })
+                            .rounded_br(px(4.))
+                            .bg(p.accent.opacity(if p.is_dark { 0.22 } else { 0.12 }))
                             .text_size(px(13.5))
                             .text_color(p.text)
-                            .child(t),
+                            .child(text),
                     ),
-                Item::Step { icon, text, link } => step_row(icon, text, link, &p),
-                Item::Page { host, title } => page_card(&host, &title, &p),
-                Item::Text(t) => div()
+                Item::Step {
+                    id,
+                    tool,
+                    title,
+                    output,
+                    done,
+                    error,
+                } => {
+                    let expanded = self.expanded.contains(&id);
+                    let has_output = !output.trim().is_empty();
+                    let row = step_row(tool_icon(&tool), title, done, error.as_deref(), &p);
+                    let key = id.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("step-{id}")))
+                                .when(has_output, |d| d.cursor_pointer())
+                                .child(row)
+                                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                                    if let Some(i) = this.expanded.iter().position(|k| *k == key) {
+                                        this.expanded.remove(i);
+                                    } else {
+                                        this.expanded.push(key.clone());
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .when(expanded && has_output, |d| {
+                            d.child(
+                                div()
+                                    .ml(px(23.))
+                                    .mb(px(6.))
+                                    .p(px(10.))
+                                    .rounded(px(8.))
+                                    .bg(p.wash(0.05))
+                                    .font_family("Geist Mono")
+                                    .text_size(px(11.))
+                                    .line_height(px(16.))
+                                    .text_color(p.muted)
+                                    .child(short(&output, 1500)),
+                            )
+                        })
+                }
+                Item::Text { text, .. } => div()
                     .py(px(8.))
                     .text_size(px(13.5))
                     .line_height(px(21.))
                     .text_color(p.text)
-                    .child(t),
-                Item::Spawn(children) => {
-                    let mut col = div().flex().flex_col().child(step_row(
-                        icons::SPLIT_COLUMNS,
-                        "Spawning subagents in parallel".into(),
-                        None,
-                        &p,
-                    ));
-                    for (icon, task, model) in children {
-                        col = col.child(
-                            div()
-                                .ml(px(6.))
-                                .pl(px(17.))
-                                .border_l_1()
-                                .border_color(p.hairline(0.10))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .py(px(4.))
-                                .text_size(px(13.))
-                                .child(glyph(icons::BOT, 13., p.faint))
-                                .child(div().text_color(p.faint).child("Spawned"))
-                                .child(glyph(icon, 13., p.text))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(p.text)
-                                        .child(task),
-                                )
-                                .child(model_pill(model, &p)),
-                        );
-                    }
-                    col
-                }
+                    .child(text),
+                Item::Note { text } => div()
+                    .my(px(6.))
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(8.))
+                    .bg(p.wash(0.05))
+                    .border_l_2()
+                    .border_color(p.accent.opacity(0.6))
+                    .text_size(px(12.5))
+                    .text_color(p.muted)
+                    .child(text),
             };
             transcript = transcript.child(el.flex_none());
         }
@@ -553,13 +713,13 @@ impl gpui::Render for AgentChatView {
             );
         }
 
-        let running = self.running;
+        let running = self.active.is_some();
         let store_t = self.store.clone();
         let prompt = self
             .items
             .iter()
             .find_map(|i| match i {
-                Item::User(t) => Some(t.clone()),
+                Item::User { text } => Some(text.clone()),
                 _ => None,
             })
             .unwrap_or_default();
@@ -572,7 +732,7 @@ impl gpui::Render for AgentChatView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(glyph(icons::PEN_NEW_SQUARE, 14., p.muted))
+            .child(glyph(h_icon, 14., p.muted))
             .child(
                 div()
                     .min_w_0()
@@ -582,38 +742,95 @@ impl gpui::Render for AgentChatView {
                     .text_color(p.text)
                     .child(title),
             )
-            .child(glyph(icons::ELLIPSIS, 14., p.faint))
             .child(div().flex_1())
             .child(
-                div()
-                    .id("chat-run-terminal")
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .h(px(24.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(p.muted)
-                    .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
-                    .child(glyph(icons::TERMINAL, 13., p.muted))
-                    .child("Run in terminal")
-                    .on_click(move |_, _, cx| {
-                        store_t.update(cx, |s, cx| s.open_harness(&harness_t, &prompt, cx));
-                    }),
+                chip(
+                    "chat-run-terminal",
+                    icons::TERMINAL,
+                    "Open in terminal",
+                    false,
+                    &p,
+                )
+                .on_click(move |_, _, cx| {
+                    store_t.update(cx, |s, cx| s.open_harness(&harness_t, &prompt, cx));
+                }),
             );
+
+        // Tabs the agent opened for itself — visible, one click to show.
+        let agent_tabs: Vec<(String, String, bool)> = self
+            .store
+            .read(cx)
+            .agent_tabs(&self.tab_id)
+            .iter()
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    if t.title.is_empty() {
+                        hifi_core::host_of(&t.url)
+                    } else {
+                        t.title.clone()
+                    },
+                    t.loading,
+                )
+            })
+            .collect();
+        let tab_strip = (!agent_tabs.is_empty()).then(|| {
+            let mut strip = div()
+                .px(px(6.))
+                .pb(px(6.))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(p.faint)
+                        .mr(px(4.))
+                        .child(format!("Agent tabs · {}", agent_tabs.len())),
+                );
+            for (id, title, loading) in agent_tabs {
+                let store = self.store.clone();
+                let tid = id.clone();
+                strip = strip.child(
+                    div()
+                        .id(SharedString::from(format!("agent-tab-{id}")))
+                        .h(px(22.))
+                        .px(px(7.))
+                        .max_w(px(180.))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(px(7.))
+                        .bg(p.wash(0.05))
+                        .text_size(px(11.))
+                        .text_color(p.muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(p.wash(0.09)).text_color(p.text))
+                        .child(glyph(
+                            icons::GLOBE,
+                            11.,
+                            if loading { p.accent } else { p.faint },
+                        ))
+                        .child(div().truncate().child(title))
+                        .on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| s.show_agent_tab(&tid, cx));
+                        }),
+                );
+            }
+            strip
+        });
 
         let send_btn = div()
             .id("chat-send")
             .flex_none()
             .size(px(30.))
-            .rounded_full()
+            .rounded(px(10.))
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(if p.is_dark { p.text } else { gpui::black() })
+            .bg(if running { p.danger } else { p.accent })
             .child(glyph(
                 if running {
                     icons::STOP
@@ -621,14 +838,10 @@ impl gpui::Render for AgentChatView {
                     icons::ARROW_UP
                 },
                 14.,
-                if p.is_dark {
-                    gpui::black()
-                } else {
-                    gpui::white()
-                },
+                gpui::white(),
             ))
             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                if this.running {
+                if this.active.is_some() {
                     this.stop(cx);
                 } else {
                     let text = this.input.read(cx).value().trim().to_string();
@@ -639,57 +852,53 @@ impl gpui::Render for AgentChatView {
                 }
             }));
 
-        let pill = |id: &'static str, icon: &'static str, label: &'static str, chev: bool| {
+        let store_m = self.store.clone();
+        let tab_m = self.tab_id.clone();
+        let this_m = cx.entity().downgrade();
+        let menu = self.picker_open.then(|| {
             div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .h(px(22.))
-                .px(px(6.))
-                .rounded(px(6.))
-                .text_size(px(11.5))
-                .text_color(p.muted)
-                .cursor_pointer()
-                .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
-                .child(glyph(icon, 12., p.muted))
-                .child(label)
-                .when(chev, |d| d.child(glyph(icons::ALT_ARROW_DOWN, 9., p.faint)))
-        };
+                .absolute()
+                .bottom(px(30.))
+                .right(px(0.))
+                .child(model_menu(&harness, &model, 300., &p, move |h, m, cx| {
+                    store_m.update(cx, |s, cx| s.set_agent_model(&tab_m, h, m, cx));
+                    let _ = this_m.update(cx, |v: &mut AgentChatView, cx| {
+                        v.picker_open = false;
+                        cx.notify();
+                    });
+                }))
+        });
 
         let composer = div()
             .w_full()
-            .max_w(px(700.))
+            .max_w(px(720.))
             .px(px(20.))
             .pb(px(12.))
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(px(4.))
+            .children(tab_strip)
             .child(
                 div()
-                    .h(px(46.))
+                    .h(px(48.))
                     .pl(px(8.))
                     .pr(px(8.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(23.))
-                    .bg(if p.is_dark {
-                        p.dialog.opacity(0.95)
-                    } else {
-                        gpui::white()
-                    })
+                    .rounded(px(16.))
+                    .bg(p.glass_overlay())
                     .border_1()
-                    .border_color(p.hairline(0.08))
+                    .border_color(p.hairline(0.10))
                     .shadow_md()
                     .child(
                         div()
                             .size(px(28.))
-                            .rounded_full()
+                            .rounded(px(9.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .hover(|s| s.bg(p.glass_hover()))
+                            .hover(|s| s.bg(p.wash(0.06)))
                             .child(glyph(icons::PLUS, 15., p.muted)),
                     )
                     .child(
@@ -705,15 +914,52 @@ impl gpui::Render for AgentChatView {
             )
             .child(
                 div()
-                    .px(px(6.))
+                    .relative()
+                    .px(px(4.))
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(pill("chat-local", icons::LAPTOP, "Local", true))
-                    .child(pill("chat-guard", icons::SHIELD, "Guard", true))
+                    .child(
+                        chip("chat-local", icons::FOLDER, folder_label(&cwd), true, &p).on_click(
+                            cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.pick_folder(cx)),
+                        ),
+                    )
+                    .child(
+                        chip(
+                            "chat-guard",
+                            icons::SHIELD,
+                            format!("Guard · {}", guard.label()),
+                            true,
+                            &p,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _: &gpui::ClickEvent, _, cx| {
+                                let i = Guard::ALL.iter().position(|g| *g == guard).unwrap_or(0);
+                                let next = Guard::ALL[(i + 1) % Guard::ALL.len()];
+                                let id = this.tab_id.clone();
+                                this.store
+                                    .update(cx, |s, cx| s.set_agent_guard(&id, next, cx));
+                                cx.notify();
+                            },
+                        )),
+                    )
                     .child(div().flex_1())
-                    .child(pill("chat-model", h_icon, h_label, false))
-                    .child(pill("chat-effort", icons::GAUGE, "High", true)),
+                    .child(
+                        chip(
+                            "chat-model",
+                            h_icon,
+                            agent_runner::model_short(&model).to_string(),
+                            true,
+                            &p,
+                        )
+                        .on_click(cx.listener(
+                            |this, _: &gpui::ClickEvent, _, cx| {
+                                this.picker_open = !this.picker_open;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .children(menu.map(|m| gpui::deferred(m).with_priority(1))),
             );
 
         let focus = self.input.read(cx).focus_handle(cx);

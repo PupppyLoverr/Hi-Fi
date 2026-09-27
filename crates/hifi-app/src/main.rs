@@ -2,6 +2,7 @@
 //! `alacritty_terminal` panes, on the exact stack cosmos runs.
 
 mod agent_chat;
+mod agent_runner;
 mod assets;
 mod command_bar;
 mod frost;
