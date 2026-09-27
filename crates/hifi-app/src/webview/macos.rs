@@ -320,11 +320,16 @@ impl WebPaneHost {
             let ipc_tab = tab.clone();
             let ipc_tx = tx.clone();
             builder = builder.with_ipc_handler(move |req| {
-                let _ = ipc_tx.send(WebEvent::NotesSave {
-                    tab: ipc_tab.clone(),
-                    html: req.body().clone(),
-                });
+                if let Some(event) = crate::webview::parse_ipc_event(&ipc_tab, req.body()) {
+                    let _ = ipc_tx.send(event);
+                } else {
+                    let _ = ipc_tx.send(WebEvent::NotesSave {
+                        tab: ipc_tab.clone(),
+                        html: req.body().clone(),
+                    });
+                }
             });
+            builder = builder.with_initialization_script(crate::jsbridge::CONTEXT_MENU_JS);
         }
         let web = builder.build_as_child(window).map_err(|e| e.to_string())?;
 

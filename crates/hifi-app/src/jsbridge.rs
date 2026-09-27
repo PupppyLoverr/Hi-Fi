@@ -1,5 +1,8 @@
 //! JS injected into webviews for the browser-use surface (snapshot/click/type).
 
+/// Browser context menus are routed through the existing page IPC bridge.
+pub const CONTEXT_MENU_JS: &str = r#"document.addEventListener('contextmenu',e=>{e.preventDefault();window.ipc&&window.ipc.postMessage(JSON.stringify({type:'ctx',x:e.clientX,y:e.clientY,href:(e.target.closest('a')||{}).href||'',src:e.target.tagName==='IMG'?e.target.src:'',sel:String(getSelection())}))},true)"#;
+
 /// Serialized DOM snapshot: interactive elements with indexes + labels.
 pub const SNAPSHOT_JS: &str = r#"(() => {
   const els = Array.from(document.querySelectorAll(
