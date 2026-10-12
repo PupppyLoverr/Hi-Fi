@@ -31,6 +31,14 @@ enum Command {
     NewGroup,
 }
 
+fn switch_tab_label(tab: &hifi_core::Tab) -> String {
+    if tab.kind == hifi_core::TabKind::Web {
+        format!("{} — {}", tab.display_title(), hifi_core::host_of(&tab.url))
+    } else {
+        tab.display_title()
+    }
+}
+
 pub struct CommandBar {
     store: Entity<Store>,
     pub input: Entity<TextField>,
@@ -85,7 +93,7 @@ impl CommandBar {
                 let hay = format!("{} {}", tab.title, tab.url).to_lowercase();
                 if hay.contains(&q) {
                     out.push(Candidate::SwitchTab(
-                        format!("{} — {}", tab.display_title(), hifi_core::host_of(&tab.url)),
+                        switch_tab_label(tab),
                         tab.id.clone(),
                         crate::sidebar::kind_icon(tab),
                         tab.favicon_url.clone(),
@@ -130,7 +138,7 @@ impl CommandBar {
             // Recent tabs.
             for tab in store.state.tabs.iter().rev().take(6) {
                 out.push(Candidate::SwitchTab(
-                    format!("{} — {}", tab.display_title(), hifi_core::host_of(&tab.url)),
+                    switch_tab_label(tab),
                     tab.id.clone(),
                     crate::sidebar::kind_icon(tab),
                     tab.favicon_url.clone(),
@@ -310,6 +318,8 @@ impl gpui::Render for CommandBar {
                                 .bg(p.ink(0.04))
                                 .border_1()
                                 .border_color(p.hairline(0.08))
+                                .flex_none()
+                                .whitespace_nowrap()
                                 .text_size(px(10.))
                                 .text_color(p.faint)
                                 .child(shortcut),

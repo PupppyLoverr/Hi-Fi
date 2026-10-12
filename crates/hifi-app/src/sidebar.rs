@@ -48,6 +48,7 @@ pub struct Sidebar {
     scroll: ScrollHandle,
     /// Disclosure sections the user folded (group ids, or `PINNED_KEY`).
     collapsed: HashSet<String>,
+    expanded: HashSet<String>,
     running_agents: HashSet<TabId>,
     failed_agents: HashSet<TabId>,
 }
@@ -59,6 +60,7 @@ impl Sidebar {
             store,
             scroll: ScrollHandle::new(),
             collapsed: HashSet::new(),
+            expanded: HashSet::new(),
             running_agents: HashSet::new(),
             failed_agents: HashSet::new(),
         }
@@ -170,6 +172,71 @@ fn icon_button(
 }
 
 impl Sidebar {
+    #[allow(clippy::too_many_arguments)]
+    fn capped_tab_list(
+        &self,
+        tabs: &[Tab],
+        key: &str,
+        limit: usize,
+        active_tab: Option<&TabId>,
+        compact: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let active_index = active_tab.and_then(|active| tabs.iter().position(|t| &t.id == active));
+        let rows = if compact {
+            LimitedRows {
+                visible: tabs.to_vec(),
+                more: 0,
+                show_less: false,
+            }
+        } else {
+            limit_rows(tabs, active_index, limit, self.expanded.contains(key))
+        };
+        let mut list = div().flex().flex_col().flex_none().gap(px(1.));
+        for tab in rows.visible {
+            list = list.child(self.tab_row(&tab, active_tab == Some(&tab.id), compact, p));
+        }
+
+        if !compact && (rows.more > 0 || rows.show_less) {
+            let key = key.to_string();
+            let show_more = rows.more > 0;
+            let label = if show_more {
+                format!("Show {} more", rows.more)
+            } else {
+                "Show less".into()
+            };
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "sb-list-action-{key}-{}",
+                        if show_more { "more" } else { "less" }
+                    )))
+                    .h(px(Theme::ROW_H))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .pl(px(46.))
+                    .pr(px(8.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.glass_hover()))
+                    .text_size(px(12.))
+                    .text_color(p.faint)
+                    .child(label)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if show_more {
+                            this.expanded.insert(key.clone());
+                        } else {
+                            this.expanded.remove(&key);
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        list.into_any_element()
+    }
+
     fn tab_row(&self, tab: &Tab, active: bool, compact: bool, p: Palette) -> gpui::AnyElement {
         let store_f = self.store.clone();
         let store_m = self.store.clone();
@@ -429,6 +496,38 @@ fn basename(path: &str) -> String {
         .to_string()
 }
 
+struct LimitedRows<T> {
+    visible: Vec<T>,
+    more: usize,
+    show_less: bool,
+}
+
+fn limit_rows<T: Clone>(
+    rows: &[T],
+    active_index: Option<usize>,
+    limit: usize,
+    expanded: bool,
+) -> LimitedRows<T> {
+    if expanded {
+        return LimitedRows {
+            visible: rows.to_vec(),
+            more: 0,
+            show_less: rows.len() > limit,
+        };
+    }
+
+    let mut visible: Vec<T> = rows.iter().take(limit).cloned().collect();
+    if let Some(index) = active_index.filter(|index| *index >= limit && *index < rows.len()) {
+        visible.push(rows[index].clone());
+    }
+    let more = rows.len().saturating_sub(visible.len());
+    LimitedRows {
+        visible,
+        more,
+        show_less: false,
+    }
+}
+
 /// Row title: the page title for web/pages, the harness for sessions.
 fn row_title(tab: &Tab) -> String {
     match tab.kind {
@@ -652,7 +751,13 @@ impl gpui::Render for Sidebar {
                     .into_iter()
                     .chain(group.dock.tabs.iter().cloned())
                     .filter_map(|id| tab_of(&id))
-                    .filter(|tab| !tab.pinned && matches!(tab.kind, TabKind::Web | TabKind::NewTab))
+                    .filter(|tab| {
+                        !tab.pinned
+                            && matches!(
+                                tab.kind,
+                                TabKind::Web | TabKind::NewTab | TabKind::Settings
+                            )
+                    })
                     .collect();
                 (group.id.clone(), group.name.clone(), tabs)
             })
@@ -689,10 +794,15 @@ impl gpui::Render for Sidebar {
             ));
             if today_groups.len() <= 1 || compact {
                 let tabs = today_groups.iter().flat_map(|(_, _, tabs)| tabs.iter());
-                list = list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
-                    tabs.map(|tab| {
-                        self.tab_row(tab, active_tab.as_ref() == Some(&tab.id), compact, p)
-                    }),
+                let tabs: Vec<Tab> = tabs.cloned().collect();
+                list = list.child(self.capped_tab_list(
+                    &tabs,
+                    "__today",
+                    8,
+                    active_tab.as_ref(),
+                    compact,
+                    p,
+                    cx,
                 ));
             } else {
                 for (gid, name, tabs) in &today_groups {
@@ -712,17 +822,15 @@ impl gpui::Render for Sidebar {
                         cx,
                     ));
                     if open {
-                        list =
-                            list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
-                                tabs.iter().map(|tab| {
-                                    self.tab_row(
-                                        tab,
-                                        active_tab.as_ref() == Some(&tab.id),
-                                        compact,
-                                        p,
-                                    )
-                                }),
-                            ));
+                        list = list.child(self.capped_tab_list(
+                            tabs,
+                            gid,
+                            8,
+                            active_tab.as_ref(),
+                            compact,
+                            p,
+                            cx,
+                        ));
                     }
                 }
             }
@@ -732,21 +840,21 @@ impl gpui::Render for Sidebar {
         // live in the disclosure row rather than consuming a peer row.
         let sections: [(&str, &str, &'static str, &'static str); 3] = [
             ("sb-chats", "CHATS", "New Chat", "hifi://agent"),
-            ("sb-agents", "AGENTS", "New Agent", "hifi://agent"),
+            ("sb-agents", "SESSIONS", "New Agent", "hifi://agent"),
             ("sb-pages", "PAGES", "New Page", "hifi://notes"),
         ];
         for (id, title, _new_label, url) in sections {
             let tabs: Vec<Tab> = space_tabs
                 .iter()
-                .filter(|tab| match title {
-                    "CHATS" => tab.kind == TabKind::Agent && !tab.prompt.trim().is_empty(),
-                    "AGENTS" => {
+                .filter(|tab| match id {
+                    "sb-chats" => tab.kind == TabKind::Agent && !tab.prompt.trim().is_empty(),
+                    "sb-agents" => {
                         matches!(
                             tab.kind,
                             TabKind::Terminal | TabKind::Diff | TabKind::Preview
                         ) || (tab.kind == TabKind::Agent && tab.prompt.trim().is_empty())
                     }
-                    "PAGES" => tab.kind == TabKind::Notes,
+                    "sb-pages" => tab.kind == TabKind::Notes,
                     _ => false,
                 })
                 .cloned()
@@ -787,12 +895,8 @@ impl gpui::Render for Sidebar {
             if !(open || compact) {
                 continue;
             }
-            let mut col = div().flex().flex_col().flex_none().gap(px(1.));
-            for tab in tabs {
-                col =
-                    col.child(self.tab_row(&tab, active_tab.as_ref() == Some(&tab.id), compact, p));
-            }
-            list = list.child(col);
+            list =
+                list.child(self.capped_tab_list(&tabs, id, 5, active_tab.as_ref(), compact, p, cx));
         }
 
         if !today_has_rows && !compact {
@@ -889,5 +993,29 @@ impl gpui::Render for Sidebar {
                     }),
             );
         bar.child(bottom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limit_rows;
+
+    #[test]
+    fn includes_active_row_beyond_limit() {
+        let rows: Vec<usize> = (0..10).collect();
+        let limited = limit_rows(&rows, Some(9), 5, false);
+
+        assert_eq!(limited.visible, vec![0, 1, 2, 3, 4, 9]);
+        assert_eq!(limited.more, 4);
+    }
+
+    #[test]
+    fn rows_at_limit_need_no_cap_action() {
+        let rows: Vec<usize> = (0..5).collect();
+        let limited = limit_rows(&rows, None, 5, false);
+
+        assert_eq!(limited.visible, rows);
+        assert_eq!(limited.more, 0);
+        assert!(!limited.show_less);
     }
 }

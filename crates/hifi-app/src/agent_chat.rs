@@ -8,8 +8,12 @@ use gpui::{
     PathPromptOptions, ScrollHandle, SharedString, StyledText, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use futures::StreamExt;
 
@@ -17,7 +21,7 @@ use crate::agent_runner::{self, AgentEvent, HARNESSES, RunConfig};
 use crate::assets::icons;
 use crate::store::Store;
 use crate::text_input::{TextField, TextFieldEvent};
-use crate::theme::{Palette, Theme};
+use crate::theme::{FONT_MONO, Palette, Theme};
 use crate::views::glyph;
 use hifi_core::Guard;
 
@@ -59,7 +63,7 @@ pub struct AgentChatView {
     scroll: ScrollHandle,
     picker_open: bool,
     /// Steps whose output is expanded.
-    expanded: Vec<String>,
+    expanded: HashSet<String>,
 }
 
 impl AgentChatView {
@@ -105,12 +109,19 @@ impl AgentChatView {
             started: None,
             scroll: ScrollHandle::new(),
             picker_open: false,
-            expanded: Vec::new(),
+            expanded: HashSet::new(),
         };
         me.items = me.load(cx);
         let has_turns = me.items.iter().any(|i| matches!(i, Item::User { .. }));
         if live && !has_turns && !prompt.trim().is_empty() {
             me.send(prompt, cx);
+        } else if me.items.is_empty() && !prompt.trim().is_empty() {
+            me.items = vec![
+                Item::User { text: prompt },
+                Item::Note {
+                    text: "Earlier activity from this chat wasn't saved.".into(),
+                },
+            ];
         }
         me
     }
@@ -313,7 +324,7 @@ impl AgentChatView {
                     .update(cx, |s, cx| s.set_agent_running(&id, false, failed, cx));
                 if let Some(e) = error {
                     self.items.push(Item::Note {
-                        text: format!("The harness stopped with an error: {e}"),
+                        text: format!("Stopped — {e}"),
                     });
                 }
                 self.active = None;
@@ -380,21 +391,241 @@ fn short(text: &str, n: usize) -> String {
     }
 }
 
-fn markdown_text(text: &str) -> StyledText {
-    let parts: Vec<&str> = text.split("**").collect();
-    if parts.len() < 3 || parts.len().is_multiple_of(2) {
-        return StyledText::new(text.replace("**", ""));
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InlineStyle {
+    range: Range<usize>,
+    bold: bool,
+    code: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InlineText {
+    text: String,
+    styles: Vec<InlineStyle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MarkdownBlock {
+    Text(InlineText),
+    Bullet(InlineText),
+    Heading { level: usize, text: InlineText },
+    Code(String),
+    Blank,
+}
+
+fn push_inline(text: &str, bold: bool, code: bool, inline: &mut InlineText) {
+    if text.is_empty() {
+        return;
     }
-    let mut plain = String::new();
-    let mut highlights = Vec::new();
-    for (index, part) in parts.iter().enumerate() {
-        let start = plain.len();
-        plain.push_str(part);
-        if index % 2 == 1 && start < plain.len() {
-            highlights.push((start..plain.len(), FontWeight::BOLD.into()));
+    let start = inline.text.len();
+    inline.text.push_str(text);
+    let end = inline.text.len();
+    if let Some(last) = inline.styles.last_mut()
+        && last.range.end == start
+        && last.bold == bold
+        && last.code == code
+    {
+        last.range.end = end;
+    } else {
+        inline.styles.push(InlineStyle {
+            range: start..end,
+            bold,
+            code,
+        });
+    }
+}
+
+fn parse_inline_into(text: &str, bold: bool, inline: &mut InlineText) {
+    let mut index = 0;
+    while index < text.len() {
+        let rest = &text[index..];
+        if let Some(after_tick) = rest.strip_prefix('`') {
+            if let Some(end) = after_tick.find('`') {
+                let end = index + 1 + end;
+                push_inline(&text[index + 1..end], bold, true, inline);
+                index = end + 1;
+            } else {
+                push_inline(rest, bold, false, inline);
+                break;
+            }
+        } else if let Some(rest) = rest.strip_prefix("**") {
+            if let Some(end) = rest.find("**") {
+                let end = index + 2 + end;
+                parse_inline_into(&text[index + 2..end], true, inline);
+                index = end + 2;
+            } else {
+                push_inline("**", bold, false, inline);
+                index += 2;
+            }
+        } else {
+            let ch = rest.chars().next().expect("index is within the string");
+            let end = index + ch.len_utf8();
+            push_inline(&text[index..end], bold, false, inline);
+            index = end;
         }
     }
-    StyledText::new(plain).with_highlights(highlights)
+}
+
+fn parse_inline(text: &str) -> InlineText {
+    let mut inline = InlineText {
+        text: String::new(),
+        styles: Vec::new(),
+    };
+    parse_inline_into(text, false, &mut inline);
+    inline
+}
+
+fn heading_line(line: &str) -> Option<(usize, &str)> {
+    let level = line.bytes().take_while(|byte| *byte == b'#').count();
+    if (1..=3).contains(&level) && line.as_bytes().get(level) == Some(&b' ') {
+        Some((level, &line[level + 1..]))
+    } else {
+        None
+    }
+}
+
+fn parse_markdown(text: &str) -> Vec<MarkdownBlock> {
+    let mut blocks = Vec::new();
+    let mut code_lines = Vec::new();
+    let mut in_code = false;
+
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                blocks.push(MarkdownBlock::Code(code_lines.join("\n")));
+                code_lines.clear();
+                in_code = false;
+            } else {
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            code_lines.push(line.to_string());
+        } else if line.is_empty() {
+            blocks.push(MarkdownBlock::Blank);
+        } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            blocks.push(MarkdownBlock::Bullet(parse_inline(item)));
+        } else if let Some((level, heading)) = heading_line(line) {
+            blocks.push(MarkdownBlock::Heading {
+                level,
+                text: parse_inline(heading),
+            });
+        } else {
+            blocks.push(MarkdownBlock::Text(parse_inline(line)));
+        }
+    }
+    if in_code {
+        blocks.push(MarkdownBlock::Code(code_lines.join("\n")));
+    }
+    blocks
+}
+
+fn inline_element(inline: &InlineText) -> StyledText {
+    let highlights = inline.styles.iter().map(|style| {
+        (
+            style.range.clone(),
+            if style.bold {
+                gpui::HighlightStyle::from(FontWeight::BOLD)
+            } else {
+                gpui::HighlightStyle::default()
+            },
+        )
+    });
+    let mono_ranges = inline
+        .styles
+        .iter()
+        .filter(|style| style.code)
+        .map(|style| (style.range.clone(), SharedString::from(FONT_MONO)));
+    StyledText::new(inline.text.clone())
+        .with_highlights(highlights)
+        .with_font_family_overrides(mono_ranges)
+}
+
+fn markdown_text(text: &str, p: Palette) -> gpui::AnyElement {
+    let mut content = div().w_full().flex().flex_col().gap(px(6.));
+    for block in parse_markdown(text) {
+        let element = match block {
+            MarkdownBlock::Text(inline) => div()
+                .text_size(px(13.5))
+                .line_height(px(21.))
+                .child(inline_element(&inline)),
+            MarkdownBlock::Bullet(inline) => div()
+                .flex()
+                .items_start()
+                .gap(px(6.))
+                .child(div().w(px(10.)).flex_none().text_color(p.faint).child("•"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.5))
+                        .line_height(px(21.))
+                        .child(inline_element(&inline)),
+                ),
+            MarkdownBlock::Heading { level, text } => div()
+                .text_size(px(match level {
+                    1 => 16.,
+                    2 => 14.5,
+                    _ => 13.5,
+                }))
+                .line_height(px(21.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(inline_element(&text)),
+            MarkdownBlock::Code(code) => div()
+                .w_full()
+                .px(px(12.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .bg(p.ink(0.04))
+                .font_family(FONT_MONO)
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .child(code),
+            MarkdownBlock::Blank => div().h(px(4.)).flex_none(),
+        };
+        content = content.child(element.flex_none());
+    }
+    content.into_any_element()
+}
+
+fn compact_error(error: &str) -> String {
+    let mut visible = String::new();
+    let mut truncated = false;
+    for (line_index, line) in error.lines().enumerate() {
+        if line_index >= 3 {
+            truncated = true;
+            break;
+        }
+        if line_index > 0 {
+            visible.push('\n');
+        }
+        let remaining = 300usize.saturating_sub(visible.chars().count());
+        let line_text: String = line.chars().take(remaining).collect();
+        truncated |= line_text.chars().count() < line.chars().count();
+        visible.push_str(&line_text);
+        if truncated {
+            break;
+        }
+    }
+    if visible != error {
+        truncated = true;
+    }
+    if truncated {
+        visible.push('…');
+    }
+    visible
+}
+
+fn error_label(error: &str) -> &'static str {
+    if ["rule", "denied", "permission"]
+        .iter()
+        .any(|needle| error.to_ascii_lowercase().contains(needle))
+    {
+        "Denied"
+    } else {
+        "Error"
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -749,6 +980,7 @@ impl gpui::Render for AgentChatView {
                 } => {
                     let expanded = self.expanded.contains(id);
                     let has_output = !output.trim().is_empty();
+                    let has_error = error.as_ref().is_some_and(|text| !text.trim().is_empty());
                     let row = step_row(
                         id,
                         tool_icon(tool),
@@ -764,35 +996,60 @@ impl gpui::Render for AgentChatView {
                         .child(
                             div()
                                 .id(SharedString::from(format!("step-{id}")))
-                                .when(has_output, |d| d.cursor_pointer())
+                                .when(has_output || has_error, |d| d.cursor_pointer())
                                 .child(row)
                                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                                    if let Some(i) = this.expanded.iter().position(|k| *k == key) {
-                                        this.expanded.remove(i);
-                                    } else {
-                                        this.expanded.push(key.clone());
+                                    if !this.expanded.remove(&key) {
+                                        this.expanded.insert(key.clone());
                                     }
                                     cx.notify();
                                 })),
                         )
                         .when_some(error.as_deref(), |d, error| {
+                            let key = id.clone();
+                            let text = if expanded {
+                                error.to_string()
+                            } else {
+                                compact_error(error)
+                            };
                             d.child(
                                 div()
+                                    .id(SharedString::from(format!("step-error-{id}")))
                                     .min_w(px(0.))
                                     .ml(px(22.))
                                     .mb(px(6.))
-                                    .px(px(9.))
-                                    .py(px(7.))
-                                    .rounded(px(7.))
-                                    .bg(p.danger.opacity(0.035))
-                                    .border_1()
-                                    .border_color(p.danger.opacity(0.22))
-                                    .text_size(px(11.5))
-                                    .line_height(px(16.))
-                                    .line_clamp(4)
-                                    .overflow_hidden()
-                                    .text_color(p.danger.opacity(0.85))
-                                    .child(error.to_string()),
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .bg(p.ink(0.04))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(p.danger)
+                                            .child(error_label(error)),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(FONT_MONO)
+                                            .text_size(px(11.5))
+                                            .line_height(px(16.))
+                                            .text_color(p.muted)
+                                            .when(!expanded, |d| d.line_clamp(3).overflow_hidden())
+                                            .child(text),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _: &gpui::ClickEvent, _, cx| {
+                                            if !this.expanded.remove(&key) {
+                                                this.expanded.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
                             )
                         })
                         .when(expanded && has_output, |d| {
@@ -803,7 +1060,7 @@ impl gpui::Render for AgentChatView {
                                     .p(px(10.))
                                     .rounded(px(8.))
                                     .bg(p.wash(0.05))
-                                    .font_family("Geist Mono")
+                                    .font_family(FONT_MONO)
                                     .text_size(px(11.))
                                     .line_height(px(16.))
                                     .text_color(p.muted)
@@ -813,10 +1070,8 @@ impl gpui::Render for AgentChatView {
                 }
                 Item::Text { text, .. } => div()
                     .py(px(8.))
-                    .text_size(px(13.5))
-                    .line_height(px(21.))
                     .text_color(p.text)
-                    .child(markdown_text(text)),
+                    .child(markdown_text(text, p)),
                 Item::Note { text } => div()
                     .w_full()
                     .min_w(px(0.))
@@ -1106,5 +1361,70 @@ impl gpui::Render for AgentChatView {
                     .child(transcript.flex_none()),
             )
             .child(div().flex_none().flex().justify_center().child(composer))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MarkdownBlock, parse_inline, parse_markdown};
+
+    #[test]
+    fn parses_bullet_lines() {
+        let blocks = parse_markdown("- first\n* second");
+
+        assert!(matches!(&blocks[0], MarkdownBlock::Bullet(item) if item.text == "first"));
+        assert!(matches!(&blocks[1], MarkdownBlock::Bullet(item) if item.text == "second"));
+    }
+
+    #[test]
+    fn parses_headings_without_hashes() {
+        let blocks = parse_markdown("# Title\n## Subtitle\n### Detail");
+
+        assert!(
+            matches!(&blocks[0], MarkdownBlock::Heading { level: 1, text } if text.text == "Title")
+        );
+        assert!(
+            matches!(&blocks[1], MarkdownBlock::Heading { level: 2, text } if text.text == "Subtitle")
+        );
+        assert!(
+            matches!(&blocks[2], MarkdownBlock::Heading { level: 3, text } if text.text == "Detail")
+        );
+    }
+
+    #[test]
+    fn combines_bold_and_inline_code_styles() {
+        let inline = parse_inline("**bold and `code`**");
+
+        assert_eq!(inline.text, "bold and code");
+        assert!(
+            inline
+                .styles
+                .iter()
+                .any(|style| { style.range == (0..9) && style.bold && !style.code })
+        );
+        assert!(
+            inline
+                .styles
+                .iter()
+                .any(|style| { style.range == (9..13) && style.bold && style.code })
+        );
+    }
+
+    #[test]
+    fn leaves_unbalanced_backticks_unchanged() {
+        let inline = parse_inline("keep `literal");
+
+        assert_eq!(inline.text, "keep `literal");
+        assert!(inline.styles.iter().all(|style| !style.code));
+    }
+
+    #[test]
+    fn parses_fenced_code_as_one_block() {
+        let blocks = parse_markdown("```rust\nlet x = 1;\nprintln!(\"{x}\");\n```");
+
+        assert_eq!(
+            blocks,
+            vec![MarkdownBlock::Code("let x = 1;\nprintln!(\"{x}\");".into())]
+        );
     }
 }
