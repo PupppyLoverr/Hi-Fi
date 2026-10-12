@@ -255,6 +255,18 @@ impl Store {
         let _ = hifi_core::StateFile::new(self.paths.state_file()).save(&self.state);
     }
 
+    pub fn set_favicon(&mut self, id: &str, path: String, cx: &mut Context<Self>) {
+        let Some(tab) = self.state.tab_mut(id) else {
+            return;
+        };
+        if tab.favicon_url == path {
+            return;
+        }
+        tab.favicon_url = path;
+        self.save();
+        cx.notify();
+    }
+
     #[allow(dead_code)] // part of the store API; views read settings directly
     pub fn settings(&self) -> &Settings {
         &self.state.settings

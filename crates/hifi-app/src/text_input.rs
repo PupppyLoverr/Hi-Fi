@@ -8,9 +8,11 @@ use gpui::{
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, hsla, point, prelude::*, px, relative, size,
+    fill, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::theme::Theme;
 
 actions!(
     hifi_text_field,
@@ -526,10 +528,11 @@ impl Element for TextElement {
         } else {
             &input.placeholder
         };
+        let palette = cx.global::<Theme>().palette;
         let (display_text, text_color) = if content.is_empty() {
             (
                 placeholder.clone(),
-                input.placeholder_color.unwrap_or(hsla(0., 0., 0., 0.35)),
+                input.placeholder_color.unwrap_or(palette.faint),
             )
         } else {
             (content, input.text_color.unwrap_or(style.color))
@@ -575,7 +578,7 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
-        let accent = input.text_color.unwrap_or(gpui::blue());
+        let accent = input.text_color.unwrap_or(palette.accent);
         let cursor_pos = line.x_for_index(cursor);
         let (selection, cursor) = if selected_range.is_empty() {
             (

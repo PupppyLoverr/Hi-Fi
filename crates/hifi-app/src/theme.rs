@@ -51,6 +51,7 @@ pub fn color(h: u32) -> Hsla {
 
 /// Accent families — name → (dark value, light value).
 pub const ACCENTS: &[(&str, u32, u32)] = &[
+    ("mono", 0xe8e8ea, 0x1d1d20),
     ("violet", 0x8b7cf6, 0x5b43e8),
     ("indigo", 0x818cf8, 0x4f46e5),
     ("blue", 0x60a5fa, 0x2563eb),
@@ -130,11 +131,6 @@ impl Palette {
         }
     }
 
-    /// The frosted window shell tint (cosmos `Theme::glass`).
-    pub fn glass(&self) -> Hsla {
-        self.shell.opacity(GLASS_ALPHA)
-    }
-
     /// Floating popover card over the frost (cosmos `glass_overlay`).
     pub fn glass_overlay(&self) -> Hsla {
         if Theme::is_frost() {
@@ -194,22 +190,17 @@ pub struct Theme {
 impl Global for Theme {}
 
 impl Theme {
-    pub const TITLEBAR_HEIGHT: f32 = 38.0;
-    pub const TITLEBAR_TOP_PAD: f32 = 4.0;
     pub const SPACE_SM: f32 = 8.0;
     pub const SIDEBAR_WIDTH: f32 = 244.0;
     pub const SIDEBAR_MIN: f32 = 200.0;
     pub const SIDEBAR_MAX: f32 = 320.0;
     pub const SIDEBAR_TOP_PAD: f32 = 38.0;
     pub const SPACE_SWITCHER_H: f32 = 28.0;
-    pub const SIDEBAR_SEARCH_H: f32 = 28.0;
     pub const SECTION_HEADER_H: f32 = 24.0;
-    pub const ROW_H: f32 = 32.0;
-    pub const ROW_ICON_WELL: f32 = 20.0;
+    pub const ROW_H: f32 = 30.0;
     pub const ROW_RADIUS: f32 = 8.0;
     pub const SPACE_DOCK_H: f32 = 48.0;
-    pub const SPACE_DOCK_BTN: f32 = 28.0;
-    pub const PANE_TOOLBAR_H: f32 = 36.0;
+    pub const PANE_TOOLBAR_H: f32 = 40.0;
     pub const TOOLBAR_BTN: f32 = 24.0;
     pub const ADDRESS_H: f32 = 24.0;
     pub const ICON_OPTICAL: f32 = 14.0;

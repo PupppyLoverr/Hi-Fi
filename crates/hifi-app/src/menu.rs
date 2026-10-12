@@ -2,8 +2,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, Element, InteractiveElement, MouseButton, ParentElement, Pixels,
-    Point, SharedString, Size, Styled, deferred, div, prelude::FluentBuilder, px,
+    Point, SharedString, Size, Styled, deferred, div, img, prelude::FluentBuilder, px,
 };
+use std::path::PathBuf;
 
 use crate::theme::Theme;
 use crate::views::glyph;
@@ -12,6 +13,7 @@ pub struct MenuItem {
     pub id: SharedString,
     pub label: SharedString,
     pub icon: Option<&'static str>,
+    pub favicon: Option<PathBuf>,
     pub action: Rc<dyn Fn(&mut App)>,
     pub separator_before: bool,
     pub disabled: bool,
@@ -24,6 +26,7 @@ impl Clone for MenuItem {
             id: self.id.clone(),
             label: self.label.clone(),
             icon: self.icon,
+            favicon: self.favicon.clone(),
             action: self.action.clone(),
             separator_before: self.separator_before,
             disabled: self.disabled,
@@ -42,18 +45,25 @@ pub fn context_menu(
     let p = Theme::of(cx).palette;
     let x = f32::from(anchor.x).clamp(4., (f32::from(viewport.width) - 248.).max(4.));
     let menu_height = (items.len() as f32 * 28. + 8.).min(f32::from(viewport.height));
-    let y = f32::from(anchor.y).clamp(4., (f32::from(viewport.height) - menu_height).max(4.));
+    let anchor_y = f32::from(anchor.y);
+    let y = if anchor_y + menu_height > f32::from(viewport.height) - 4. {
+        (anchor_y - menu_height).max(4.)
+    } else {
+        anchor_y.max(4.)
+    };
     let menu = items.into_iter().fold(
         div()
             .w(px(240.))
             .p(px(4.))
             .rounded(px(8.))
-            .bg(p.glass_overlay())
+            .bg(p.card)
             .border_1()
             .border_color(p.border)
             .shadow_lg(),
         |menu, item| {
             let action = item.action.clone();
+            let icon = item.icon;
+            let favicon = item.favicon;
             let color = if item.disabled { p.faint } else { p.text };
             let row = div()
                 .id(item.id)
@@ -73,7 +83,12 @@ pub fn context_menu(
                 .when(!item.disabled, |d| {
                     d.cursor_pointer().hover(|s| s.bg(p.glass_hover()))
                 })
-                .when_some(item.icon, |d, icon| d.child(glyph(icon, 14., color)))
+                .when_some(favicon.clone(), |d, path| {
+                    d.child(img(path).size(px(16.)).rounded(px(3.)))
+                })
+                .when(favicon.is_none(), |d| {
+                    d.when_some(icon, |d, icon| d.child(glyph(icon, 14., color)))
+                })
                 .child(item.label)
                 .when(!item.disabled, |d| {
                     d.on_mouse_down(MouseButton::Left, move |_, _, cx| {

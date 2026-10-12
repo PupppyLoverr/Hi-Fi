@@ -324,7 +324,20 @@ static Page *new_page(guint id, gboolean ipc) {
             "String(m))}};document.addEventListener('contextmenu',function(e){e.preventDefault();"
             "window.ipc.postMessage(JSON.stringify({type:'ctx',x:e.clientX,y:e.clientY,"
             "href:(e.target.closest('a')||{}).href||'',src:e.target.tagName==='IMG'?e.target.src:'',"
-            "sel:String(getSelection())}))},true);",
+            "sel:String(getSelection())}))},true);document.addEventListener('DOMContentLoaded',"
+            "function(){if(window.__hifiFaviconStarted)return;window.__hifiFaviconStarted=true;"
+            "(async function(){var a=Array.from(document.querySelectorAll('link[rel~=icon]')).map("
+            "function(l){return {url:l.href,type:(l.type||'').toLowerCase(),size:parseInt("
+            "(l.sizes&&l.sizes.value||'').match(/\\d+/)?.[0]||'0',10)||0}}).filter(function(x){"
+            "return x.url});a.sort(function(x,y){return ((y.type.indexOf('png')>=0||y.type.indexOf("
+            "'svg')>=0)?1:0)-((x.type.indexOf('png')>=0||x.type.indexOf('svg')>=0)?1:0)||y.size-x.size});"
+            "a.push({url:new URL('/favicon.ico',location.href).href,type:'image/x-icon'});"
+            "for(var i=0;i<a.length;i++){try{var r=await fetch(a[i].url,{credentials:'omit'});"
+            "if(!r.ok)continue;var b=await r.blob();if(!b.size||b.size>262144)continue;"
+            "var u=new Uint8Array(await b.arrayBuffer()),s='';for(var j=0;j<u.length;j+=32768)"
+            "s+=String.fromCharCode.apply(null,u.subarray(j,j+32768));window.ipc.postMessage("
+            "JSON.stringify({type:'favicon',mime:b.type||a[i].type,data:btoa(s)}));break}catch(e){}}"
+            "})()}, {once:true});",
             WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL,
             NULL);
         webkit_user_content_manager_add_script(ucm, script);

@@ -1,8 +1,11 @@
 //! JS injected into webviews for the browser-use surface (snapshot/click/type).
 
-/// Browser context menus are routed through the existing page IPC bridge.
+/// Page context menus and favicons are routed through the page IPC bridge.
 #[allow(dead_code)]
-pub const CONTEXT_MENU_JS: &str = r#"document.addEventListener('contextmenu',e=>{e.preventDefault();window.ipc&&window.ipc.postMessage(JSON.stringify({type:'ctx',x:e.clientX,y:e.clientY,href:(e.target.closest('a')||{}).href||'',src:e.target.tagName==='IMG'?e.target.src:'',sel:String(getSelection())}))},true)"#;
+pub const PAGE_IPC_JS: &str = r#"
+document.addEventListener('contextmenu',e=>{e.preventDefault();window.ipc&&window.ipc.postMessage(JSON.stringify({type:'ctx',x:e.clientX,y:e.clientY,href:(e.target.closest('a')||{}).href||'',src:e.target.tagName==='IMG'?e.target.src:'',sel:String(getSelection())}))},true);
+document.addEventListener('DOMContentLoaded',()=>{if(window.__hifiFaviconStarted)return;window.__hifiFaviconStarted=true;(async()=>{const links=[...document.querySelectorAll('link[rel~="icon"]')].map(l=>({url:l.href,type:(l.type||'').toLowerCase(),sizes:(l.sizes?.value||'').split(/\s+/).map(s=>parseInt(s,10)).filter(Number.isFinite).sort((a,b)=>b-a)[0]||0})).filter(l=>l.url);links.sort((a,b)=>((b.type.includes('png')||b.type.includes('svg'))?1:0)-((a.type.includes('png')||a.type.includes('svg'))?1:0)||b.sizes-a.sizes);links.push({url:new URL('/favicon.ico',location.href).href,type:'image/x-icon',sizes:0});for(const icon of links){try{const r=await fetch(icon.url,{credentials:'omit'});if(!r.ok)continue;const blob=await r.blob();if(!blob.size||blob.size>262144)continue;const bytes=new Uint8Array(await blob.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));window.ipc&&window.ipc.postMessage(JSON.stringify({type:'favicon',mime:blob.type||icon.type,data:btoa(binary)}));break}catch(_){}}})()}, {once:true});
+"#;
 
 /// Serialized DOM snapshot: interactive elements with indexes + labels.
 pub const SNAPSHOT_JS: &str = r#"(() => {

@@ -6,6 +6,7 @@ mod agent_chat;
 mod agent_runner;
 mod assets;
 mod command_bar;
+mod favicon;
 mod frost;
 mod ipc_server;
 mod jsbridge;

@@ -59,7 +59,7 @@ html, body {{ margin: 0; min-height: 100%; }}
 body {{
   background: {bg}; color: {text};
   font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
-  padding: 56px 48px 50vh; overflow-wrap: break-word;
+  padding: 48px 48px 50vh; overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased;
 }}
 main {{ max-width: 720px; margin: 0 auto; }}

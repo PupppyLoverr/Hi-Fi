@@ -678,14 +678,6 @@ impl gpui::Render for AgentChatView {
             .unwrap_or_else(|| self.store.read(cx).state.settings.agent_cwd.clone());
         let session = tab.as_ref().map(|t| t.session.clone()).unwrap_or_default();
         let h_icon = crate::sidebar::mark_icon(&harness);
-        let title = self
-            .items
-            .iter()
-            .find_map(|i| match i {
-                Item::User { text } => Some(short(text, 90)),
-                _ => None,
-            })
-            .unwrap_or_else(|| "New chat".into());
 
         let mut transcript = div()
             .w_full()
@@ -735,9 +727,8 @@ impl gpui::Render for AgentChatView {
                             .max_w(px(460.))
                             .px(px(14.))
                             .py(px(9.))
-                            .rounded(px(14.))
-                            .rounded_br(px(4.))
-                            .bg(p.accent.opacity(if p.is_dark { 0.22 } else { 0.12 }))
+                            .rounded(px(12.))
+                            .bg(p.ink(0.07))
                             .text_size(px(13.5))
                             .text_color(p.text)
                             .child(text.clone()),
@@ -823,54 +814,12 @@ impl gpui::Render for AgentChatView {
                     .gap(px(8.))
                     .text_size(px(12.5))
                     .text_color(p.faint)
-                    .child(div().size(px(7.)).rounded_full().bg(p.accent))
+                    .child(div().size(px(7.)).rounded_full().bg(p.text))
                     .child(format!("Working for {}s", t.elapsed().as_secs())),
             );
         }
 
         let running = self.active.is_some();
-        let store_t = self.store.clone();
-        let prompt = self
-            .items
-            .iter()
-            .find_map(|i| match i {
-                Item::User { text } => Some(text.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let harness_t = harness.clone();
-
-        let header = div()
-            .flex_none()
-            .h(px(40.))
-            .px(px(18.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(glyph(h_icon, 14., p.muted))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(13.5))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(p.text)
-                    .child(title),
-            )
-            .child(div().flex_1())
-            .child(
-                chip(
-                    "chat-run-terminal",
-                    icons::TERMINAL,
-                    "Open in terminal",
-                    false,
-                    &p,
-                )
-                .on_click(move |_, _, cx| {
-                    store_t.update(cx, |s, cx| s.open_harness(&harness_t, &prompt, cx));
-                }),
-            );
-
         // Tabs the agent opened for itself — visible, one click to show.
         let agent_tabs: Vec<(String, String, bool)> = self
             .store
@@ -936,16 +885,23 @@ impl gpui::Render for AgentChatView {
             strip
         });
 
+        let can_send = !self.input.read(cx).value().trim().is_empty();
         let send_btn = div()
             .id("chat-send")
             .flex_none()
             .size(px(30.))
-            .rounded(px(10.))
+            .rounded_full()
             .flex()
             .items_center()
             .justify_center()
-            .cursor_pointer()
-            .bg(if running { p.danger } else { p.accent })
+            .when(can_send || running, |d| d.cursor_pointer())
+            .bg(if running {
+                p.danger
+            } else if can_send {
+                p.text
+            } else {
+                p.ink(0.08)
+            })
             .child(glyph(
                 if running {
                     icons::STOP
@@ -953,7 +909,7 @@ impl gpui::Render for AgentChatView {
                     icons::ARROW_UP
                 },
                 14.,
-                gpui::white(),
+                if can_send || running { p.bg } else { p.faint },
             ))
             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
                 if this.active.is_some() {
@@ -1005,9 +961,9 @@ impl gpui::Render for AgentChatView {
                     .bg(p.glass_overlay())
                     .border_1()
                     .border_color(if self.input.read(cx).focus_handle(cx).is_focused(window) {
-                        p.accent
+                        p.border_strong
                     } else {
-                        p.hairline(0.10)
+                        p.hairline(0.22)
                     })
                     .shadow_md()
                     .child(
@@ -1038,11 +994,23 @@ impl gpui::Render for AgentChatView {
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(
-                        chip("chat-local", icons::FOLDER, folder_label(&cwd), true, &p).on_click(
-                            cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.pick_folder(cx)),
-                        ),
-                    )
+                    .child({
+                        let session_hint = if session.is_empty() {
+                            cwd.clone()
+                        } else {
+                            format!("{cwd}\nSession: {session}")
+                        };
+                        chip("chat-local", icons::FOLDER, folder_label(&cwd), true, &p)
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| crate::sidebar::SpaceTooltip(session_hint.clone()))
+                                    .into()
+                            })
+                            .on_click(
+                                cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                    this.pick_folder(cx)
+                                }),
+                            )
+                    })
                     .child(
                         chip(
                             "chat-guard",
@@ -1062,15 +1030,6 @@ impl gpui::Render for AgentChatView {
                             },
                         )),
                     )
-                    .when(!session.is_empty(), |d| {
-                        d.child(chip(
-                            "chat-session",
-                            icons::LINK,
-                            format!("Session · {}", short(&session, 12)),
-                            false,
-                            &p,
-                        ))
-                    })
                     .child(div().flex_1())
                     .child(
                         chip(
@@ -1099,7 +1058,6 @@ impl gpui::Render for AgentChatView {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&focus, cx);
             })
-            .child(header)
             .child(
                 div()
                     .id("chat-scroll")

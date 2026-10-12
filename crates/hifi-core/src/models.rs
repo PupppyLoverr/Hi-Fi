@@ -565,7 +565,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             appearance: Appearance::System,
-            accent: "violet".into(),
+            accent: "mono".into(),
             background_image: String::new(),
             background_blur: default_blur(),
             background_dim: 0.0,

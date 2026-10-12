@@ -330,7 +330,7 @@ impl WebPaneHost {
                     });
                 }
             });
-            builder = builder.with_initialization_script(crate::jsbridge::CONTEXT_MENU_JS);
+            builder = builder.with_initialization_script(crate::jsbridge::PAGE_IPC_JS);
         }
         let web = builder.build_as_child(window).map_err(|e| e.to_string())?;
 

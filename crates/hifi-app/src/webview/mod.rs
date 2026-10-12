@@ -50,6 +50,11 @@ pub enum WebEvent {
         src: String,
         selection: String,
     },
+    Favicon {
+        tab: String,
+        mime: String,
+        data: String,
+    },
     Title {
         tab: String,
         title: String,
@@ -98,32 +103,44 @@ pub enum WebEvent {
 /// Decode an IPC payload shared by browser context menus and Notes saves.
 pub fn parse_ipc_event(tab: &str, body: &str) -> Option<WebEvent> {
     let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    (value.get("type")?.as_str() == Some("ctx")).then(|| WebEvent::ContextMenu {
-        tab: tab.into(),
-        x: value
-            .get("x")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or_default(),
-        y: value
-            .get("y")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or_default(),
-        href: value
-            .get("href")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        src: value
-            .get("src")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        selection: value
-            .get("sel")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .into(),
-    })
+    match value.get("type")?.as_str()? {
+        "ctx" => Some(WebEvent::ContextMenu {
+            tab: tab.into(),
+            x: value
+                .get("x")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or_default(),
+            y: value
+                .get("y")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or_default(),
+            href: value
+                .get("href")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+            src: value
+                .get("src")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+            selection: value
+                .get("sel")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+        }),
+        "favicon" => {
+            let mime = value.get("mime")?.as_str()?;
+            let data = value.get("data")?.as_str()?;
+            (data.len() <= 350_000).then(|| WebEvent::Favicon {
+                tab: tab.into(),
+                mime: mime.into(),
+                data: data.into(),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Browser chords the app keymap owns even while a page holds focus.

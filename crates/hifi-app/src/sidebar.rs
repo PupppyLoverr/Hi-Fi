@@ -6,9 +6,10 @@
 use std::{collections::HashSet, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton,
-    ScrollHandle, SharedString, Window, div, hsla, point, prelude::*, px,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, Entity, MouseButton, ScrollHandle,
+    SharedString, Window, div, hsla, img, point, prelude::*, px,
 };
+use std::path::PathBuf;
 
 use crate::assets::icons;
 use crate::store::Store;
@@ -16,7 +17,7 @@ use crate::theme::{Palette, Theme};
 use crate::views::glyph;
 use hifi_core::{SplitNode, Tab, TabId, TabKind};
 
-struct SpaceTooltip(String);
+pub struct SpaceTooltip(pub String);
 
 impl gpui::Render for SpaceTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -106,47 +107,31 @@ pub fn kind_icon(tab: &Tab) -> &'static str {
     }
 }
 
-/// Stable per-host hue so a site keeps its colour across restarts.
-fn host_hue(host: &str) -> f32 {
-    let h = host.bytes().fold(2166136261u32, |acc, b| {
-        (acc ^ u32::from(b)).wrapping_mul(16777619)
-    });
-    (h % 360) as f32 / 360.
-}
-
-/// Site monogram standing in for a favicon — no image decoding or network
-/// fetch, so it costs nothing to paint.
 pub fn tab_badge(tab: &Tab, size: f32, p: &Palette) -> gpui::AnyElement {
     if tab.kind != TabKind::Web {
         return glyph(kind_icon(tab), size, p.muted).into_any_element();
     }
-    let host = hifi_core::host_of(&tab.url);
-    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
-    let letter: String = host
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .unwrap_or('•')
-        .to_uppercase()
-        .collect();
-    let hue = host_hue(&host);
-    let (bg, fg): (Hsla, Hsla) = if p.is_dark {
-        (hsla(hue, 0.45, 0.28, 1.), hsla(hue, 0.9, 0.86, 1.))
-    } else {
-        (hsla(hue, 0.6, 0.9, 1.), hsla(hue, 0.6, 0.32, 1.))
-    };
-    div()
-        .size(px(size + 1.))
-        .flex_none()
-        .rounded(px(4.))
-        .bg(bg)
-        .text_color(fg)
-        .text_size(px(size * 0.66))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(letter)
-        .into_any_element()
+    if let Some(path) = favicon_path(tab) {
+        return img(path).size(px(size)).rounded(px(3.)).into_any_element();
+    }
+    glyph(icons::GLOBE, size, p.muted).into_any_element()
+}
+
+pub fn favicon_path(tab: &Tab) -> Option<PathBuf> {
+    if tab.kind != TabKind::Web {
+        return None;
+    }
+    favicon_file(&tab.favicon_url)
+}
+
+pub fn favicon_file(path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    (path.is_file()
+        && matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "svg")
+        ))
+    .then_some(path)
 }
 
 /// Leaf stacks of a split tree, in visual order.
@@ -184,32 +169,6 @@ fn icon_button(
         })
 }
 
-/// A cosmos sidebar action row: icon + label at rest text strength.
-fn action_row(
-    id: &'static str,
-    icon: &'static str,
-    label: &'static str,
-    compact: bool,
-    p: Palette,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(px(Theme::ROW_H))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(8.))
-        .px(px(8.))
-        .rounded(px(Theme::ROW_RADIUS))
-        .cursor_pointer()
-        .text_size(px(13.))
-        .text_color(p.text.opacity(0.8))
-        .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
-        .when(compact, |d| d.justify_center())
-        .child(glyph(icon, 15., p.muted))
-        .when(!compact, |d| d.child(label))
-}
-
 impl Sidebar {
     fn tab_row(&self, tab: &Tab, active: bool, compact: bool, p: Palette) -> gpui::AnyElement {
         let store_f = self.store.clone();
@@ -224,7 +183,7 @@ impl Sidebar {
             div()
                 .size(px(6.))
                 .rounded_full()
-                .bg(p.accent)
+                .bg(p.text)
                 .with_animation(
                     SharedString::from(format!("agent-pulse-{}", tab.id)),
                     Animation::new(Duration::from_millis(1200)).repeat(),
@@ -242,7 +201,6 @@ impl Sidebar {
             .items_center()
             .gap(px(8.))
             .px(px(8.))
-            .py(px(6.))
             .h(px(Theme::ROW_H))
             .rounded(px(Theme::ROW_RADIUS))
             .cursor_pointer()
@@ -253,7 +211,7 @@ impl Sidebar {
                 })
             })
             .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
-            .child(tab_badge(tab, 15., &p))
+            .child(tab_badge(tab, 16., &p))
             .child(status)
             .when(!compact, |d| {
                 let sub = row_subtitle(tab);
@@ -262,9 +220,12 @@ impl Sidebar {
                         .flex_1()
                         .min_w(px(0.))
                         .flex()
-                        .flex_col()
+                        .items_center()
+                        .gap(px(8.))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w(px(0.))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
@@ -286,12 +247,15 @@ impl Sidebar {
                         .when_some(sub, |d, sub| {
                             d.child(
                                 div()
+                                    .max_w(px(90.))
+                                    .flex_none()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(11.))
-                                    .line_height(px(14.))
+                                    .text_size(px(10.5))
                                     .text_color(p.faint)
+                                    .opacity(0.)
+                                    .group_hover("sb-row", |s| s.opacity(1.))
                                     .child(sub),
                             )
                         }),
@@ -430,14 +394,19 @@ impl Sidebar {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(12.))
+                    .text_size(px(10.5))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(p.muted.opacity(0.7))
                     .child(label.into()),
             )
             .child(div().flex_1())
             .children(trailing)
-            .child(chevron)
+            .child(
+                div()
+                    .opacity(0.)
+                    .group_hover("sb-disclosure", |s| s.opacity(1.))
+                    .child(chevron),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if !this.collapsed.remove(&key) {
                     this.collapsed.insert(key.clone());
@@ -554,12 +523,6 @@ impl gpui::Render for Sidebar {
         // Workspace header: the space switcher menu.
         let space_name = space.name.clone();
         let store_hdr = self.store.clone();
-        let initial: String = space_name
-            .chars()
-            .next()
-            .unwrap_or('S')
-            .to_uppercase()
-            .collect();
         list = list.child(
             div()
                 .id("sb-space-header")
@@ -567,26 +530,12 @@ impl gpui::Render for Sidebar {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(6.))
                 .px(px(6.))
                 .rounded(px(8.))
                 .cursor_pointer()
                 .when(compact, |d| d.justify_center())
                 .hover(|s| s.bg(p.glass_hover()))
-                .child(
-                    div()
-                        .size(px(Theme::ROW_ICON_WELL))
-                        .flex_none()
-                        .rounded_full()
-                        .bg(p.accent)
-                        .text_color(gpui::white())
-                        .text_size(px(10.5))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(initial),
-                )
                 .when(!compact, |d| {
                     d.child(
                         div()
@@ -607,9 +556,34 @@ impl gpui::Render for Sidebar {
         );
         let store_search = self.store.clone();
         list = list.child(
-            action_row("sb-search", icons::MAGNIFER, "Search or jump…", compact, p)
-                .h(px(Theme::SIDEBAR_SEARCH_H))
-                .text_color(p.muted)
+            div()
+                .id("sb-search")
+                .group("sb-search-row")
+                .h(px(28.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .rounded(px(7.))
+                .bg(p.ink(0.05))
+                .cursor_pointer()
+                .hover(|s| s.bg(p.ink(0.08)))
+                .child(glyph(icons::MAGNIFER, 13., p.muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.))
+                        .text_color(p.muted)
+                        .child("Search or jump…"),
+                )
+                .when(!compact, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(p.faint)
+                            .child("⌘K / ⌘T"),
+                    )
+                })
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     store_search.update(cx, |s, cx| s.toggle_command_bar(cx));
                 }),
@@ -636,11 +610,8 @@ impl gpui::Render for Sidebar {
                     grid = grid.child(
                         div()
                             .id(SharedString::from(format!("tile-{}", tab.id)))
-                            .h(px(38.))
-                            .when(compact, |d| d.w_full())
-                            .when(!compact, |d| {
-                                d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
-                            })
+                            .w(px(44.))
+                            .h(px(36.))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -653,7 +624,7 @@ impl gpui::Render for Sidebar {
                             })
                             .border_1()
                             .border_color(if on {
-                                p.accent.opacity(0.6)
+                                p.text.opacity(0.6)
                             } else {
                                 p.hairline(0.04)
                             })
@@ -826,7 +797,7 @@ impl gpui::Render for Sidebar {
         if !today_has_rows && !compact {
             list = list.child(
                 div()
-                    .h(px(Theme::ROW_H))
+                    .h(px(32.))
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .items_center()
@@ -854,29 +825,27 @@ impl gpui::Render for Sidebar {
             let store = self.store.clone();
             let sid = id.clone();
             let tooltip_name = name.clone();
-            let letter: String = name.chars().next().unwrap_or('S').to_uppercase().collect();
             bottom = bottom.child(
                 div()
                     .id(SharedString::from(format!("space-{id}")))
-                    .size(px(Theme::SPACE_DOCK_BTN))
+                    .size(px(24.))
                     .flex_none()
                     .rounded(px(6.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_size(px(11.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .when(on, |d| {
                         d.bg(p.selected())
-                            .text_color(p.text)
                             .border_1()
-                            .border_color(p.accent.opacity(0.8))
+                            .border_color(p.text.opacity(0.8))
                     })
-                    .when(!on, |d| {
-                        d.text_color(p.faint).hover(|s| s.bg(p.glass_hover()))
-                    })
-                    .child(letter)
+                    .when(!on, |d| d.hover(|s| s.bg(p.glass_hover())))
+                    .child(div().size(px(8.)).rounded_full().bg(if on {
+                        p.text
+                    } else {
+                        p.ink(0.25)
+                    }))
                     .tooltip(move |_, cx| cx.new(|_| SpaceTooltip(tooltip_name.clone())).into())
                     .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                         store.update(cx, |s, cx| {
@@ -889,23 +858,35 @@ impl gpui::Render for Sidebar {
         let store_st = self.store.clone();
         let store_settings = store_st.clone();
         bottom = bottom
-            .child(icon_button("space-add", icons::PLUS, p, move |cx| {
-                store_st.update(cx, |s, cx| {
-                    s.pending_space_menu = Some(point(px(24.), px(24.)));
-                    cx.notify();
-                });
-            }))
-            .when(!compact, |d| d.child(div().flex_1()))
-            .child(icon_button(
-                "open-settings",
-                icons::SETTINGS,
-                p,
-                move |cx| {
-                    store_settings.update(cx, |s, cx| {
-                        s.open_tab("hifi://settings", None, None, cx);
+            .child(
+                icon_button("space-add", icons::PLUS, p, move |cx| {
+                    store_st.update(cx, |s, cx| {
+                        s.pending_space_menu = Some(point(px(24.), px(24.)));
+                        cx.notify();
                     });
-                },
-            ));
+                })
+                .tooltip(|_, cx| cx.new(|_| SpaceTooltip("New space".into())).into()),
+            )
+            .when(!compact, |d| d.child(div().flex_1()))
+            .child(
+                div()
+                    .id("open-settings")
+                    .size(px(28.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.glass_hover()))
+                    .child(glyph(icons::SETTINGS, 15., p.muted))
+                    .tooltip(|_, cx| cx.new(|_| SpaceTooltip("Settings".into())).into())
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        store_settings.update(cx, |s, cx| {
+                            s.open_tab("hifi://settings", None, None, cx);
+                        });
+                    }),
+            );
         bar.child(bottom)
     }
 }

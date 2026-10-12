@@ -2,8 +2,7 @@
 //! (deferred element, so it composites over native webviews).
 
 use gpui::{
-    Context, Entity, Focusable, KeyDownEvent, MouseButton, SharedString, Window, div, prelude::*,
-    px,
+    Context, Entity, KeyDownEvent, MouseButton, SharedString, Window, div, img, prelude::*, px,
 };
 
 use crate::assets::icons;
@@ -14,8 +13,8 @@ use crate::views::glyph;
 
 #[derive(Clone)]
 enum Candidate {
-    OpenUrl(String, String),   // display, url
-    SwitchTab(String, String), // display, tab id
+    OpenUrl(String, String),                         // display, url
+    SwitchTab(String, String, &'static str, String), // display, tab id, icon, favicon
     Command(String, Command),
 }
 
@@ -88,6 +87,8 @@ impl CommandBar {
                     out.push(Candidate::SwitchTab(
                         format!("{} — {}", tab.display_title(), hifi_core::host_of(&tab.url)),
                         tab.id.clone(),
+                        crate::sidebar::kind_icon(tab),
+                        tab.favicon_url.clone(),
                     ));
                 }
             }
@@ -131,6 +132,8 @@ impl CommandBar {
                 out.push(Candidate::SwitchTab(
                     format!("{} — {}", tab.display_title(), hifi_core::host_of(&tab.url)),
                     tab.id.clone(),
+                    crate::sidebar::kind_icon(tab),
+                    tab.favicon_url.clone(),
                 ));
             }
         }
@@ -151,7 +154,7 @@ impl CommandBar {
             s.address_target = None;
             match c {
                 Candidate::OpenUrl(..) => {}
-                Candidate::SwitchTab(_, id) => s.focus_tab(&id, cx),
+                Candidate::SwitchTab(_, id, _, _) => s.focus_tab(&id, cx),
                 Candidate::Command(_, cmd) => match cmd {
                     Command::NewTab => {
                         s.open_tab("hifi://newtab", None, None, cx);
@@ -209,19 +212,26 @@ impl CommandBar {
 }
 
 impl gpui::Render for CommandBar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh(cx);
         let p = Theme::of(cx).palette;
-        let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let mut list = div().flex().flex_col().max_h(px(320.)).overflow_y_hidden();
         for (i, cand) in self.candidates.iter().enumerate() {
-            let (icon, label, sub) = match cand {
-                Candidate::OpenUrl(l, _) => (icons::GLOBE, l.clone(), "open".to_string()),
-                Candidate::SwitchTab(l, _) => (icons::LIST, l.clone(), "switch".into()),
-                Candidate::Command(l, _) => (icons::COMMAND, l.clone(), "command".into()),
+            let (icon, label, sub, favicon) = match cand {
+                Candidate::OpenUrl(l, _) => (icons::GLOBE, l.clone(), "open".to_string(), None),
+                Candidate::SwitchTab(l, _, icon, favicon) => {
+                    (*icon, l.clone(), "switch".into(), Some(favicon.clone()))
+                }
+                Candidate::Command(l, _) => (icons::COMMAND, l.clone(), "command".into(), None),
             };
             let active = i == self.selected;
             let me = cx.entity();
+            let icon_element = favicon
+                .and_then(|path| crate::sidebar::favicon_file(&path))
+                .map(|path| img(path).size(px(16.)).rounded(px(3.)).into_any_element())
+                .unwrap_or_else(|| {
+                    glyph(icon, 14., if active { p.text } else { p.faint }).into_any_element()
+                });
             list = list.child(
                 div()
                     .id(SharedString::from(format!("cb-{i}")))
@@ -233,11 +243,11 @@ impl gpui::Render for CommandBar {
                     .rounded(radius::ROUND)
                     .cursor_pointer()
                     .bg(if active {
-                        p.accent.opacity(0.16)
+                        p.selected()
                     } else {
                         gpui::transparent_white()
                     })
-                    .child(glyph(icon, 14., if active { p.accent } else { p.faint }))
+                    .child(icon_element)
                     .child(
                         div()
                             .text_size(px(13.))
@@ -267,7 +277,7 @@ impl gpui::Render for CommandBar {
             .rounded(radius::BUBBLE)
             .bg(p.dialog.opacity(0.92))
             .border_1()
-            .border_color(if focused { p.accent } else { p.border_strong })
+            .border_color(p.border_strong)
             .shadow_lg()
             .flex()
             .flex_col()
