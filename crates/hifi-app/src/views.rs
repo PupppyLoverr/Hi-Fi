@@ -398,6 +398,7 @@ impl gpui::Render for NewTabView {
         let controls = div()
             .relative()
             .w_full()
+            .min_w(px(0.))
             .max_w(px(620.))
             .px(px(4.))
             .flex()
@@ -456,7 +457,6 @@ impl gpui::Render for NewTabView {
                     });
                 }),
             )
-            .child(div().flex_1())
             .when(ask, |d| {
                 d.child(
                     composer_pill(
@@ -466,6 +466,7 @@ impl gpui::Render for NewTabView {
                         true,
                         &p,
                     )
+                    .ml_auto()
                     .max_w(px(160.))
                     .overflow_hidden()
                     .on_click(cx.listener(
@@ -644,18 +645,43 @@ fn settings_row(
     control: impl IntoElement,
     p: &Palette,
     last: bool,
+    wide_control: bool,
+    natural_width: bool,
 ) -> gpui::Div {
+    let mut control_side = div().flex_1().min_w(px(0.)).flex().justify_end();
+    if natural_width {
+        control_side = div()
+            .w(px(340.))
+            .min_w(px(0.))
+            .flex()
+            .justify_end()
+            .flex_none()
+            .flex_grow_1()
+            .max_w(gpui::relative(1.));
+    } else if wide_control {
+        control_side = control_side
+            .flex_basis(px(340.))
+            .flex_shrink_0()
+            .min_w(px(250.))
+            .max_w(gpui::relative(1.));
+    }
+
     div()
-        .h(px(44.))
+        .min_h(px(44.))
         .px(px(12.))
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap(px(12.))
+        .gap(px(8.))
         .when(!last, |d| d.border_b_1().border_color(p.hairline(0.12)))
         .child(
             div()
-                .flex_1()
-                .min_w(px(0.))
+                .flex_none()
+                .min_w(px(if wide_control || detail.is_some() {
+                    180.
+                } else {
+                    0.
+                }))
                 .flex()
                 .flex_col()
                 .gap(px(1.))
@@ -663,6 +689,7 @@ fn settings_row(
                     div()
                         .text_size(px(12.5))
                         .text_color(p.text)
+                        .whitespace_nowrap()
                         .child(title.to_string()),
                 )
                 .when_some(detail, |d, detail| {
@@ -674,7 +701,7 @@ fn settings_row(
                     )
                 }),
         )
-        .child(control)
+        .child(control_side.child(control))
 }
 
 fn settings_switch(id: &str, on: bool, p: &Palette) -> gpui::Stateful<gpui::Div> {
@@ -762,55 +789,62 @@ impl gpui::Render for SettingsView {
                 ),
             &p,
             true,
+            false,
+            false,
         )
         .into_any_element();
         page = page.child(settings_section("Appearance", &p, [appearance_row]));
 
         let accent = settings.accent.clone();
         let accent_store = store.clone();
-        let accent_control =
-            div()
-                .flex()
-                .items_center()
-                .gap(px(7.))
-                .children(crate::theme::ACCENTS.iter().map(|(name, dark_v, light_v)| {
-                    let store = accent_store.clone();
-                    let selected = accent == *name;
-                    let swatch = crate::theme::color(if p.is_dark { *dark_v } else { *light_v });
-                    div()
-                        .id(SharedString::from(format!("acc-{name}")))
-                        .size(px(18.))
-                        .rounded_full()
-                        .bg(swatch)
-                        .cursor_pointer()
-                        .border_1()
-                        .border_color(if selected { p.text } else { p.hairline(0.12) })
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |s, cx| {
-                                s.update_settings(|st| st.accent = name.to_string(), cx)
-                            })
+        let accent_control = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(7.))
+            .children(crate::theme::ACCENTS.iter().map(|(name, dark_v, light_v)| {
+                let store = accent_store.clone();
+                let selected = accent == *name;
+                let swatch = crate::theme::color(if p.is_dark { *dark_v } else { *light_v });
+                div()
+                    .id(SharedString::from(format!("acc-{name}")))
+                    .size(px(18.))
+                    .rounded_full()
+                    .bg(swatch)
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(if selected { p.text } else { p.hairline(0.12) })
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        store.update(cx, |s, cx| {
+                            s.update_settings(|st| st.accent = name.to_string(), cx)
                         })
-                        .into_any_element()
-                }));
+                    })
+                    .into_any_element()
+            }));
         page = page.child(settings_section(
             "Accent",
             &p,
-            [settings_row("Accent color", None, accent_control, &p, true).into_any_element()],
+            [
+                settings_row("Accent color", None, accent_control, &p, true, true, true)
+                    .into_any_element(),
+            ],
         ));
 
         let store_bg = store.clone();
         let mut bg_control = div()
-            .w(px(280.))
+            .w_full()
+            .min_w(px(0.))
             .h(px(32.))
             .px(px(10.))
             .flex()
             .items_center()
+            .gap(px(8.))
             .text_size(px(13.))
             .rounded(px(6.))
             .bg(p.ink(0.03))
             .border_1()
             .border_color(p.border)
-            .child(self.bg_field.clone());
+            .child(div().flex_1().min_w(px(0.)).child(self.bg_field.clone()));
         if !settings.background_image.is_empty() {
             bg_control = bg_control.child(
                 div()
@@ -839,6 +873,8 @@ impl gpui::Render for SettingsView {
                 bg_control,
                 &p,
                 true,
+                true,
+                false,
             )
             .into_any_element()],
         ));
@@ -861,6 +897,8 @@ impl gpui::Render for SettingsView {
                 ),
                 &p,
                 false,
+                false,
+                false,
             )
             .into_any_element(),
             settings_row(
@@ -876,6 +914,8 @@ impl gpui::Render for SettingsView {
                 ),
                 &p,
                 true,
+                false,
+                false,
             )
             .into_any_element(),
         ];
@@ -893,7 +933,8 @@ impl gpui::Render for SettingsView {
             let tooltip = path.clone();
             div()
                 .id(SharedString::from(format!("{id}-path")))
-                .max_w(px(340.))
+                .w_full()
+                .min_w(px(0.))
                 .flex()
                 .items_center()
                 .gap(px(7.))
@@ -903,6 +944,7 @@ impl gpui::Render for SettingsView {
                 })
                 .child(
                     div()
+                        .flex_1()
                         .min_w(px(0.))
                         .truncate()
                         .font_family(crate::theme::FONT_MONO)
@@ -938,6 +980,8 @@ impl gpui::Render for SettingsView {
                     path_control("copy-data", data_path),
                     &p,
                     false,
+                    true,
+                    false,
                 )
                 .into_any_element(),
                 settings_row(
@@ -945,6 +989,8 @@ impl gpui::Render for SettingsView {
                     None,
                     path_control("copy-state", state_path),
                     &p,
+                    false,
+                    true,
                     false,
                 )
                 .into_any_element(),
@@ -954,6 +1000,8 @@ impl gpui::Render for SettingsView {
                     path_control("copy-cli", cli_path),
                     &p,
                     true,
+                    true,
+                    false,
                 )
                 .into_any_element(),
             ],
@@ -970,7 +1018,8 @@ impl gpui::Render for SettingsView {
             .size_full()
             .overflow_y_scroll()
             .flex()
-            .justify_center()
+            .flex_col()
+            .items_center()
             .bg(p.bg)
             .child(page)
     }

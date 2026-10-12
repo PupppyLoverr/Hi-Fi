@@ -1635,6 +1635,9 @@ impl Shell {
             .min_w(px(120.))
             .min_h(px(80.))
             .overflow_hidden()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(p.hairline(0.10))
             .bg(p.bg)
             .child(header)
             .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
@@ -2092,22 +2095,45 @@ impl Shell {
                 .into();
                 let reset_path = my_path.clone();
                 let reset_store = store.clone();
-                let handle = div()
-                    .id(handle_id)
-                    .group("split-handle")
-                    .flex_none()
+                let grip = div()
+                    .absolute()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(horizontal, |d| d.w(px(33.)).h_full().cursor_col_resize())
-                    .when(!horizontal, |d| d.h(px(33.)).w_full().cursor_row_resize())
+                    .when(horizontal, |d| {
+                        d.top_0().bottom_0().left(px(-5.5)).w(px(17.))
+                    })
+                    .when(!horizontal, |d| {
+                        d.left_0().right_0().top(px(-5.5)).h(px(17.))
+                    })
                     .child(
                         div()
+                            .rounded_full()
+                            .opacity(0.)
+                            .when(horizontal, |d| d.w(px(2.)).h(px(28.)))
+                            .when(!horizontal, |d| d.h(px(2.)).w(px(28.)))
                             .bg(p.border)
-                            .when(horizontal, |d| d.w(px(2.)).h(px(32.)))
-                            .when(!horizontal, |d| d.h(px(2.)).w(px(32.)))
-                            .group_hover("split-handle", |s| s.bg(p.text.opacity(0.5))),
-                    )
+                            .group_hover("split-handle", |s| s.opacity(1.).bg(p.text.opacity(0.5))),
+                    );
+                let hit_target = div()
+                    .id(handle_id)
+                    .group("split-handle")
+                    .absolute()
+                    .when(horizontal, |d| {
+                        d.top_0()
+                            .bottom_0()
+                            .left(px(-5.5))
+                            .w(px(17.))
+                            .cursor_col_resize()
+                    })
+                    .when(!horizontal, |d| {
+                        d.left_0()
+                            .right_0()
+                            .top(px(-5.5))
+                            .h(px(17.))
+                            .cursor_row_resize()
+                    })
+                    .child(grip)
                     .occlude()
                     .on_click(move |event, _, cx| {
                         if event.click_count() == 2 {
@@ -2126,6 +2152,12 @@ impl Shell {
                             cx.new(|_| DragGhost)
                         },
                     );
+                let handle = div()
+                    .relative()
+                    .flex_none()
+                    .when(horizontal, |d| d.w(px(6.)).h_full())
+                    .when(!horizontal, |d| d.h(px(6.)).w_full())
+                    .child(hit_target);
 
                 let mut row = div()
                     .id(SharedString::from(format!(
@@ -2269,15 +2301,16 @@ impl Shell {
             .w(px(width))
             .flex_none()
             .relative()
-            .pl(px(DOCK_GUTTER))
+            .p(px(DOCK_GUTTER))
             .child(
                 div()
                     .size_full()
                     .flex()
                     .flex_col()
+                    .rounded(px(10.))
                     .overflow_hidden()
-                    .border_l_1()
-                    .border_color(p.border)
+                    .border_1()
+                    .border_color(p.hairline(0.10))
                     .bg(p.bg)
                     .child(body),
             )
@@ -3174,6 +3207,10 @@ impl gpui::Render for Shell {
                         .h_full()
                         .flex()
                         .bg(p.bg)
+                        .pl(px(DOCK_GUTTER))
+                        .pt(px(DOCK_GUTTER))
+                        .pb(px(DOCK_GUTTER))
+                        .when(!dock_open, |d| d.pr(px(DOCK_GUTTER)))
                         .child(content),
                 );
                 if dock_open {
@@ -3277,6 +3314,7 @@ impl gpui::Render for Shell {
                         .bg(gpui::black().opacity(0.3))
                         .child(div().child(self.command_bar.clone())),
                 )
+                .with_priority(3)
                 .into_any(),
             );
             // Focus the input once opened.

@@ -216,13 +216,56 @@ impl gpui::Render for CommandBar {
         self.refresh(cx);
         let p = Theme::of(cx).palette;
         let mut list = div().flex().flex_col().max_h(px(320.)).overflow_y_hidden();
+        let mut commands_heading = false;
+        let mut tabs_heading = false;
         for (i, cand) in self.candidates.iter().enumerate() {
-            let (icon, label, sub, favicon) = match cand {
-                Candidate::OpenUrl(l, _) => (icons::GLOBE, l.clone(), "open".to_string(), None),
+            if matches!(cand, Candidate::Command(..)) && !commands_heading {
+                commands_heading = true;
+                list = list.child(
+                    div()
+                        .h(px(20.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(p.faint)
+                        .child("Commands"),
+                );
+            }
+            if matches!(cand, Candidate::SwitchTab(..)) && !tabs_heading {
+                tabs_heading = true;
+                list = list.child(
+                    div()
+                        .h(px(20.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(p.faint)
+                        .child("Open tabs"),
+                );
+            }
+            let (icon, label, shortcut, favicon) = match cand {
+                Candidate::OpenUrl(l, _) => (icons::GLOBAL, l.clone(), None, None),
                 Candidate::SwitchTab(l, _, icon, favicon) => {
-                    (*icon, l.clone(), "switch".into(), Some(favicon.clone()))
+                    (*icon, l.clone(), None, Some(favicon.clone()))
                 }
-                Candidate::Command(l, _) => (icons::COMMAND, l.clone(), "command".into(), None),
+                Candidate::Command(l, command) => {
+                    let (icon, shortcut) = match command {
+                        Command::NewTab => (icons::PLUS, None),
+                        Command::NewTerminal => (icons::TERMINAL, None),
+                        Command::NewAgent => (icons::CHAT_ROUND_LINE, None),
+                        Command::NewDiff => (icons::GIT_BRANCH, None),
+                        Command::Settings => (icons::SETTINGS, Some("⌘,")),
+                        Command::ToggleSidebar => (icons::SIDEBAR_LEFT, Some("⌘B")),
+                        Command::Reload => (icons::REFRESH, Some("⌘R")),
+                        Command::Pin => (icons::PIN, None),
+                        Command::NewGroup => (icons::FOLDER, Some("⌘⇧\\")),
+                    };
+                    (icon, l.clone(), shortcut, None)
+                }
             };
             let active = i == self.selected;
             let me = cx.entity();
@@ -239,14 +282,15 @@ impl gpui::Render for CommandBar {
                     .items_center()
                     .gap(space::SM)
                     .px(px(12.))
-                    .h(px(34.))
+                    .h(px(30.))
                     .rounded(radius::ROUND)
                     .cursor_pointer()
                     .bg(if active {
-                        p.selected()
+                        p.wash(0.06)
                     } else {
                         gpui::transparent_white()
                     })
+                    .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
                     .child(icon_element)
                     .child(
                         div()
@@ -257,12 +301,20 @@ impl gpui::Render for CommandBar {
                             .whitespace_nowrap()
                             .child(label),
                     )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(p.faint.opacity(0.7))
-                            .child(sub),
-                    )
+                    .when_some(shortcut, |d, shortcut| {
+                        d.child(
+                            div()
+                                .px(px(5.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(p.ink(0.04))
+                                .border_1()
+                                .border_color(p.hairline(0.08))
+                                .text_size(px(10.))
+                                .text_color(p.faint)
+                                .child(shortcut),
+                        )
+                    })
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         me.update(cx, |bar, cx| {
                             bar.selected = i;
@@ -275,9 +327,9 @@ impl gpui::Render for CommandBar {
         div()
             .w(px(640.))
             .rounded(radius::BUBBLE)
-            .bg(p.dialog.opacity(0.92))
+            .bg(p.dialog)
             .border_1()
-            .border_color(p.border_strong)
+            .border_color(p.hairline(0.10))
             .shadow_lg()
             .flex()
             .flex_col()

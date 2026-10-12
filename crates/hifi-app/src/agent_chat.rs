@@ -4,8 +4,8 @@
 //! `chats/<tab>.json` so it survives restarts.
 
 use gpui::{
-    Context, Entity, Focusable, FontWeight, MouseButton, PathPromptOptions, ScrollHandle,
-    SharedString, StyledText, Window, div, prelude::*, px,
+    Animation, AnimationExt, Context, Entity, Focusable, FontWeight, MouseButton,
+    PathPromptOptions, ScrollHandle, SharedString, StyledText, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -313,7 +313,7 @@ impl AgentChatView {
                     .update(cx, |s, cx| s.set_agent_running(&id, false, failed, cx));
                 if let Some(e) = error {
                     self.items.push(Item::Note {
-                        text: format!("The harness stopped with an error: {}", short(&e, 600)),
+                        text: format!("The harness stopped with an error: {e}"),
                     });
                 }
                 self.active = None;
@@ -395,15 +395,6 @@ fn markdown_text(text: &str) -> StyledText {
         }
     }
     StyledText::new(plain).with_highlights(highlights)
-}
-
-fn short_error(text: &str) -> String {
-    let mut result = text.lines().take(3).collect::<Vec<_>>().join("\n");
-    if result.chars().count() > 300 {
-        result = result.chars().take(300).collect();
-        result.push('…');
-    }
-    result
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -622,35 +613,50 @@ pub fn model_menu(
 }
 
 fn step_row(
+    id: &str,
     icon: &'static str,
     title: String,
     done: bool,
-    error: Option<&str>,
+    failed: bool,
     p: &Palette,
 ) -> gpui::Div {
+    let status = if failed {
+        glyph(icons::CLOSE, 12., p.faint).into_any_element()
+    } else if done {
+        glyph(icons::CHECK, 12., p.faint).into_any_element()
+    } else {
+        glyph(icons::RESTART, 13., p.muted)
+            .with_animation(
+                SharedString::from(format!("tool-spinner-{id}")),
+                Animation::new(Duration::from_millis(900)).repeat(),
+                |svg, delta| {
+                    svg.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        delta * std::f32::consts::TAU,
+                    )))
+                },
+            )
+            .into_any_element()
+    };
     div()
+        .w_full()
+        .h(px(26.))
         .flex()
         .items_center()
-        .gap(px(9.))
-        .py(px(4.))
-        .text_size(px(13.))
-        .text_color(if error.is_some() { p.danger } else { p.muted })
-        .child(if done {
-            glyph(icon, 14., if error.is_some() { p.danger } else { p.faint })
-        } else {
-            glyph(icon, 14., p.accent)
-        })
-        .child(div().min_w_0().truncate().child(title))
-        .when_some(error, |d, e| {
-            d.child(
-                div()
-                    .min_w_0()
-                    .text_size(px(11.5))
-                    .line_clamp(3)
-                    .text_color(p.danger.opacity(0.8))
-                    .child(short_error(e)),
-            )
-        })
+        .gap(px(8.))
+        .child(glyph(icon, 14., p.muted))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_family(crate::theme::FONT_MONO)
+                .text_size(px(11.5))
+                .text_color(p.muted)
+                .child(title),
+        )
+        .child(div().ml_auto().flex_none().child(status))
 }
 
 impl gpui::Render for AgentChatView {
@@ -744,10 +750,11 @@ impl gpui::Render for AgentChatView {
                     let expanded = self.expanded.contains(id);
                     let has_output = !output.trim().is_empty();
                     let row = step_row(
+                        id,
                         tool_icon(tool),
                         display_tool_title(tool, title, output, &cwd),
                         *done,
-                        error.as_deref(),
+                        error.is_some(),
                         &p,
                     );
                     let key = id.clone();
@@ -768,6 +775,26 @@ impl gpui::Render for AgentChatView {
                                     cx.notify();
                                 })),
                         )
+                        .when_some(error.as_deref(), |d, error| {
+                            d.child(
+                                div()
+                                    .min_w(px(0.))
+                                    .ml(px(22.))
+                                    .mb(px(6.))
+                                    .px(px(9.))
+                                    .py(px(7.))
+                                    .rounded(px(7.))
+                                    .bg(p.danger.opacity(0.035))
+                                    .border_1()
+                                    .border_color(p.danger.opacity(0.22))
+                                    .text_size(px(11.5))
+                                    .line_height(px(16.))
+                                    .line_clamp(4)
+                                    .overflow_hidden()
+                                    .text_color(p.danger.opacity(0.85))
+                                    .child(error.to_string()),
+                            )
+                        })
                         .when(expanded && has_output, |d| {
                             d.child(
                                 div()
@@ -791,6 +818,8 @@ impl gpui::Render for AgentChatView {
                     .text_color(p.text)
                     .child(markdown_text(text)),
                 Item::Note { text } => div()
+                    .w_full()
+                    .min_w(px(0.))
                     .my(px(6.))
                     .px(px(10.))
                     .py(px(7.))
@@ -990,8 +1019,11 @@ impl gpui::Render for AgentChatView {
             .child(
                 div()
                     .relative()
+                    .w_full()
+                    .min_w(px(0.))
                     .px(px(4.))
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(px(2.))
                     .child({
@@ -1001,6 +1033,7 @@ impl gpui::Render for AgentChatView {
                             format!("{cwd}\nSession: {session}")
                         };
                         chip("chat-local", icons::FOLDER, folder_label(&cwd), true, &p)
+                            .max_w(px(150.))
                             .tooltip(move |_, cx| {
                                 cx.new(|_| crate::sidebar::SpaceTooltip(session_hint.clone()))
                                     .into()
@@ -1019,6 +1052,7 @@ impl gpui::Render for AgentChatView {
                             true,
                             &p,
                         )
+                        .max_w(px(130.))
                         .on_click(cx.listener(
                             move |this, _: &gpui::ClickEvent, _, cx| {
                                 let i = Guard::ALL.iter().position(|g| *g == guard).unwrap_or(0);
@@ -1030,7 +1064,6 @@ impl gpui::Render for AgentChatView {
                             },
                         )),
                     )
-                    .child(div().flex_1())
                     .child(
                         chip(
                             "chat-model",
@@ -1039,6 +1072,8 @@ impl gpui::Render for AgentChatView {
                             true,
                             &p,
                         )
+                        .max_w(px(150.))
+                        .ml_auto()
                         .on_click(cx.listener(
                             |this, _: &gpui::ClickEvent, _, cx| {
                                 this.picker_open = !this.picker_open;

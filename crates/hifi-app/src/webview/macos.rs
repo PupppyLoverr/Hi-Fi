@@ -354,6 +354,7 @@ impl WebPaneHost {
             // black makes the masked region opaque (cosmos does the same).
             let color = NSColor::blackColor().CGColor();
             let _: () = msg_send![&*clip_mask, setBackgroundColor: &*color];
+            let _: () = msg_send![&*clip_mask, setCornerRadius: 10.0f64];
             let layer: *mut AnyObject = msg_send![&*clip, layer];
             let _: () = msg_send![layer, setMasksToBounds: true];
             let _: () = msg_send![layer, setMask: &*clip_mask];
@@ -502,8 +503,15 @@ impl WebPaneHost {
         } else {
             parent_height - y_top - h
         };
+        let bottom_corners = if self.parent.isFlipped() {
+            0b1100u64
+        } else {
+            0b0011u64
+        };
         unsafe {
             let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+            let _: () = msg_send![&*self.clip_mask, setGeometryFlipped: self.parent.isFlipped()];
+            let _: () = msg_send![&*self.clip_mask, setMaskedCorners: bottom_corners];
         }
         // Keep the host stationary; move only the mask + page frame.
         self.clip.setFrame(self.parent.bounds());

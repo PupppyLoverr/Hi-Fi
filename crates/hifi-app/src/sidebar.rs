@@ -97,7 +97,7 @@ pub fn mark_icon(command: &str) -> &'static str {
 
 pub fn kind_icon(tab: &Tab) -> &'static str {
     match tab.kind {
-        TabKind::Web => icons::GLOBE,
+        TabKind::Web => icons::GLOBAL,
         TabKind::NewTab => icons::MAGNIFER,
         TabKind::Terminal | TabKind::Agent => mark_icon(&tab.command),
         TabKind::Diff => icons::GIT_BRANCH,
@@ -114,7 +114,7 @@ pub fn tab_badge(tab: &Tab, size: f32, p: &Palette) -> gpui::AnyElement {
     if let Some(path) = favicon_path(tab) {
         return img(path).size(px(size)).rounded(px(3.)).into_any_element();
     }
-    glyph(icons::GLOBE, size, p.muted).into_any_element()
+    glyph(icons::GLOBAL, size, p.muted).into_any_element()
 }
 
 pub fn favicon_path(tab: &Tab) -> Option<PathBuf> {
@@ -363,6 +363,7 @@ impl Sidebar {
         label: impl Into<SharedString>,
         open: bool,
         trailing: Option<AnyElement>,
+        activate_group: bool,
         p: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -411,7 +412,7 @@ impl Sidebar {
                 if !this.collapsed.remove(&key) {
                     this.collapsed.insert(key.clone());
                 }
-                if key != PINNED_KEY {
+                if activate_group {
                     store.update(cx, |s, cx| s.set_active_group(&key, cx));
                 }
                 cx.notify();
@@ -564,8 +565,10 @@ impl gpui::Render for Sidebar {
                 .flex()
                 .items_center()
                 .gap(px(7.))
-                .rounded(px(7.))
-                .bg(p.ink(0.05))
+                .rounded(px(8.))
+                .bg(p.ink(0.04))
+                .border_1()
+                .border_color(p.hairline(0.08))
                 .cursor_pointer()
                 .hover(|s| s.bg(p.ink(0.08)))
                 .child(glyph(icons::MAGNIFER, 13., p.muted))
@@ -577,12 +580,7 @@ impl gpui::Render for Sidebar {
                         .child("Search or jump…"),
                 )
                 .when(!compact, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(p.faint)
-                            .child("⌘K / ⌘T"),
-                    )
+                    d.child(div().text_size(px(10.)).text_color(p.faint).child("⌘K"))
                 })
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     store_search.update(cx, |s, cx| s.toggle_command_bar(cx));
@@ -598,6 +596,7 @@ impl gpui::Render for Sidebar {
                 "PINNED",
                 !self.collapsed.contains(PINNED_KEY),
                 None,
+                false,
                 p,
                 cx,
             ));
@@ -684,6 +683,7 @@ impl gpui::Render for Sidebar {
                 "TODAY",
                 true,
                 Some(action),
+                false,
                 p,
                 cx,
             ));
@@ -707,6 +707,7 @@ impl gpui::Render for Sidebar {
                         name.clone(),
                         open,
                         None,
+                        true,
                         p,
                         cx,
                     ));
@@ -781,7 +782,7 @@ impl gpui::Render for Sidebar {
                         });
                     })
                     .into_any_element();
-                list = list.child(self.disclosure(id, id, title, open, Some(action), p, cx));
+                list = list.child(self.disclosure(id, id, title, open, Some(action), false, p, cx));
             }
             if !(open || compact) {
                 continue;
