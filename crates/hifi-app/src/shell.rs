@@ -18,6 +18,8 @@ use crate::store::Store;
 use crate::surface_chrome;
 use crate::terminal::TerminalPane;
 use crate::text_input::{TextField, TextFieldEvent};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::theme::Palette;
 use crate::theme::Theme;
 use crate::views::{DiffView, NewTabView, PreviewView, SettingsView, glyph};
 use crate::webview::{WakeSender, WebEvent, WebEventSender, WebPaneHost};
@@ -3094,19 +3096,7 @@ impl gpui::Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &crate::OpenSettings, _w, cx| {
                 this.store.update(cx, |s, cx| {
-                    let existing = s
-                        .state
-                        .active_space()
-                        .into_iter()
-                        .flat_map(|sp| &sp.groups)
-                        .flat_map(|g| g.tab_ids().into_iter().chain(g.dock.tabs.clone()))
-                        .find(|id| s.state.tab(id).is_some_and(|t| t.kind == TabKind::Settings));
-                    match existing {
-                        Some(id) => s.focus_tab(&id, cx),
-                        None => {
-                            s.open_tab("hifi://settings", None, None, cx);
-                        }
-                    }
+                    s.open_settings(cx);
                 });
             }))
             .on_action(cx.listener(|this, _: &crate::NewGroup, _w, cx| {

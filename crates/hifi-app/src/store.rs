@@ -272,6 +272,25 @@ impl Store {
         &self.state.settings
     }
 
+    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        let existing = self
+            .state
+            .active_space()
+            .into_iter()
+            .flat_map(|space| &space.groups)
+            .flat_map(|group| group.tab_ids().into_iter().chain(group.dock.tabs.clone()))
+            .find(|id| {
+                self.state
+                    .tab(id)
+                    .is_some_and(|tab| tab.kind == TabKind::Settings)
+            });
+        if let Some(id) = existing {
+            self.focus_tab(&id, cx);
+        } else {
+            self.open_tab("hifi://settings", None, None, cx);
+        }
+    }
+
     // ----- tab ops -----
 
     pub fn open_tab(

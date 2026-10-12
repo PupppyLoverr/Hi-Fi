@@ -393,7 +393,7 @@ impl WebPaneHost {
         }
 
         // Swallow browser chords while the webview is first responder and
-        // re-dispatch them through GPUI's keymap (cmd-t, cmd-w, …).
+        // re-dispatch them through GPUI's keymap (cmd-t, cmd-k, cmd-w, …).
         let monitor_view = view.clone();
         let monitor_tx = tx.clone();
         let monitor_tab = tab.clone();
@@ -428,6 +428,7 @@ impl WebPaneHost {
                 let mut browser_key = matches!(
                     combo.as_str(),
                     "cmd-t"
+                        | "cmd-k"
                         | "cmd-w"
                         | "cmd-l"
                         | "cmd-["

@@ -19,7 +19,7 @@ description: How to build, run and end-to-end test the Rust + GPUI rewrite of Hi
 - Theme/accent may only apply at startup (`Theme::install` in main.rs). If a live change does nothing, restart to confirm it was persisted.
 
 ## Keybindings (crates/hifi-app/src/main.rs `bind_keys`, `secondary-` = Cmd on macOS)
-Cmd+T command bar, Cmd+L address, Cmd+[ / Cmd+] back/forward, Cmd+R reload,
+Cmd+K / Cmd+T command bar, Cmd+L address, Cmd+[ / Cmd+] back/forward, Cmd+R reload,
 Alt+Cmd+B right dock, Cmd+Shift+N notes page, Cmd+, settings, Cmd+Q quit.
 Also test keys while a native WKWebView has focus: they are forwarded back to GPUI via `WebEvent::Keystroke`, and that path has caused re-entrancy panics before.
 
@@ -63,7 +63,7 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - The `computer` tool coordinate space is 1024x768 for a 1600pt-wide window; do not double coordinates from half-scale screenshots.
 
 ## Agent chat
-- Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+T opens the command bar; Enter on the highlighted "New tab" opens a New Tab.
+- Sidebar "+ New Tab" opens the New Tab page in the focused pane. Cmd+K and Cmd+T open the command bar; Enter on the highlighted "New tab" opens a New Tab.
 - Choose OpenCode in the harness chip, then send a prompt. Browser tasks run through the Hi-Fi MCP bridge and may take about 20s.
 - To test stop, send a message and click the stop button (same spot as send) within about 0.3s, then wait 5s to confirm nothing appears after "Stopped".
 - Sidebar "New Chat" opens a chat in the dock. Close split panes first to give the chat room.
@@ -77,3 +77,10 @@ Also test keys while a native WKWebView has focus: they are forwarded back to GP
 - Read split fractions from `~/Library/Application Support/HiFi/state.json` with a recursive JSON walk (the key nesting varies).
 - Running-agent pulse is a small blue dot on the row icon; take 3 zooms of the row within ~1s while "Working for Ns" is shown.
 - The checkout may be switched to another branch by the sidekick mid-run; read source with `git show <sha>:<path>` and keep testing the already-running binary.
+
+## Production polish (PR #5+) notes
+- Cmd+K (`secondary-k`) and Cmd+T (`secondary-t`) both open the command bar, including while a native webview has focus.
+- In the command bar the highlighted default is often "Open https://duckduckgo.com/?q=…"; press Down before Enter to switch to an open tab.
+- Sidebar caps: TODAY shows 8 rows and CHATS/SESSIONS/PAGES show 5, followed by "Show N more". The active tab past the cap is added as an extra row, so N drops by one. Count rows from a zoom of the sidebar.
+- Persisted chats in `~/Library/Application Support/HiFi/chats/*.json` with raw `- ` / `**` / backticks are good fixtures for markdown rendering. Click a tool error card to expand/collapse it.
+- The footer gear reuses an existing Settings tab in the active space, creating one only when none exists.

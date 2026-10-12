@@ -590,28 +590,9 @@ fn markdown_text(text: &str, p: Palette) -> gpui::AnyElement {
 }
 
 fn compact_error(error: &str) -> String {
-    let mut visible = String::new();
-    let mut truncated = false;
-    for (line_index, line) in error.lines().enumerate() {
-        if line_index >= 3 {
-            truncated = true;
-            break;
-        }
-        if line_index > 0 {
-            visible.push('\n');
-        }
-        let remaining = 300usize.saturating_sub(visible.chars().count());
-        let line_text: String = line.chars().take(remaining).collect();
-        truncated |= line_text.chars().count() < line.chars().count();
-        visible.push_str(&line_text);
-        if truncated {
-            break;
-        }
-    }
-    if visible != error {
-        truncated = true;
-    }
-    if truncated {
+    let mut chars = error.chars();
+    let mut visible: String = chars.by_ref().take(180).collect();
+    if chars.next().is_some() {
         visible.push('…');
     }
     visible
@@ -1039,7 +1020,7 @@ impl gpui::Render for AgentChatView {
                                             .text_size(px(11.5))
                                             .line_height(px(16.))
                                             .text_color(p.muted)
-                                            .when(!expanded, |d| d.line_clamp(3).overflow_hidden())
+                                            .when(!expanded, |d| d.line_clamp(3).text_ellipsis())
                                             .child(text),
                                     )
                                     .on_click(cx.listener(
@@ -1366,7 +1347,14 @@ impl gpui::Render for AgentChatView {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarkdownBlock, parse_inline, parse_markdown};
+    use super::{MarkdownBlock, compact_error, parse_inline, parse_markdown};
+
+    #[test]
+    fn compact_errors_truncate_after_180_characters() {
+        let error = "x".repeat(181);
+
+        assert_eq!(compact_error(&error), format!("{}…", "x".repeat(180)));
+    }
 
     #[test]
     fn parses_bullet_lines() {

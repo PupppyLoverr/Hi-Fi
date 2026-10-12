@@ -988,7 +988,7 @@ impl gpui::Render for Sidebar {
                     .tooltip(|_, cx| cx.new(|_| SpaceTooltip("Settings".into())).into())
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         store_settings.update(cx, |s, cx| {
-                            s.open_tab("hifi://settings", None, None, cx);
+                            s.open_settings(cx);
                         });
                     }),
             );

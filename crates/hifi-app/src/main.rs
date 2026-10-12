@@ -144,6 +144,7 @@ fn install_menus(cx: &mut App) {
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-t", CommandBar, None),
+        KeyBinding::new("secondary-k", CommandBar, None),
         KeyBinding::new("secondary-l", FocusAddress, None),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-r", ReloadPage, None),

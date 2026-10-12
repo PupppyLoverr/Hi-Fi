@@ -77,7 +77,7 @@ separate system processes (~100 MB RSS combined with one live page).
 
 | Key | Action |
 |-----|--------|
-| `⌘T` | command bar — URLs, open tabs across spaces, actions |
+| `⌘K` / `⌘T` | command bar — URLs, open tabs across spaces, actions |
 | `⌘L` | omnibox — edit the focused tab's address in place |
 | `⌘W` | close tab |
 | `⌘⇧]` / `⌘⇧[` | next / previous tab |

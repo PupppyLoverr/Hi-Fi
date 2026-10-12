@@ -1,4 +1,4 @@
-//! `⌘T` command bar — Spotlight-style launcher floating above content
+//! `⌘K` / `⌘T` command bar — Spotlight-style launcher floating above content
 //! (deferred element, so it composites over native webviews).
 
 use gpui::{
@@ -177,7 +177,7 @@ impl CommandBar {
                         s.open_tab("hifi://diff", None, None, cx);
                     }
                     Command::Settings => {
-                        s.open_tab("hifi://settings", None, None, cx);
+                        s.open_settings(cx);
                     }
                     Command::ToggleSidebar => {
                         s.sidebar_collapsed = !s.sidebar_collapsed;
