@@ -131,6 +131,11 @@ impl Palette {
         }
     }
 
+    /// Shell tint over the compositor-blurred desktop.
+    pub fn glass(&self) -> Hsla {
+        self.shell.opacity(GLASS_ALPHA)
+    }
+
     /// Floating popover card over the frost (cosmos `glass_overlay`).
     pub fn glass_overlay(&self) -> Hsla {
         if Theme::is_frost() {

@@ -5,6 +5,7 @@ use gpui::{
     Context, Entity, Focusable, Hsla, MouseButton, ScrollHandle, SharedString, Window, div, img,
     prelude::*, px, svg,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::assets::icons;
@@ -198,42 +199,43 @@ impl gpui::Render for NewTabView {
         }
 
         // Recent sessions first, then recently visited pages.
-        let mut cards: Vec<TaskCard> = store
-            .state
-            .tabs
-            .iter()
-            .rev()
-            .filter(|t| {
-                matches!(
-                    t.kind,
-                    hifi_core::TabKind::Agent | hifi_core::TabKind::Terminal
-                )
-            })
-            .take(6)
-            .map(|t| {
-                let place = if t.cwd.is_empty() {
-                    "Local".to_string()
+        let mut recent_keys = HashSet::new();
+        let mut cards = Vec::with_capacity(6);
+        for tab in store.state.tabs.iter().rev() {
+            let kind = match tab.kind {
+                hifi_core::TabKind::Agent => "agent",
+                hifi_core::TabKind::Terminal => "terminal",
+                _ => continue,
+            };
+            let title = if !tab.prompt.is_empty() {
+                tab.prompt.clone()
+            } else {
+                tab.display_title()
+            };
+            if !recent_keys.insert((kind, title.clone())) {
+                continue;
+            }
+            let place = if tab.cwd.is_empty() {
+                "Local".to_string()
+            } else {
+                basename_of(&tab.cwd)
+            };
+            cards.push(TaskCard {
+                id: Some(tab.id.clone()),
+                url: String::new(),
+                title,
+                meta: if tab.branch.is_empty() {
+                    place
                 } else {
-                    basename_of(&t.cwd)
-                };
-                TaskCard {
-                    id: Some(t.id.clone()),
-                    url: String::new(),
-                    title: if !t.prompt.is_empty() {
-                        t.prompt.clone()
-                    } else {
-                        t.display_title()
-                    },
-                    meta: if t.branch.is_empty() {
-                        place
-                    } else {
-                        format!("{place} · {}", t.branch)
-                    },
-                    icon: crate::sidebar::kind_icon(t),
-                    favicon_url: String::new(),
-                }
-            })
-            .collect();
+                    format!("{place} · {}", tab.branch)
+                },
+                icon: crate::sidebar::kind_icon(tab),
+                favicon_url: String::new(),
+            });
+            if cards.len() == 6 {
+                break;
+            }
+        }
         for entry in store.history.iter().rev() {
             if cards.len() >= 6 {
                 break;
@@ -249,14 +251,18 @@ impl gpui::Render for NewTabView {
                 .find(|tab| tab.url == entry.url)
                 .map(|tab| tab.favicon_url.clone())
                 .unwrap_or_default();
+            let title = if entry.title.is_empty() {
+                host.clone()
+            } else {
+                entry.title.clone()
+            };
+            if !recent_keys.insert(("web", title.clone())) {
+                continue;
+            }
             cards.push(TaskCard {
                 id: None,
                 url: entry.url.clone(),
-                title: if entry.title.is_empty() {
-                    host.clone()
-                } else {
-                    entry.title.clone()
-                },
+                title,
                 meta: host,
                 icon: icons::GLOBE,
                 favicon_url,
@@ -799,6 +805,7 @@ impl gpui::Render for SettingsView {
             .px(px(10.))
             .flex()
             .items_center()
+            .text_size(px(13.))
             .rounded(px(6.))
             .bg(p.ink(0.03))
             .border_1()

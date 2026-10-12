@@ -2278,11 +2278,7 @@ impl Shell {
                     .overflow_hidden()
                     .border_l_1()
                     .border_color(p.border)
-                    .bg(if Theme::is_frost() {
-                        p.bg.opacity(0.4)
-                    } else {
-                        p.bg
-                    })
+                    .bg(p.bg)
                     .child(body),
             )
             .when_some(menu, |d, m| d.child(m))
@@ -2963,7 +2959,7 @@ impl gpui::Render for Shell {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.bg)
+            .when(!Theme::is_frost(), |root| root.bg(p.bg))
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -3109,7 +3105,7 @@ impl gpui::Render for Shell {
                         .bottom_0()
                         .left_0()
                         .w(px(sidebar_now))
-                        .bg(p.wash(0.03))
+                        .bg(p.glass())
                         .border_r_1()
                         .border_color(p.border),
                 )
@@ -3171,7 +3167,15 @@ impl gpui::Render for Shell {
                             }),
                     );
                 }
-                row = row.child(div().flex_1().min_w(px(0.)).h_full().flex().child(content));
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .flex()
+                        .bg(p.bg)
+                        .child(content),
+                );
                 if dock_open {
                     row = row.child(
                         div()
