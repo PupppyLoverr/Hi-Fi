@@ -665,9 +665,8 @@ fn parse_image_line(line: &str) -> Option<(String, String)> {
     let src = rest.strip_suffix(')')?;
     let absolute = src.starts_with("http://")
         || src.starts_with("https://")
-        || Path::new(src).is_absolute()
-        || (src.as_bytes().get(1) == Some(&b':')
-            && src.as_bytes().first().is_some_and(u8::is_ascii_alphabetic));
+        || src.starts_with('/')
+        || Path::new(src).is_absolute();
     absolute.then(|| (alt.to_string(), src.to_string()))
 }
 
@@ -2021,6 +2020,18 @@ mod tests {
             Some(("local".into(), "/tmp/local.png".into()))
         );
         assert_eq!(parse_image_line("![relative](images/diagram.png)"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_absolute_markdown_images() {
+        assert_eq!(
+            parse_image_line(r"![local](C:\Users\devin\Documents\diagram.png)"),
+            Some((
+                "local".into(),
+                r"C:\Users\devin\Documents\diagram.png".into()
+            ))
+        );
     }
 
     #[test]
