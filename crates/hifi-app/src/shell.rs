@@ -54,6 +54,15 @@ impl gpui::Render for DragGhost {
     }
 }
 
+fn accepts_nav_url(kind: TabKind) -> bool {
+    kind == TabKind::Web
+}
+
+fn accepts_native_title(kind: TabKind, title: &str) -> bool {
+    kind == TabKind::Web
+        || (!title.trim().is_empty() && !title.trim().eq_ignore_ascii_case("about:blank"))
+}
+
 /// One in-flight IPC request waiting on the UI.
 pub struct IpcJob {
     pub request: hifi_core::IpcRequest,
@@ -445,27 +454,25 @@ impl Shell {
         for ev in web {
             match ev {
                 WebEvent::Title { tab, title } => {
-                    let is_empty_notes_title = self
-                        .store
-                        .read(cx)
-                        .state
-                        .tab(&tab)
-                        .is_some_and(|tab| tab.kind == TabKind::Notes && title.is_empty());
-                    if !is_empty_notes_title {
+                    let kind = self.store.read(cx).state.tab(&tab).map(|tab| tab.kind);
+                    if kind.is_some_and(|kind| accepts_native_title(kind, &title)) {
                         self.store.update(cx, |s, cx| {
                             s.tab_meta_update(&tab, Some(title), None, None, None, None, cx);
                         });
                     }
                 }
                 WebEvent::Url { tab, url } => {
-                    if url.starts_with("hifi://") {
-                        self.store.update(cx, |s, cx| {
-                            s.open_tab(&url, None, None, cx);
-                        });
-                    } else {
-                        self.store.update(cx, |s, cx| {
-                            s.tab_meta_update(&tab, None, Some(url), None, None, None, cx);
-                        });
+                    let kind = self.store.read(cx).state.tab(&tab).map(|tab| tab.kind);
+                    if kind.is_some_and(accepts_nav_url) {
+                        if url.starts_with("hifi://") {
+                            self.store.update(cx, |s, cx| {
+                                s.open_tab(&url, None, None, cx);
+                            });
+                        } else {
+                            self.store.update(cx, |s, cx| {
+                                s.tab_meta_update(&tab, None, Some(url), None, None, None, cx);
+                            });
+                        }
                     }
                 }
                 WebEvent::Loading { tab, loading } => {
@@ -3443,5 +3450,28 @@ impl gpui::Render for Shell {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accepts_native_title, accepts_nav_url};
+    use hifi_core::TabKind;
+
+    #[test]
+    fn native_navigation_urls_only_update_web_tabs() {
+        assert!(accepts_nav_url(TabKind::Web));
+        for kind in [TabKind::Notes, TabKind::Preview, TabKind::Settings] {
+            assert!(!accepts_nav_url(kind));
+        }
+    }
+
+    #[test]
+    fn non_web_titles_ignore_blank_navigation_titles() {
+        assert!(!accepts_native_title(TabKind::Preview, ""));
+        assert!(!accepts_native_title(TabKind::Notes, "about:blank"));
+        assert!(!accepts_native_title(TabKind::Preview, " ABOUT:BLANK "));
+        assert!(accepts_native_title(TabKind::Preview, "report.docx"));
+        assert!(accepts_native_title(TabKind::Web, ""));
     }
 }
