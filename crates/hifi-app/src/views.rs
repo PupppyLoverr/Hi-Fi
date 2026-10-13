@@ -30,9 +30,9 @@ pub struct NewTabView {
     picker_open: bool,
 }
 
-const ASK_PLACEHOLDER: &str = "Ask anything or search…";
-const ASK_COMPACT_PLACEHOLDER: &str = "Ask or search…";
-const SEARCH_PLACEHOLDER: &str = "Search Google or type a URL";
+const ASK_PLACEHOLDER: &str = "Ask AI a task, @ for context";
+const ASK_COMPACT_PLACEHOLDER: &str = "Ask AI a task, @ for context";
+const SEARCH_PLACEHOLDER: &str = "Search or type a URL";
 
 impl NewTabView {
     pub fn new(
@@ -128,28 +128,35 @@ fn composer_pill(
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
     let p = *p;
+    let label: SharedString = label.into();
+    let icon_only = label.is_empty();
     div()
         .id(id.into())
         .flex()
         .items_center()
         .gap(px(5.))
-        .h(px(24.))
-        .px(px(6.))
-        .rounded(px(6.))
+        .h(px(28.))
+        .px(px(8.))
+        .when(icon_only, |d| {
+            d.w(px(28.)).px(px(0.)).justify_center().gap(px(0.))
+        })
+        .rounded(px(8.))
         .cursor_pointer()
-        .text_size(px(12.))
+        .text_size(px(12.5))
         .text_color(p.muted)
         .hover(|s| s.bg(p.glass_hover()).text_color(p.text))
         .child(glyph(icon, 13., p.muted))
-        .child(
-            div()
-                .min_w(px(0.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(label.into()),
-        )
-        .when(chevron, |d| {
+        .when(!icon_only, |d| {
+            d.child(
+                div()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label),
+            )
+        })
+        .when(chevron && !icon_only, |d| {
             d.child(glyph(icons::ALT_ARROW_DOWN, 10., p.faint))
         })
 }
@@ -158,9 +165,34 @@ struct TaskCard {
     id: Option<String>,
     url: String,
     title: String,
-    meta: String,
-    icon: &'static str,
-    favicon_url: String,
+    preview: String,
+    time: String,
+    running: bool,
+}
+
+fn relative_time(timestamp: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(timestamp);
+    let elapsed = now.saturating_sub(timestamp);
+    match elapsed {
+        0..=59 => "Now".into(),
+        60..=3_599 => format!("{}m ago", elapsed / 60),
+        3_600..=86_399 => format!("{}h ago", elapsed / 3_600),
+        86_400..=172_799 => "Yesterday".into(),
+        _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
+fn modified_timestamp(path: &std::path::Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs() as i64)
 }
 
 impl gpui::Render for NewTabView {
@@ -200,7 +232,7 @@ impl gpui::Render for NewTabView {
 
         // Recent sessions first, then recently visited pages.
         let mut recent_keys = HashSet::new();
-        let mut cards = Vec::with_capacity(6);
+        let mut cards = Vec::with_capacity(3);
         for tab in store.state.tabs.iter().rev() {
             let kind = match tab.kind {
                 hifi_core::TabKind::Agent => "agent",
@@ -220,37 +252,34 @@ impl gpui::Render for NewTabView {
             } else {
                 basename_of(&tab.cwd)
             };
+            let chat_path = store.paths.chats_dir().join(format!("{}.json", tab.id));
             cards.push(TaskCard {
                 id: Some(tab.id.clone()),
                 url: String::new(),
                 title,
-                meta: if tab.branch.is_empty() {
-                    place
+                preview: if kind == "agent" {
+                    crate::agent_chat::latest_assistant_preview(&chat_path)
+                        .unwrap_or_else(|| place.clone())
                 } else {
-                    format!("{place} · {}", tab.branch)
+                    place
                 },
-                icon: crate::sidebar::kind_icon(tab),
-                favicon_url: String::new(),
+                time: modified_timestamp(&chat_path)
+                    .map(relative_time)
+                    .unwrap_or_else(|| "Today".into()),
+                running: store.running_agents.contains(&tab.id),
             });
-            if cards.len() == 6 {
+            if cards.len() == 3 {
                 break;
             }
         }
         for entry in store.history.iter().rev() {
-            if cards.len() >= 6 {
+            if cards.len() >= 3 {
                 break;
             }
             if cards.iter().any(|c| c.url == entry.url) {
                 continue;
             }
             let host = hifi_core::host_of(&entry.url);
-            let favicon_url = store
-                .state
-                .tabs
-                .iter()
-                .find(|tab| tab.url == entry.url)
-                .map(|tab| tab.favicon_url.clone())
-                .unwrap_or_default();
             let title = if entry.title.is_empty() {
                 host.clone()
             } else {
@@ -263,9 +292,9 @@ impl gpui::Render for NewTabView {
                 id: None,
                 url: entry.url.clone(),
                 title,
-                meta: host,
-                icon: icons::GLOBE,
-                favicon_url,
+                preview: host,
+                time: relative_time(entry.visited_at),
+                running: false,
             });
         }
 
@@ -280,18 +309,27 @@ impl gpui::Render for NewTabView {
         };
         let h_icon = crate::sidebar::mark_icon(&harness);
         let ask = self.ask;
+        let compact_width = f32::from(window.viewport_size().width) < 760.;
 
         let mode_seg = |label: &'static str, on: bool, id: &'static str| {
             div()
                 .id(id)
-                .h(px(26.))
+                .h(px(28.))
                 .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(7.))
+                .rounded(px(8.))
                 .cursor_pointer()
                 .text_size(px(12.5))
-                .when(on, |d| d.bg(p.ink(0.10)).text_color(p.text))
+                .when(on, |d| {
+                    if p.is_dark {
+                        d.bg(p.raised).text_color(p.text)
+                    } else {
+                        d.bg(p.pill()).text_color(p.text).shadow(vec![
+                            gpui::BoxShadow::new(px(0.), px(1.), p.ink(0.06)).blur_radius(px(2.)),
+                        ])
+                    }
+                })
                 .when(!on, |d| {
                     d.text_color(p.muted).hover(|s| s.text_color(p.text))
                 })
@@ -301,26 +339,28 @@ impl gpui::Render for NewTabView {
         let composer = div()
             .id("composer")
             .w_full()
-            .max_w(px(620.))
-            .h(px(46.))
-            .pl(px(14.))
-            .pr(px(4.))
+            .max_w(px(680.))
+            .min_h(px(52.))
+            .pl(px(16.))
+            .pr(px(6.))
+            .py(px(6.))
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(10.))
-            .rounded(px(12.))
-            .bg(if p.is_dark {
-                p.dialog.opacity(0.9)
+            .rounded(px(14.))
+            .bg(if has_image {
+                gpui::black().opacity(0.35)
             } else {
-                gpui::white().opacity(0.96)
+                p.card
             })
             .border_1()
             .border_color(if self.input.read(cx).focus_handle(cx).is_focused(window) {
                 p.border_strong
             } else {
-                p.hairline(0.22)
+                p.border
             })
-            .shadow_md()
+            .shadow(p.shadow_card())
             .capture_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
                 let k = &e.keystroke;
                 if k.key == "tab" && !k.modifiers.modified() {
@@ -331,11 +371,9 @@ impl gpui::Render for NewTabView {
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    .min_w(px(180.))
                     .text_size(px(14.))
-                    .text_color(p.text)
+                    .text_color(fg)
                     .child(self.input.clone()),
             )
             .child(
@@ -345,8 +383,29 @@ impl gpui::Render for NewTabView {
                     .items_center()
                     .p(px(3.))
                     .gap(px(2.))
-                    .rounded(px(9.))
-                    .bg(p.ink(0.05))
+                    .h(px(28.))
+                    .rounded(px(8.))
+                    .bg(p.ink(0.04))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(6.))
+                            .text_size(px(11.))
+                            .text_color(p.faint)
+                            .when(!compact_width, |d| {
+                                d.child(
+                                    div()
+                                        .px(px(4.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(p.border)
+                                        .child("Tab"),
+                                )
+                                .child("to switch")
+                            }),
+                    )
                     .child(mode_seg("Search", !ask, "mode-search").on_click(
                         cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.set_mode(false, cx)),
                     ))
@@ -399,50 +458,57 @@ impl gpui::Render for NewTabView {
             .relative()
             .w_full()
             .min_w(px(0.))
-            .max_w(px(620.))
+            .max_w(px(680.))
             .px(px(4.))
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(2.))
+            .gap(px(8.))
             .child(
-                composer_pill("ctl-add", icons::PAPERCLIP, "", false, &p).on_click(
-                    move |_, _, cx| {
-                        store_ctx.update(cx, |s, cx| s.dock_open("hifi://notes", cx));
-                    },
-                ),
+                composer_pill("ctl-add", icons::PLUS, "", false, &p).on_click(move |_, _, cx| {
+                    store_ctx.update(cx, |s, cx| s.dock_open("hifi://notes", cx));
+                }),
             )
             .child(
-                composer_pill("ctl-local", icons::FOLDER, folder, true, &p).on_click(
-                    move |_, _, cx| {
-                        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-                            files: false,
-                            directories: true,
-                            multiple: false,
-                            prompt: Some("Use folder".into()),
-                        });
-                        let store = store_cwd.clone();
-                        cx.spawn(async move |cx| {
-                            if let Ok(Ok(Some(paths))) = rx.await
-                                && let Some(path) = paths.first()
-                            {
-                                let cwd = path.display().to_string();
-                                cx.update(|cx| {
-                                    store.update(cx, |s, cx| {
-                                        s.update_settings(|st| st.agent_cwd = cwd, cx)
-                                    })
-                                });
-                            }
-                        })
-                        .detach();
-                    },
-                ),
+                composer_pill(
+                    "ctl-local",
+                    icons::FOLDER,
+                    if compact_width { String::new() } else { folder },
+                    true,
+                    &p,
+                )
+                .on_click(move |_, _, cx| {
+                    let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple: false,
+                        prompt: Some("Use folder".into()),
+                    });
+                    let store = store_cwd.clone();
+                    cx.spawn(async move |cx| {
+                        if let Ok(Ok(Some(paths))) = rx.await
+                            && let Some(path) = paths.first()
+                        {
+                            let cwd = path.display().to_string();
+                            cx.update(|cx| {
+                                store.update(cx, |s, cx| {
+                                    s.update_settings(|st| st.agent_cwd = cwd, cx)
+                                })
+                            });
+                        }
+                    })
+                    .detach();
+                }),
             )
             .child(
                 composer_pill(
                     "ctl-guard",
                     icons::SHIELD,
-                    format!("Guard · {}", guard.label()),
+                    if compact_width {
+                        String::new()
+                    } else {
+                        format!("Guard · {}", guard.label())
+                    },
                     true,
                     &p,
                 )
@@ -462,7 +528,11 @@ impl gpui::Render for NewTabView {
                     composer_pill(
                         "ctl-model",
                         h_icon,
-                        crate::agent_runner::model_short(&model).to_string(),
+                        if compact_width {
+                            String::new()
+                        } else {
+                            crate::agent_runner::model_short(&model).to_string()
+                        },
                         true,
                         &p,
                     )
@@ -485,66 +555,81 @@ impl gpui::Render for NewTabView {
             .flex_col()
             .items_center()
             .w_full()
-            .max_w(px(620.))
+            .max_w(px(680.))
             .px(space::LG)
-            .pt(window.viewport_size().height * 0.22)
             .gap(px(10.))
             .child(div().mb(px(18.)).child(glyph(
                 icons::HIFI_MARK,
-                44.,
+                40.,
                 fg.opacity(if has_image { 0.9 } else { 0.28 }),
             )))
             .child(composer)
             .child(controls);
 
         if !cards.is_empty() {
-            let mut row = div().w_full().flex().flex_col().gap(px(1.));
+            let mut row = div().w_full().flex().items_stretch().gap(px(12.));
             for (i, card) in cards.into_iter().enumerate() {
                 let store = self.store.clone();
                 let TaskCard {
                     id,
                     url,
                     title,
-                    meta,
-                    icon,
-                    favicon_url,
+                    preview,
+                    time,
+                    running,
                 } = card;
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("task-{i}")))
-                        .w_full()
-                        .h(px(36.))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .min_h(px(112.))
                         .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .px(px(10.))
-                        .rounded(px(7.))
+                        .flex_col()
+                        .gap(px(5.))
+                        .p(px(14.))
+                        .rounded(px(12.))
+                        .bg(if has_image {
+                            gpui::black().opacity(0.35)
+                        } else {
+                            p.card
+                        })
+                        .border_1()
+                        .border_color(p.border)
                         .cursor_pointer()
                         .hover(|s| s.bg(p.glass_hover()))
                         .child(
-                            if let Some(path) = crate::sidebar::favicon_file(&favicon_url) {
-                                img(path).size(px(16.)).rounded(px(3.)).into_any_element()
-                            } else {
-                                glyph(icon, 16., p.muted).into_any_element()
-                            },
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(div().text_size(px(12.)).text_color(p.faint).child(time))
+                                .child(div().flex_1())
+                                .when(running, |d| {
+                                    d.child(div().size(px(6.)).rounded_full().bg(p.text))
+                                }),
                         )
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(12.5))
-                                .text_color(p.text)
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_size(px(14.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(fg)
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .child(title),
                         )
                         .child(
                             div()
-                                .flex_none()
-                                .max_w(px(150.))
-                                .truncate()
-                                .text_size(px(10.5))
-                                .text_color(p.faint)
-                                .child(meta),
+                                .flex_1()
+                                .min_h(px(0.))
+                                .overflow_hidden()
+                                .text_size(px(12.5))
+                                .text_color(if has_image { fg.opacity(0.7) } else { p.muted })
+                                .line_clamp(2)
+                                .child(preview),
                         )
                         .on_click(move |_, _, cx| {
                             store.update(cx, |s, cx| match &id {
@@ -556,26 +641,12 @@ impl gpui::Render for NewTabView {
                         }),
                 );
             }
-            hero = hero.child(
-                div()
-                    .w_full()
-                    .mt(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .px(px(10.))
-                            .py(px(5.))
-                            .text_size(px(12.))
-                            .text_color(p.faint)
-                            .child("Recent"),
-                    )
-                    .child(row),
-            );
+            hero = hero.child(div().w_full().mt(px(12.)).flex().flex_col().child(row));
         }
 
-        root.child(hero).child(div().h(px(32.)).flex_none())
+        root.child(div().h(gpui::relative(0.30)).min_h(px(48.)).flex_none())
+            .child(hero)
+            .child(div().h(px(32.)).flex_none())
     }
 }
 
@@ -640,20 +711,21 @@ fn settings_section(
     div()
         .flex()
         .flex_col()
-        .gap(px(7.))
+        .gap(px(8.))
         .child(
             div()
-                .text_size(px(12.))
-                .text_color(p.faint)
-                .child(title.to_uppercase()),
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(p.text)
+                .child(title.to_string()),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded(px(10.))
-                .bg(if p.is_dark { p.card } else { p.ink(0.03) })
+                .rounded(px(12.))
+                .bg(p.card)
                 .border_1()
                 .border_color(p.border)
                 .children(rows),
@@ -669,54 +741,49 @@ fn settings_row(
     wide_control: bool,
     natural_width: bool,
 ) -> gpui::Div {
-    let mut control_side = div().flex_1().min_w(px(0.)).flex().justify_end();
-    if natural_width {
-        control_side = div()
-            .w(px(340.))
-            .min_w(px(0.))
-            .flex()
-            .justify_end()
-            .flex_none()
-            .flex_grow_1()
-            .max_w(gpui::relative(1.));
-    } else if wide_control {
-        control_side = control_side
-            .flex_basis(px(340.))
-            .flex_shrink_0()
-            .min_w(px(250.))
-            .max_w(gpui::relative(1.));
+    let mut control_side = div()
+        .min_w(px(0.))
+        .max_w(gpui::relative(1.))
+        .flex_none()
+        .flex()
+        .items_center();
+    if wide_control && !natural_width {
+        control_side = control_side.w(px(210.));
     }
 
     div()
-        .min_h(px(44.))
-        .px(px(12.))
+        .w_full()
+        .min_w(px(0.))
+        .min_h(px(if detail.is_some() { 64. } else { 52. }))
+        .px(px(16.))
         .flex()
         .flex_wrap()
         .items_center()
-        .gap(px(8.))
+        .gap(px(16.))
         .when(!last, |d| d.border_b_1().border_color(p.hairline(0.12)))
         .child(
             div()
-                .flex_none()
-                .min_w(px(if wide_control || detail.is_some() {
-                    180.
-                } else {
-                    0.
-                }))
+                .flex_1()
+                .min_w(px(0.))
+                .flex_basis(px(108.))
                 .flex()
                 .flex_col()
                 .gap(px(1.))
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_size(px(13.5))
                         .text_color(p.text)
+                        .font_weight(gpui::FontWeight::MEDIUM)
                         .whitespace_nowrap()
+                        .text_ellipsis()
                         .child(title.to_string()),
                 )
                 .when_some(detail, |d, detail| {
                     d.child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(12.5))
                             .text_color(p.faint)
                             .child(detail.to_string()),
                     )
@@ -729,7 +796,7 @@ fn settings_switch(id: &str, on: bool, p: &Palette) -> gpui::Stateful<gpui::Div>
     div()
         .id(SharedString::from(id.to_string()))
         .w(px(36.))
-        .h(px(20.))
+        .h(px(22.))
         .px(px(3.))
         .flex()
         .items_center()
@@ -738,7 +805,7 @@ fn settings_switch(id: &str, on: bool, p: &Palette) -> gpui::Stateful<gpui::Div>
         .rounded_full()
         .cursor_pointer()
         .bg(if on { p.text } else { p.ink(0.15) })
-        .child(div().size(px(14.)).rounded_full().bg(p.bg))
+        .child(div().size(px(16.)).rounded_full().bg(p.bg))
 }
 
 fn settings_segment(
@@ -749,15 +816,23 @@ fn settings_segment(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(SharedString::from(id.to_string()))
-        .h(px(28.))
+        .h(px(30.))
         .px(px(10.))
         .flex()
         .items_center()
-        .rounded(px(7.))
+        .rounded(px(8.))
         .cursor_pointer()
-        .text_size(px(11.5))
+        .text_size(px(12.5))
         .text_color(if selected { p.text } else { p.muted })
-        .when(selected, |d| d.bg(p.ink(0.10)))
+        .when(selected, |d| {
+            if p.is_dark {
+                d.bg(p.raised)
+            } else {
+                d.bg(p.pill()).shadow(vec![
+                    gpui::BoxShadow::new(px(0.), px(1.), p.ink(0.06)).blur_radius(px(2.)),
+                ])
+            }
+        })
         .child(title.to_string())
 }
 
@@ -768,15 +843,17 @@ impl gpui::Render for SettingsView {
         let store = self.store.clone();
         let mut page = div()
             .w_full()
-            .max_w(px(640.))
-            .p(px(28.))
+            .max_w(px(720.))
+            .px(px(40.))
+            .pt(px(40.))
+            .pb(px(40.))
             .flex()
             .flex_col()
-            .gap(px(20.))
+            .gap(px(24.))
             .text_color(p.text)
             .child(
                 div()
-                    .text_size(px(20.))
+                    .text_size(px(22.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Settings"),
             );
@@ -789,7 +866,7 @@ impl gpui::Render for SettingsView {
                 .p(px(3.))
                 .flex()
                 .gap(px(2.))
-                .rounded(px(9.))
+                .rounded(px(8.))
                 .bg(p.ink(0.05))
                 .children(
                     [
@@ -822,14 +899,14 @@ impl gpui::Render for SettingsView {
             .flex()
             .items_center()
             .justify_end()
-            .gap(px(7.))
+            .gap(px(6.))
             .children(crate::theme::ACCENTS.iter().map(|(name, dark_v, light_v)| {
                 let store = accent_store.clone();
                 let selected = accent == *name;
                 let swatch = crate::theme::color(if p.is_dark { *dark_v } else { *light_v });
                 div()
                     .id(SharedString::from(format!("acc-{name}")))
-                    .size(px(18.))
+                    .size(px(16.))
                     .rounded_full()
                     .bg(swatch)
                     .cursor_pointer()
@@ -855,16 +932,16 @@ impl gpui::Render for SettingsView {
         let mut bg_control = div()
             .w_full()
             .min_w(px(0.))
-            .h(px(32.))
+            .h(px(30.))
             .px(px(10.))
             .flex()
             .items_center()
             .gap(px(8.))
             .text_size(px(13.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .bg(p.ink(0.03))
             .border_1()
-            .border_color(p.border)
+            .border_color(p.border_strong)
             .child(div().flex_1().min_w(px(0.)).child(self.bg_field.clone()));
         if !settings.background_image.is_empty() {
             bg_control = bg_control.child(
@@ -944,23 +1021,24 @@ impl gpui::Render for SettingsView {
 
         let composio_field = self.composio_field.clone();
         let composio_key = div()
-            .w(px(220.))
+            .w(px(210.))
             .max_w(gpui::relative(1.))
             .flex_none()
             .flex()
             .flex_col()
             .items_start()
             .gap(px(5.))
+            .text_size(px(13.))
             .child(
                 div()
                     .w_full()
-                    .h(px(32.))
+                    .h(px(30.))
                     .px(px(8.))
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
+                    .rounded(px(8.))
                     .border_1()
-                    .border_color(p.border)
+                    .border_color(p.border_strong)
                     .bg(if p.is_dark { p.card } else { p.ink(0.02) })
                     .child(composio_field),
             )
@@ -984,10 +1062,8 @@ impl gpui::Render for SettingsView {
         let computer_use_store = store.clone();
         let computer_use = settings.computer_use;
         let driver_status = driver_path
-            .map(|path| format!("Cua driver found at {path}"))
-            .unwrap_or_else(|| {
-                "Install cua-driver to enable: https://github.com/trycua/cua".into()
-            });
+            .map(|path| format!("Installed · {path}"))
+            .unwrap_or_else(|| "Not installed".into());
         page = page.child(settings_section(
             "Integrations",
             &p,
@@ -1023,13 +1099,18 @@ impl gpui::Render for SettingsView {
                 )
                 .into_any_element(),
                 settings_row(
-                    "Cua driver",
-                    Some(&driver_status),
-                    div().text_color(p.faint).child("Status"),
+                    "CUA driver",
+                    None,
+                    div()
+                        .min_w(px(0.))
+                        .text_size(px(12.))
+                        .text_color(p.muted)
+                        .truncate()
+                        .child(driver_status),
                     &p,
                     true,
                     false,
-                    false,
+                    true,
                 )
                 .into_any_element(),
             ],

@@ -7,13 +7,13 @@ use std::{collections::HashSet, time::Duration};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, ClickEvent, Context, Entity, MouseButton, ScrollHandle,
-    SharedString, Window, div, hsla, img, point, prelude::*, px,
+    SharedString, Window, div, img, point, prelude::*, px,
 };
 use std::path::PathBuf;
 
 use crate::assets::icons;
 use crate::store::Store;
-use crate::theme::{Palette, Theme};
+use crate::theme::{Palette, ROW_H, ROW_RADIUS, SECTION_HEADER_H, SIDEBAR_WIDTH, Theme};
 use crate::views::glyph;
 use hifi_core::{SplitNode, Tab, TabId, TabKind};
 
@@ -39,8 +39,6 @@ impl gpui::Render for SpaceTooltip {
 pub const COMPACT_WIDTH: f32 = 76.;
 /// cosmos `shell/spaces.rs` section metrics.
 const SIDEBAR_SECTION_GAP: f32 = 12.0;
-#[allow(dead_code)]
-const SIDEBAR_DISCLOSURE_BODY_INSET: f32 = 4.0;
 const PINNED_KEY: &str = "__pinned";
 
 pub struct Sidebar {
@@ -215,16 +213,16 @@ impl Sidebar {
                         "sb-list-action-{key}-{}",
                         if show_more { "more" } else { "less" }
                     )))
-                    .h(px(Theme::ROW_H))
+                    .h(px(ROW_H))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .pl(px(46.))
+                    .pl(px(36.))
                     .pr(px(8.))
-                    .rounded(px(8.))
+                    .rounded(px(9.))
                     .cursor_pointer()
                     .hover(|s| s.bg(p.glass_hover()))
-                    .text_size(px(12.))
+                    .text_size(px(12.5))
                     .text_color(p.faint)
                     .child(label)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -243,22 +241,29 @@ impl Sidebar {
     fn tab_row(&self, tab: &Tab, active: bool, compact: bool, p: Palette) -> gpui::AnyElement {
         let store_f = self.store.clone();
         let store_m = self.store.clone();
-        let store_x = self.store.clone();
         let store_r = self.store.clone();
-        let (tid, tid_m, tid_x) = (tab.id.clone(), tab.id.clone(), tab.id.clone());
+        let (tid, tid_m) = (tab.id.clone(), tab.id.clone());
         let tid_r = tab.id.clone();
         let status = if self.failed_agents.contains(&tab.id) {
-            glyph(icons::DANGER_TRIANGLE, 12., p.danger).into_any_element()
-        } else if self.running_agents.contains(&tab.id) {
             div()
                 .size(px(6.))
+                .flex_none()
                 .rounded_full()
                 .bg(p.text)
+                .into_any_element()
+        } else if self.running_agents.contains(&tab.id) {
+            div()
+                .size(px(12.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
                 .with_animation(
                     SharedString::from(format!("agent-pulse-{}", tab.id)),
                     Animation::new(Duration::from_millis(1200)).repeat(),
-                    |dot, delta| dot.opacity(0.4 + 0.6 * delta),
+                    |spinner, delta| spinner.opacity(0.55 + 0.45 * delta),
                 )
+                .child(glyph(icons::REFRESH, 10., p.muted))
                 .into_any_element()
         } else {
             div().size(px(6.)).flex_none().into_any_element()
@@ -269,29 +274,27 @@ impl Sidebar {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
-            .px(px(8.))
-            .h(px(Theme::ROW_H))
-            .rounded(px(Theme::ROW_RADIUS))
+            .gap(px(10.))
+            .px(px(10.))
+            .h(px(ROW_H))
+            .rounded(px(ROW_RADIUS))
             .cursor_pointer()
             .when(compact, |d| d.justify_center())
             .when(active, |d| {
-                d.bg(p.pill()).when(!p.is_dark, |d| {
-                    d.shadow_xs().border_1().border_color(p.hairline(0.04))
-                })
+                d.bg(p.pill()).shadow(vec![
+                    gpui::BoxShadow::new(px(0.), px(1.), p.ink(0.06)).blur_radius(px(2.)),
+                ])
             })
             .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
             .child(tab_badge(tab, 16., &p))
-            .child(status)
             .when(!compact, |d| {
-                let sub = row_subtitle(tab);
                 d.child(
                     div()
                         .flex_1()
                         .min_w(px(0.))
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(10.))
                         .child(
                             div()
                                 .flex_1()
@@ -299,7 +302,7 @@ impl Sidebar {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .text_size(px(13.))
+                                .text_size(px(13.5))
                                 .line_height(px(17.))
                                 .text_color(
                                     if tab.kind == TabKind::Notes
@@ -313,42 +316,10 @@ impl Sidebar {
                                     },
                                 )
                                 .child(row_title(tab)),
-                        )
-                        .when_some(sub, |d, sub| {
-                            d.child(
-                                div()
-                                    .max_w(px(90.))
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_size(px(10.5))
-                                    .text_color(p.faint)
-                                    .opacity(0.)
-                                    .group_hover("sb-row", |s| s.opacity(1.))
-                                    .child(sub),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("close-{}", tab.id)))
-                        .size(px(18.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .opacity(0.)
-                        .group_hover("sb-row", |s| s.opacity(1.))
-                        .hover(|s| s.bg(p.wash(0.14)))
-                        .child(glyph(icons::CLOSE, 10., p.muted))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            cx.stop_propagation();
-                            store_x.update(cx, |s, cx| s.close_tab(&tid_x, cx));
-                        }),
+                        ),
                 )
             })
+            .when(!compact, |d| d.child(status))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 store_f.update(cx, |s, cx| s.focus_tab(&tid, cx));
             })
@@ -456,8 +427,8 @@ impl Sidebar {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(px(Theme::SECTION_HEADER_H))
-            .px(px(Theme::SPACE_SM))
+            .h(px(SECTION_HEADER_H))
+            .pl(px(12.))
             .cursor_pointer()
             .child(
                 div()
@@ -465,9 +436,9 @@ impl Sidebar {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(10.5))
+                    .text_size(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(p.muted.opacity(0.7))
+                    .text_color(p.faint)
                     .child(label.into()),
             )
             .child(div().flex_1())
@@ -489,14 +460,6 @@ impl Sidebar {
             }))
             .into_any_element()
     }
-}
-
-fn basename(path: &str) -> String {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .to_string()
 }
 
 struct LimitedRows<T> {
@@ -541,6 +504,30 @@ fn row_title(tab: &Tab) -> String {
     }
 }
 
+fn normalized_today_url(url: &str) -> String {
+    let url = url.trim().split('#').next().unwrap_or_default();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.trim_end_matches('/').to_string();
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = path.trim_end_matches('/');
+    format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        host.to_ascii_lowercase(),
+        if path.is_empty() {
+            String::new()
+        } else {
+            format!("/{path}")
+        }
+    )
+}
+
+fn is_internal_today_url(url: &str) -> bool {
+    let normalized = normalized_today_url(url).to_ascii_lowercase();
+    normalized == "about:blank" || normalized.starts_with("hifi://")
+}
+
 fn clean_prompt(prompt: &str, max_chars: usize) -> String {
     let cleaned = prompt
         .replace(['*', '`', '#', '_'], "")
@@ -555,20 +542,6 @@ fn clean_prompt(prompt: &str, max_chars: usize) -> String {
         "Agent".into()
     } else {
         short
-    }
-}
-
-/// cosmos's two-line session rows carry the workspace underneath.
-fn row_subtitle(tab: &Tab) -> Option<String> {
-    match tab.kind {
-        TabKind::Terminal | TabKind::Agent | TabKind::Diff if !tab.cwd.is_empty() => {
-            let mut s = basename(&tab.cwd);
-            if !tab.branch.is_empty() {
-                s = format!("{s} · {}", tab.branch);
-            }
-            Some(s)
-        }
-        _ => None,
     }
 }
 
@@ -589,7 +562,7 @@ impl gpui::Render for Sidebar {
                     .sidebar_width
                     .clamp(Theme::SIDEBAR_MIN, Theme::SIDEBAR_MAX)
             } else {
-                Theme::SIDEBAR_WIDTH
+                SIDEBAR_WIDTH
             }
         };
         let Some(space) = state.active_space() else {
@@ -621,7 +594,7 @@ impl gpui::Render for Sidebar {
             .flex()
             .flex_col()
             .px(px(Theme::SPACE_SM))
-            .pt(px(4.));
+            .pt(px(0.));
 
         // Workspace header: the space switcher menu.
         let space_name = space.name.clone();
@@ -629,12 +602,12 @@ impl gpui::Render for Sidebar {
         list = list.child(
             div()
                 .id("sb-space-header")
-                .h(px(Theme::SPACE_SWITCHER_H))
+                .h(px(38.))
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap(px(6.))
-                .px(px(6.))
+                .pl(px(if cfg!(target_os = "macos") { 78. } else { 6. }))
                 .rounded(px(8.))
                 .cursor_pointer()
                 .when(compact, |d| d.justify_center())
@@ -649,6 +622,16 @@ impl gpui::Render for Sidebar {
                     )
                     .child(glyph(icons::ALT_ARROW_DOWN, 11., p.faint))
                 })
+                .when(!compact, |d| d.child(div().flex_1()))
+                .child({
+                    let store = self.store.clone();
+                    icon_button("sb-toggle", icons::SIDEBAR_LEFT, p, move |cx| {
+                        store.update(cx, |s, cx| {
+                            s.sidebar_collapsed = !s.sidebar_collapsed;
+                            cx.notify();
+                        });
+                    })
+                })
                 .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                     cx.stop_propagation();
                     store_hdr.update(cx, |s, cx| {
@@ -662,15 +645,13 @@ impl gpui::Render for Sidebar {
             div()
                 .id("sb-search")
                 .group("sb-search-row")
-                .h(px(28.))
+                .h(px(32.))
                 .px(px(8.))
                 .flex()
                 .items_center()
                 .gap(px(7.))
-                .rounded(px(8.))
-                .bg(p.ink(0.04))
-                .border_1()
-                .border_color(p.hairline(0.08))
+                .rounded(px(9.))
+                .bg(p.ink(if p.is_dark { 0.06 } else { 0.05 }))
                 .cursor_pointer()
                 .hover(|s| s.bg(p.ink(0.08)))
                 .child(glyph(icons::MAGNIFER, 13., p.muted))
@@ -678,8 +659,8 @@ impl gpui::Render for Sidebar {
                     div()
                         .flex_1()
                         .text_size(px(12.))
-                        .text_color(p.muted)
-                        .child("Search or jump…"),
+                        .text_color(p.faint)
+                        .child("Search or jump"),
                 )
                 .when(!compact, |d| {
                     d.child(div().text_size(px(10.)).text_color(p.faint).child("⌘K"))
@@ -695,42 +676,37 @@ impl gpui::Render for Sidebar {
             list = list.child(self.disclosure(
                 "sb-pinned",
                 PINNED_KEY,
-                "PINNED",
+                "Pinned",
                 !self.collapsed.contains(PINNED_KEY),
                 None,
                 false,
                 p,
                 cx,
             ));
-            let mut grid = div().mt(px(8.)).flex().flex_wrap().flex_none().gap(px(6.));
+            let mut grid = div()
+                .mt(px(8.))
+                .w(px(144.))
+                .flex()
+                .flex_wrap()
+                .flex_none()
+                .gap(px(6.));
             if !self.collapsed.contains(PINNED_KEY) {
                 for tab in &pinned {
-                    let on = active_tab.as_ref() == Some(&tab.id);
                     let store = self.store.clone();
                     let tid = tab.id.clone();
                     grid = grid.child(
                         div()
                             .id(SharedString::from(format!("tile-{}", tab.id)))
                             .w(px(44.))
-                            .h(px(36.))
+                            .h(px(44.))
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(10.))
                             .cursor_pointer()
-                            .bg(if p.is_dark {
-                                p.ink(0.05)
-                            } else {
-                                hsla(0., 0., 1., 0.5)
-                            })
-                            .border_1()
-                            .border_color(if on {
-                                p.text.opacity(0.6)
-                            } else {
-                                p.hairline(0.04)
-                            })
-                            .hover(|s| s.bg(p.pill()))
-                            .child(tab_badge(tab, 16., &p))
+                            .bg(p.ink(0.045))
+                            .hover(|s| s.bg(p.ink(0.07)))
+                            .child(tab_badge(tab, 18., &p))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 store.update(cx, |s, cx| s.focus_tab(&tid, cx));
                             }),
@@ -746,20 +722,24 @@ impl gpui::Render for Sidebar {
             .filter_map(|id| tab_of(&id))
             .filter(|t| !t.pinned)
             .collect();
+        let mut seen_today = HashSet::new();
         let today_groups: Vec<(String, String, Vec<Tab>)> = groups
             .iter()
             .map(|group| {
-                let tabs = group
-                    .tab_ids()
+                let mut ids = group.tab_ids();
+                ids.extend(group.dock.tabs.iter().cloned());
+                ids.reverse();
+                let tabs = ids
                     .into_iter()
-                    .chain(group.dock.tabs.iter().cloned())
                     .filter_map(|id| tab_of(&id))
                     .filter(|tab| {
-                        !tab.pinned
-                            && matches!(
-                                tab.kind,
-                                TabKind::Web | TabKind::NewTab | TabKind::Settings
-                            )
+                        if tab.pinned || tab.kind != TabKind::Web {
+                            return false;
+                        }
+                        if tab.url.trim().is_empty() || is_internal_today_url(&tab.url) {
+                            return false;
+                        }
+                        seen_today.insert(normalized_today_url(&tab.url))
                     })
                     .collect();
                 (group.id.clone(), group.name.clone(), tabs)
@@ -788,7 +768,7 @@ impl gpui::Render for Sidebar {
             list = list.child(self.disclosure(
                 "sb-today",
                 "__today",
-                "TODAY",
+                "Today",
                 true,
                 Some(action),
                 false,
@@ -842,9 +822,9 @@ impl gpui::Render for Sidebar {
         // Chats, agents, and pages are space-wide sections. Header actions
         // live in the disclosure row rather than consuming a peer row.
         let sections: [(&str, &str, &'static str, &'static str); 3] = [
-            ("sb-chats", "CHATS", "New Chat", "hifi://agent"),
-            ("sb-agents", "SESSIONS", "New Agent", "hifi://agent"),
-            ("sb-pages", "PAGES", "New Page", "hifi://notes"),
+            ("sb-chats", "Chats", "New Chat", "hifi://agent"),
+            ("sb-agents", "Sessions", "New Agent", "hifi://agent"),
+            ("sb-pages", "Pages", "New Page", "hifi://notes"),
         ];
         for (id, title, _new_label, url) in sections {
             let tabs: Vec<Tab> = space_tabs
@@ -870,7 +850,7 @@ impl gpui::Render for Sidebar {
             if !compact {
                 let store = self.store.clone();
                 let url = url.to_string();
-                let dock = title != "PAGES";
+                let dock = id != "sb-pages";
                 let action = div()
                     .id(SharedString::from(format!("{id}-action")))
                     .size(px(20.))
@@ -924,7 +904,7 @@ impl gpui::Render for Sidebar {
             .items_center()
             .gap(px(4.))
             .px(px(Theme::SPACE_SM))
-            .h(px(Theme::SPACE_DOCK_H))
+            .h(px(40.))
             .border_t_1()
             .border_color(p.hairline(0.05))
             .when(compact, |d| d.flex_col().h_auto().py(px(8.)));
@@ -943,12 +923,7 @@ impl gpui::Render for Sidebar {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .when(on, |d| {
-                        d.bg(p.selected())
-                            .border_1()
-                            .border_color(p.text.opacity(0.8))
-                    })
-                    .when(!on, |d| d.hover(|s| s.bg(p.glass_hover())))
+                    .hover(|d| d.bg(p.glass_hover()))
                     .child(div().size(px(8.)).rounded_full().bg(if on {
                         p.text
                     } else {
@@ -1001,7 +976,19 @@ impl gpui::Render for Sidebar {
 
 #[cfg(test)]
 mod tests {
-    use super::limit_rows;
+    use super::{is_internal_today_url, limit_rows, normalized_today_url};
+
+    #[test]
+    fn today_filters_internal_routes_and_normalizes_urls_for_deduplication() {
+        assert!(is_internal_today_url("hifi://settings"));
+        assert!(is_internal_today_url("hifi://newtab"));
+        assert!(is_internal_today_url("about:blank"));
+        assert!(!is_internal_today_url("https://example.com"));
+        assert_eq!(
+            normalized_today_url("HTTPS://Example.com/path/#section"),
+            normalized_today_url("https://example.com/path")
+        );
+    }
 
     #[test]
     fn includes_active_row_beyond_limit() {

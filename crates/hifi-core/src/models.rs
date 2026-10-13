@@ -520,7 +520,7 @@ pub struct Settings {
     pub background_dim: f32,
     #[serde(default)]
     pub compact_sidebar: bool,
-    /// Sidebar width in px (Lumen: 200–320, default 244).
+    /// Sidebar width in px (default 248).
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
     /// Restore the previous session on launch.
@@ -562,7 +562,7 @@ fn default_true() -> bool {
     true
 }
 fn default_sidebar_width() -> f32 {
-    244.0
+    248.0
 }
 fn default_search() -> String {
     "https://duckduckgo.com/?q={q}".into()
