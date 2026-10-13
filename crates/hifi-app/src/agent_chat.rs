@@ -55,19 +55,96 @@ enum Item {
 pub(crate) fn latest_assistant_preview(path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let items: Vec<Item> = serde_json::from_str(&contents).ok()?;
-    items.iter().rev().find_map(|item| match item {
-        Item::Text { text, .. } => {
-            let preview = text
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .take(2)
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!preview.is_empty()).then_some(preview)
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            Item::Text { text, .. } => Some(assistant_preview(text)),
+            _ => None,
+        })
+        .flatten()
+}
+
+fn assistant_preview(text: &str) -> Option<String> {
+    let mut fence = None;
+    let mut had_fence = false;
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some((marker, length)) = fence {
+            if is_closing_fence(trimmed, marker, length) {
+                fence = None;
+            }
+            continue;
         }
-        _ => None,
-    })
+
+        if let Some((marker, length)) = fence_marker(trimmed) {
+            fence = Some((marker, length));
+            had_fence = true;
+            continue;
+        }
+
+        let cleaned = strip_preview_prefix(line)
+            .replace("**", "")
+            .replace("__", "")
+            .replace("$$", "")
+            .replace('`', "");
+        let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !cleaned.is_empty() {
+            lines.push(cleaned);
+            if lines.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    let preview = lines.join(" ");
+    if preview.is_empty() {
+        had_fence.then(|| "Created an artifact".into())
+    } else {
+        Some(preview)
+    }
+}
+
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let length = line.chars().take_while(|ch| *ch == marker).count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn is_closing_fence(line: &str, marker: char, minimum_length: usize) -> bool {
+    let length = line.chars().take_while(|ch| *ch == marker).count();
+    length >= minimum_length && line[length..].trim().is_empty()
+}
+
+fn strip_preview_prefix(line: &str) -> &str {
+    let mut line = line.trim_start();
+    loop {
+        let marker = line.chars().next();
+        if matches!(marker, Some('#' | '-' | '*' | '>')) {
+            line = line[1..].trim_start();
+            continue;
+        }
+
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0
+            && line[digits..].starts_with('.')
+            && line[digits + 1..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            line = line[digits + 1..].trim_start();
+            continue;
+        }
+
+        return line;
+    }
 }
 
 pub struct AgentChatView {
@@ -1358,66 +1435,66 @@ impl gpui::Render for AgentChatView {
             if i >= expanded_step_group_until
                 && let Some(end) = step_group_end(&self.items, i)
             {
-                    let first_id = match &self.items[i] {
-                        Item::Step { id, .. } => id.clone(),
-                        _ => unreachable!(),
-                    };
-                    let running = self.items[i..end]
-                        .iter()
-                        .any(|item| matches!(item, Item::Step { done: false, .. }));
-                    let expanded = running || self.expanded_groups.contains(&first_id);
-                    let count = end - i;
-                    let group_key = first_id.clone();
-                    let group_row = div()
-                        .id(SharedString::from(format!("step-group-{first_id}")))
-                        .w_full()
-                        .h(px(30.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .rounded(px(7.))
-                        .cursor_pointer()
-                        .hover(|d| d.bg(p.wash(0.04)))
-                        .child(glyph(
-                            if expanded {
-                                icons::ALT_ARROW_DOWN
-                            } else {
-                                icons::ALT_ARROW_RIGHT
+                let first_id = match &self.items[i] {
+                    Item::Step { id, .. } => id.clone(),
+                    _ => unreachable!(),
+                };
+                let running = self.items[i..end]
+                    .iter()
+                    .any(|item| matches!(item, Item::Step { done: false, .. }));
+                let expanded = running || self.expanded_groups.contains(&first_id);
+                let count = end - i;
+                let group_key = first_id.clone();
+                let group_row = div()
+                    .id(SharedString::from(format!("step-group-{first_id}")))
+                    .w_full()
+                    .h(px(30.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.wash(0.04)))
+                    .child(glyph(
+                        if expanded {
+                            icons::ALT_ARROW_DOWN
+                        } else {
+                            icons::ALT_ARROW_RIGHT
+                        },
+                        11.,
+                        p.faint,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_size(px(11.5))
+                            .text_color(p.muted)
+                            .child(format!("{count} steps")),
+                    )
+                    .when(running, |d| {
+                        d.child(glyph(icons::RESTART, 12., p.muted).with_animation(
+                            SharedString::from(format!("step-group-spinner-{first_id}")),
+                            Animation::new(Duration::from_millis(900)).repeat(),
+                            |svg, delta| {
+                                svg.with_transformation(gpui::Transformation::rotate(
+                                    gpui::radians(delta * std::f32::consts::TAU),
+                                ))
                             },
-                            11.,
-                            p.faint,
                         ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_size(px(11.5))
-                                .text_color(p.muted)
-                                .child(format!("{count} steps")),
-                        )
-                        .when(running, |d| {
-                            d.child(glyph(icons::RESTART, 12., p.muted).with_animation(
-                                SharedString::from(format!("step-group-spinner-{first_id}")),
-                                Animation::new(Duration::from_millis(900)).repeat(),
-                                |svg, delta| {
-                                    svg.with_transformation(gpui::Transformation::rotate(
-                                        gpui::radians(delta * std::f32::consts::TAU),
-                                    ))
-                                },
-                            ))
-                        })
-                        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                            if !this.expanded_groups.remove(&group_key) {
-                                this.expanded_groups.insert(group_key.clone());
-                            }
-                            cx.notify();
-                        }));
-                    transcript = transcript.child(group_row);
-                    if !expanded {
-                        i = end;
-                        continue;
-                    }
+                    })
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                        if !this.expanded_groups.remove(&group_key) {
+                            this.expanded_groups.insert(group_key.clone());
+                        }
+                        cx.notify();
+                    }));
+                transcript = transcript.child(group_row);
+                if !expanded {
+                    i = end;
+                    continue;
+                }
                 expanded_step_group_until = end;
             }
             let item = &self.items[i];
@@ -1993,9 +2070,9 @@ impl gpui::Render for AgentChatView {
 #[cfg(test)]
 mod tests {
     use super::{
-        Item, MarkdownBlock, artifact_html, artifact_kind_label, compact_error, diff_summary,
-        inline_katex_css, looks_like_diff, parse_image_line, parse_inline, parse_markdown,
-        step_group_end,
+        Item, MarkdownBlock, artifact_html, artifact_kind_label, assistant_preview, compact_error,
+        diff_summary, inline_katex_css, looks_like_diff, parse_image_line, parse_inline,
+        parse_markdown, step_group_end,
     };
 
     fn step(id: &str) -> Item {
@@ -2014,6 +2091,25 @@ mod tests {
         let error = "x".repeat(181);
 
         assert_eq!(compact_error(&error), format!("{}…", "x".repeat(180)));
+    }
+
+    #[test]
+    fn recent_preview_uses_artifact_fallback_for_fenced_only_replies() {
+        let preview = assistant_preview("```mermaid\nflowchart LR\nA --> B\n```");
+
+        assert_eq!(preview.as_deref(), Some("Created an artifact"));
+    }
+
+    #[test]
+    fn recent_preview_strips_inline_markdown_and_collapses_whitespace() {
+        let preview = assistant_preview(
+            "# **Saved** to `/tmp/hifi-docs-test2/`.\n\n- __ready__ and $$done$$",
+        );
+
+        assert_eq!(
+            preview.as_deref(),
+            Some("Saved to /tmp/hifi-docs-test2/. ready and done")
+        );
     }
 
     #[test]
