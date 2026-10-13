@@ -525,7 +525,8 @@ fn preamble(cwd: &str, guard: Guard) -> String {
 Permission level: {} ({}). To use the web, call the hifi browser_* tools: browser_open to \
 open a page in your own tab (the user's tabs are never touched), then browser_read for the \
 text, browser_snapshot for clickable elements, browser_click / browser_type / browser_scroll \
-to interact. Keep answers concise.\n\nTask: ",
+to interact. Use doc_create, doc_read, and doc_open for PDF, DOCX, PPTX, and XLSX files; \
+after creating a document, call doc_open so the user sees it. Keep answers concise.\n\nTask: ",
         guard.label(),
         guard.describe()
     )

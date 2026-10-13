@@ -8,6 +8,7 @@ description = "Hi-Fi — a fast native browser. GPUI shell + WKWebView (macOS) /
 
 [dependencies]
 hifi-core.workspace = true
+hifi-docs = { path = "../hifi-docs" }
 gpui.workspace = true
 gpui_platform.workspace = true
 serde.workspace = true

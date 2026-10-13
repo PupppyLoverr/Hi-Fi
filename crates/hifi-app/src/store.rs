@@ -330,7 +330,13 @@ impl Store {
         let Some(group_id) = group_id else {
             return String::new();
         };
-        let tab = Tab::new(kind, url, group_id.clone());
+        let mut tab = Tab::new(kind, url, group_id.clone());
+        if kind == TabKind::Preview {
+            tab.title = std::path::Path::new(&tab.url)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+        }
         let id = tab.id.clone();
         self.state.tabs.push(tab);
         if let Some(group) = self.state.group_mut(&group_id) {
@@ -509,7 +515,13 @@ impl Store {
             RoutedUrl::Preview(path) => (TabKind::Preview, path),
             RoutedUrl::External(url) => (TabKind::Web, url),
         };
-        let tab = Tab::new(kind, url, gid);
+        let mut tab = Tab::new(kind, url, gid);
+        if kind == TabKind::Preview {
+            tab.title = std::path::Path::new(&tab.url)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+        }
         let id = tab.id.clone();
         self.state.tabs.push(tab);
         if let Some(d) = self.active_dock_mut() {

@@ -166,6 +166,7 @@ impl Tab {
                     self.title.clone()
                 }
             }
+            TabKind::Preview if !self.title.is_empty() => self.title.clone(),
             TabKind::Terminal | TabKind::Agent | TabKind::Diff | TabKind::Preview => {
                 let kind = self.kind.as_str();
                 let mut cap = kind.to_string();

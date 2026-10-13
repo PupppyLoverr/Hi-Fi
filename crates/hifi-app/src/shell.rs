@@ -84,6 +84,7 @@ pub struct Shell {
     focus: gpui::FocusHandle,
     last_window_title: String,
     context_menu: Option<(f32, f32, Vec<crate::menu::MenuItem>)>,
+    toast: Option<String>,
 }
 
 impl Shell {
@@ -164,6 +165,7 @@ impl Shell {
             focus: cx.focus_handle(),
             last_window_title: String::new(),
             context_menu: None,
+            toast: None,
         }
     }
 
@@ -822,14 +824,45 @@ impl Shell {
                     }
                 }
                 WebEvent::NotesSave { tab, html } => {
-                    let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
-                    self.store.update(cx, |s, cx| match page {
-                        Some(page) => {
-                            s.notes_save(&tab, &page.title, &page.html);
-                            s.set_title(&tab, page.title, cx);
-                        }
-                        None => s.notes_save(&tab, "", &html),
-                    });
+                    let message = serde_json::from_str::<serde_json::Value>(&html).ok();
+                    if message
+                        .as_ref()
+                        .and_then(|v| v.get("type"))
+                        .and_then(|v| v.as_str())
+                        == Some("doc_save")
+                    {
+                        let saved = (|| -> anyhow::Result<()> {
+                            let target = self
+                                .store
+                                .read(cx)
+                                .state
+                                .tab(&tab)
+                                .map(|t| t.url.clone())
+                                .ok_or_else(|| anyhow::anyhow!("document tab is no longer open"))?;
+                            let document = serde_json::from_value::<hifi_docs::Document>(
+                                message
+                                    .as_ref()
+                                    .and_then(|v| v.get("document"))
+                                    .cloned()
+                                    .ok_or_else(|| anyhow::anyhow!("missing document payload"))?,
+                            )?;
+                            hifi_docs::write(std::path::Path::new(&target), &document)
+                        })();
+                        self.toast = Some(match saved {
+                            Ok(()) => "Saved".into(),
+                            Err(error) => format!("Could not save: {error}"),
+                        });
+                        cx.notify();
+                    } else {
+                        let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
+                        self.store.update(cx, |s, cx| match page {
+                            Some(page) => {
+                                s.notes_save(&tab, &page.title, &page.html);
+                                s.set_title(&tab, page.title, cx);
+                            }
+                            None => s.notes_save(&tab, "", &html),
+                        });
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 WebEvent::Redraw => {}
@@ -992,10 +1025,12 @@ impl Shell {
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
-        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes);
+        let document =
+            tab.kind == TabKind::Preview && hifi_docs::DocKind::from_path(&tab.url).is_some();
+        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes) || document;
         // hifi:// urls never reach the network — the nav delegate would
         // cancel them into WebEvent::Url and open a duplicate tab.
-        let load_url = if tab.url.starts_with("hifi://") {
+        let load_url = if tab.url.starts_with("hifi://") || document {
             ""
         } else {
             &tab.url
@@ -1026,6 +1061,27 @@ impl Shell {
                             .update(cx, |s, cx| s.set_title(&id, saved_title, cx));
                     }
                     host.load_html(&crate::notes::editor_html(&body, &title, is_dark));
+                } else if document {
+                    match hifi_docs::read(std::path::Path::new(&tab.url)) {
+                        Ok(doc) => {
+                            let pdf = (doc.kind == hifi_docs::DocKind::Pdf)
+                                .then(|| std::fs::read(&tab.url).ok())
+                                .flatten();
+                            host.load_html(&hifi_docs::editor_html(
+                                &doc,
+                                &tab.url,
+                                pdf.as_deref(),
+                                is_dark,
+                            ));
+                        }
+                        Err(error) => {
+                            let message =
+                                error.to_string().replace('&', "&amp;").replace('<', "&lt;");
+                            host.load_html(&format!(
+                                "<!doctype html><meta charset=\"utf-8\"><body style=\"font:14px -apple-system;padding:32px\">Could not open document: {message}</body>"
+                            ));
+                        }
+                    }
                 }
                 self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
                 Some(host)
@@ -1601,6 +1657,26 @@ impl Shell {
                 );
                 div().size_full().child(view).into_any()
             }
+            TabKind::Preview if hifi_docs::DocKind::from_path(&tab.url).is_some() => {
+                match self.web_host(tab, Theme::of(cx).palette.is_dark, window, cx) {
+                    Some(host) => Self::web_surface(&host, &self.focus).into_any(),
+                    None => {
+                        let err = self
+                            .pane_errors
+                            .get(&tab.id)
+                            .cloned()
+                            .unwrap_or_else(|| "webview failed".into());
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(p.danger)
+                            .child(err)
+                            .into_any()
+                    }
+                }
+            }
             TabKind::Preview => {
                 let view = self.view_pane(
                     tab.id.clone(),
@@ -1749,7 +1825,15 @@ impl Shell {
             TabKind::Terminal => (sidebar::kind_icon(tab), tab.display_title(), String::new()),
             TabKind::Agent => (sidebar::kind_icon(tab), tab.display_title(), String::new()),
             TabKind::Diff => (icons::GIT_BRANCH, tab.display_title(), String::new()),
-            TabKind::Preview => (icons::EYE, tab.display_title(), String::new()),
+            TabKind::Preview => (
+                if hifi_docs::DocKind::from_path(&tab.url).is_some() {
+                    icons::DOCUMENT
+                } else {
+                    icons::EYE
+                },
+                tab.display_title(),
+                String::new(),
+            ),
             TabKind::NewTab => (
                 icons::MAGNIFER,
                 "Search or enter address".into(),
@@ -3311,6 +3395,34 @@ impl gpui::Render for Shell {
             if let Some(f) = Some(self.command_bar.read(cx).input.clone()) {
                 window.focus(&f.read(cx).focus_handle(cx), cx);
             }
+        }
+
+        if let Some(message) = self.toast.clone() {
+            let error = message.starts_with("Could not save:");
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(52.))
+                    .right(px(16.))
+                    .max_w(px(420.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.card)
+                    .px(px(12.))
+                    .py(px(8.))
+                    .text_size(px(12.))
+                    .text_color(if error { p.danger } else { p.text })
+                    .shadow_lg()
+                    .child(message)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                            this.toast = None;
+                            cx.notify();
+                        }),
+                    ),
+            );
         }
 
         root

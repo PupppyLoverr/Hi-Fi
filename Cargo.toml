@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/hifi-core",
+    "crates/hifi-docs",
     "crates/hifi-app",
     "crates/hifi-cli",
 ]
