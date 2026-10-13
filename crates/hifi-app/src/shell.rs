@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
@@ -85,6 +86,7 @@ pub struct Shell {
     last_window_title: String,
     context_menu: Option<(f32, f32, Vec<crate::menu::MenuItem>)>,
     toast: Option<String>,
+    toast_generation: u64,
 }
 
 impl Shell {
@@ -166,6 +168,7 @@ impl Shell {
             last_window_title: String::new(),
             context_menu: None,
             toast: None,
+            toast_generation: 0,
         }
     }
 
@@ -852,7 +855,21 @@ impl Shell {
                             Ok(()) => "Saved".into(),
                             Err(error) => format!("Could not save: {error}"),
                         });
+                        self.toast_generation = self.toast_generation.wrapping_add(1);
+                        let generation = self.toast_generation;
                         cx.notify();
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(2500))
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.toast_generation == generation {
+                                    this.toast = None;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
                     } else {
                         let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
                         self.store.update(cx, |s, cx| match page {

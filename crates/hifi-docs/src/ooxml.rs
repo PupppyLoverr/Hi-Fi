@@ -402,38 +402,57 @@ fn slide_xml(slide: &Slide) -> String {
     let title = shape_xml(2, "Title", "title", &slide.title, false);
     let body = shape_xml(3, "Content", "body", &slide.bullets.join("\n"), true);
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"0\" cy=\"0\"/></a:xfrm></p:grpSpPr>{title}{body}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"0\" cy=\"0\"/></a:xfrm></p:grpSpPr>{title}{body}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"
     )
 }
 
 fn shape_xml(id: u8, name: &str, ph: &str, text: &str, bullets: bool) -> String {
     let (x, y, width, height) = match ph {
-        "title" => (914400, 685800, 10363200, 1371600),
+        "title" => (685800, 548640, 10820400, 1097280),
         _ if name == "Notes" => (685800, 685800, 5486400, 7772400),
-        _ => (914400, 2286000, 10363200, 4000000),
+        _ => (914400, 1828800, 10363200, 4572000),
+    };
+    let (font_size, title) = match name {
+        "Title" => ("4000", true),
+        "Content" => ("2400", false),
+        _ => ("1800", false),
     };
     let paragraphs = text
         .lines()
         .map(|line| {
+            let default_bold = if title { "<a:b/>" } else { "" };
+            let default = format!(
+                "<a:defRPr lang=\"en-US\" sz=\"{font_size}\">{default_bold}<a:solidFill><a:srgbClr val=\"111111\"/></a:solidFill><a:latin typeface=\"Aptos\"/></a:defRPr>"
+            );
             let props = if bullets {
-                "<a:pPr lvl=\"0\"><a:buChar char=\"•\"/></a:pPr>"
+                format!(
+                    "<a:pPr lvl=\"0\" marL=\"457200\" indent=\"-228600\"><a:buChar char=\"•\"/>{default}</a:pPr>"
+                )
             } else {
-                "<a:pPr/>"
+                format!("<a:pPr>{default}</a:pPr>")
             };
             format!(
-                "<a:p>{props}{}{}</a:p>",
-                bold_runs(line, "a"),
-                if line.is_empty() {
-                    "<a:endParaRPr lang=\"en-US\"/>"
-                } else {
-                    ""
-                }
+                "<a:p>{props}{}<a:endParaRPr lang=\"en-US\" sz=\"{font_size}\"/></a:p>",
+                drawing_runs(line, font_size)
             )
         })
         .collect::<String>();
     format!(
         "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr><p:ph type=\"{ph}\"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap=\"square\"/><a:lstStyle/>{paragraphs}</p:txBody></p:sp>"
     )
+}
+
+fn drawing_runs(text: &str, size: &str) -> String {
+    bold_parts(text)
+        .into_iter()
+        .map(|(text, bold)| {
+            let bold = if bold { "<a:b/>" } else { "" };
+            format!(
+                "<a:r><a:rPr lang=\"en-US\" sz=\"{size}\">{bold}<a:solidFill><a:srgbClr val=\"111111\"/></a:solidFill><a:latin typeface=\"Aptos\"/></a:rPr><a:t xml:space=\"preserve\">{}</a:t></a:r>",
+                xml(&text)
+            )
+        })
+        .collect()
 }
 
 fn notes_xml(slide: &Slide) -> String {
