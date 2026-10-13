@@ -34,7 +34,7 @@ pub fn route(input: &str) -> RoutedUrl {
         };
     }
     let path = std::path::Path::new(trimmed);
-    if path.is_absolute()
+    if (trimmed.starts_with('/') || path.is_absolute())
         && path
             .extension()
             .and_then(|ext| ext.to_str())
