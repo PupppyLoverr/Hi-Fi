@@ -18,13 +18,35 @@ pub(crate) struct UpdateState {
     current_id: Option<String>,
 }
 
-fn mcp_server(tab: &str, hifi: &std::path::Path) -> Value {
-    json!([{
+fn mcp_server(cfg: &RunConfig, hifi: &std::path::Path) -> Value {
+    let mut servers = vec![json!({
+        "type": "stdio",
         "name": "hifi",
         "command": hifi,
         "args": ["mcp"],
-        "env": [{"name": "HIFI_AGENT_TAB", "value": tab}]
-    }])
+        "env": [{"name": "HIFI_AGENT_TAB", "value": cfg.tab_id}]
+    })];
+    if !cfg.composio_api_key.is_empty() {
+        servers.push(json!({
+            "type": "http",
+            "name": "composio",
+            "url": "https://connect.composio.dev/mcp",
+            "headers": [{"name": "x-consumer-api-key", "value": cfg.composio_api_key}]
+        }));
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        servers.push(json!({
+            "type": "stdio",
+            "name": "cua",
+            "command": cfg.cua_driver_path,
+            "args": ["mcp"],
+            "env": [{
+                "name": "CUA_PERMISSION_LEVEL",
+                "value": crate::agent_runner::cua_permission(cfg.guard)
+            }]
+        }));
+    }
+    Value::Array(servers)
 }
 
 fn rpc(id: u64, method: &str, params: Value) -> String {
@@ -253,7 +275,6 @@ pub fn spawn(
         }),
     );
     write_tx.send(initial).map_err(|_| "ACP writer stopped")?;
-    let tab = cfg.tab_id.clone();
     let cwd = if cfg.cwd.is_empty() {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
     } else {
@@ -338,13 +359,13 @@ pub fn spawn(
                     send_request(
                         next_id,
                         "session/load",
-                        json!({"sessionId":session_name,"cwd":cwd,"mcpServers":mcp_server(&tab, &hifi)}),
+                        json!({"sessionId":session_name,"cwd":cwd,"mcpServers":mcp_server(&cfg, &hifi)}),
                     );
                 } else {
                     send_request(
                         next_id,
                         "session/new",
-                        json!({"cwd":cwd,"mcpServers":mcp_server(&tab, &hifi)}),
+                        json!({"cwd":cwd,"mcpServers":mcp_server(&cfg, &hifi)}),
                     );
                 }
                 phase = 1;
@@ -525,8 +546,29 @@ mod tests {
 
     #[test]
     fn mcp_environment_uses_name_value_pairs() {
-        let mcp = mcp_server("tab-1", PathBuf::from("/bin/hifi").as_path());
+        let mut cfg = RunConfig {
+            harness: "acp".into(),
+            model: String::new(),
+            cwd: String::new(),
+            guard: Guard::Strict,
+            session: String::new(),
+            prompt: String::new(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
+            tab_id: "tab-1".into(),
+            first_turn: true,
+        };
+        let mcp = mcp_server(&cfg, PathBuf::from("/bin/hifi").as_path());
         assert_eq!(mcp[0]["env"][0]["name"], "HIFI_AGENT_TAB");
         assert_eq!(mcp[0]["env"][0]["value"], "tab-1");
+        assert_eq!(mcp.as_array().unwrap().len(), 1);
+        cfg.composio_api_key = "secret".into();
+        cfg.computer_use = true;
+        cfg.cua_driver_path = "/bin/cua-driver".into();
+        let mcp = mcp_server(&cfg, PathBuf::from("/bin/hifi").as_path());
+        assert_eq!(mcp[1]["type"], "http");
+        assert_eq!(mcp[1]["headers"][0]["name"], "x-consumer-api-key");
+        assert_eq!(mcp[2]["env"][0]["value"], "bounded");
     }
 }

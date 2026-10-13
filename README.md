@@ -48,6 +48,10 @@ Each chat has a **guard** level:
 | Balanced | Edits and commands; blocks destructive ones such as `rm -rf`, `sudo`, `git push`, `git reset --hard` |
 | Full | Everything the harness can do |
 
+### Integrations
+
+Add a Composio API key in Settings → Integrations to connect its remote MCP tools. Enable Computer use to add `cua-driver mcp` when the driver is installed; Strict guard uses its bounded permission level, while other guards use standard. Integration credentials are passed to harness configuration, never to the chat transcript or prompt.
+
 Run several agents at once by opening chats in splits. Each one has its own tabs, folder and guard.
 
 ## Install

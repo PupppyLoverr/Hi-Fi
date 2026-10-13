@@ -642,7 +642,7 @@ impl WorkspaceState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GroupId, SplitNode, SplitSide, Tab, TabKind};
+    use super::{GroupId, Settings, SplitNode, SplitSide, Tab, TabKind};
 
     #[test]
     fn removing_split_leaf_promotes_sibling() {
@@ -662,5 +662,18 @@ mod tests {
         tab.title = "x".repeat(45);
         assert_eq!(tab.short_title().chars().count(), 41);
         assert!(tab.short_title().ends_with('…'));
+    }
+
+    #[test]
+    fn integrations_settings_default_when_loading_old_state() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("composioApiKey");
+        object.remove("computerUse");
+        object.remove("cuaDriverPath");
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert!(settings.composio_api_key.is_empty());
+        assert!(!settings.computer_use);
+        assert!(settings.cua_driver_path.is_empty());
     }
 }

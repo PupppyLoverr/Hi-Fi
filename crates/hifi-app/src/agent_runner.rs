@@ -429,9 +429,69 @@ fn write_opencode_config(config: &Value, tab_id: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
-fn mcp_json(hifi: &Path, tab: &str) -> String {
-    json!({"mcpServers":{"hifi":{"command":hifi,"args":["mcp"],"env":{"HIFI_AGENT_TAB":tab}}}})
-        .to_string()
+fn mcp_json(cfg: &RunConfig, hifi: &Path) -> String {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        "hifi".into(),
+        json!({"command":hifi,"args":["mcp"],"env":{"HIFI_AGENT_TAB":cfg.tab_id}}),
+    );
+    if !cfg.composio_api_key.is_empty() {
+        servers.insert(
+            "composio".into(),
+            json!({
+                "type": "http",
+                "url": "https://connect.composio.dev/mcp",
+                "headers": {"x-consumer-api-key": cfg.composio_api_key}
+            }),
+        );
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        servers.insert(
+            "cua".into(),
+            json!({
+                "command": cfg.cua_driver_path,
+                "args": ["mcp"],
+                "env": {"CUA_PERMISSION_LEVEL": cua_permission(cfg.guard)}
+            }),
+        );
+    }
+    json!({"mcpServers": servers}).to_string()
+}
+
+pub(crate) fn cua_permission(guard: Guard) -> &'static str {
+    if guard == Guard::Strict {
+        "bounded"
+    } else {
+        "standard"
+    }
+}
+
+fn add_opencode_integrations(config: &mut Value, cfg: &RunConfig) {
+    let Some(mcp) = config.get_mut("mcp").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if !cfg.composio_api_key.is_empty() {
+        mcp.insert(
+            "composio".into(),
+            json!({
+                "type": "remote",
+                "url": "https://connect.composio.dev/mcp",
+                "headers": {"x-consumer-api-key": cfg.composio_api_key},
+                "enabled": true
+            }),
+        );
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        mcp.insert(
+            "cua".into(),
+            json!({
+                "type": "local",
+                "command": [cfg.cua_driver_path, "mcp"],
+                "environment": {"CUA_PERMISSION_LEVEL": cua_permission(cfg.guard)},
+                "enabled": true
+            }),
+        );
+    }
 }
 
 pub fn claude_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
@@ -465,7 +525,7 @@ pub fn claude_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
     }
     args.extend([
         "--mcp-config".into(),
-        mcp_json(hifi, &cfg.tab_id),
+        mcp_json(cfg, hifi),
         cfg.prompt.clone(),
     ]);
     args
@@ -476,7 +536,7 @@ pub fn amp_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
         "--execute".into(),
         "--stream-json".into(),
         "--mcp-config".into(),
-        mcp_json(hifi, &cfg.tab_id),
+        mcp_json(cfg, hifi),
     ];
     if cfg.guard == Guard::Full {
         args.push("--dangerously-allow-all".into());
@@ -514,6 +574,33 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
             cfg.tab_id
         ),
     ]);
+    if !cfg.composio_api_key.is_empty() {
+        args.extend([
+            "-c".into(),
+            format!(
+                "mcp_servers.composio.url={}",
+                json!("https://connect.composio.dev/mcp")
+            ),
+            "-c".into(),
+            format!(
+                "mcp_servers.composio.http_headers={{\"x-consumer-api-key\"={}}}",
+                json!(cfg.composio_api_key)
+            ),
+        ]);
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        args.extend([
+            "-c".into(),
+            format!("mcp_servers.cua.command={}", json!(cfg.cua_driver_path)),
+            "-c".into(),
+            "mcp_servers.cua.args=[\"mcp\"]".into(),
+            "-c".into(),
+            format!(
+                "mcp_servers.cua.env={{ CUA_PERMISSION_LEVEL = \"{}\" }}",
+                cua_permission(cfg.guard)
+            ),
+        ]);
+    }
     if !cfg.session.is_empty() {
         args.extend(["resume".into(), cfg.session.clone()]);
     }
@@ -576,8 +663,9 @@ pub fn spawn(mut cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run,
             command.arg("--session").arg(&cfg.session);
         }
         command.arg("--auto");
-        let path =
-            write_opencode_config(&opencode_config(cfg.guard, &hifi, &cfg.tab_id), &cfg.tab_id)?;
+        let mut config = opencode_config(cfg.guard, &hifi, &cfg.tab_id);
+        add_opencode_integrations(&mut config, &cfg);
+        let path = write_opencode_config(&config, &cfg.tab_id)?;
         command.env("OPENCODE_CONFIG", path).arg(&cfg.prompt);
     } else if selected.id == "amp" {
         command.args(amp_args(&cfg, &hifi));
@@ -1234,6 +1322,66 @@ mod tests {
         assert!(is_destructive("echo hi && rm -rf x"));
         assert!(is_destructive("sudo ls"));
         assert!(is_destructive("dd if=/dev/zero"));
+    }
+
+    #[test]
+    fn integrations_are_optional_and_computer_use_respects_guard() {
+        let base = RunConfig {
+            harness: "claude".into(),
+            model: String::new(),
+            cwd: ".".into(),
+            guard: Guard::Strict,
+            session: String::new(),
+            prompt: "hello".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
+            tab_id: "tab-1".into(),
+            first_turn: true,
+        };
+        let empty: Value = serde_json::from_str(&mcp_json(&base, Path::new("/bin/hifi"))).unwrap();
+        assert!(empty["mcpServers"].get("composio").is_none());
+        assert!(empty["mcpServers"].get("cua").is_none());
+
+        let configured = RunConfig {
+            composio_api_key: "test-key".into(),
+            computer_use: true,
+            cua_driver_path: "/bin/cua-driver".into(),
+            ..base.clone()
+        };
+        let claude = claude_args(&configured, Path::new("/bin/hifi"));
+        let mcp_arg = claude
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .unwrap()[1]
+            .clone();
+        let claude_mcp: Value = serde_json::from_str(&mcp_arg).unwrap();
+        assert_eq!(
+            claude_mcp["mcpServers"]["composio"]["headers"]["x-consumer-api-key"],
+            "test-key"
+        );
+        assert_eq!(
+            claude_mcp["mcpServers"]["cua"]["env"]["CUA_PERMISSION_LEVEL"],
+            "bounded"
+        );
+        let amp = amp_args(&configured, Path::new("/bin/hifi"));
+        let amp_mcp = amp
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .unwrap()[1]
+            .clone();
+        assert!(amp_mcp.contains("x-consumer-api-key"));
+        let codex = codex_args(&configured, Path::new("/bin/hifi"));
+        assert!(codex.iter().any(|arg| arg.contains("http_headers")));
+
+        let mut opencode = opencode_config(Guard::Strict, Path::new("/bin/hifi"), "tab-1");
+        add_opencode_integrations(&mut opencode, &configured);
+        assert_eq!(opencode["mcp"]["composio"]["enabled"], true);
+        assert_eq!(
+            opencode["mcp"]["cua"]["environment"]["CUA_PERMISSION_LEVEL"],
+            "bounded"
+        );
+        assert_eq!(cua_permission(Guard::Balanced), "standard");
     }
 
     #[test]

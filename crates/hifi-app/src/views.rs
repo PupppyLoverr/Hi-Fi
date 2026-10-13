@@ -586,6 +586,7 @@ impl gpui::Render for NewTabView {
 pub struct SettingsView {
     store: Entity<Store>,
     bg_field: Entity<TextField>,
+    composio_field: Entity<TextField>,
 }
 
 impl SettingsView {
@@ -598,6 +599,13 @@ impl SettingsView {
         let initial = store.read(cx).state.settings.background_image.clone();
         let bg_field = cx.new(|cx| TextField::new("~/Pictures/…", cx));
         bg_field.update(cx, |f, cx| f.set_value(initial, cx));
+        let composio_key = store.read(cx).state.settings.composio_api_key.clone();
+        let composio_field = cx.new(|cx| {
+            let mut field = TextField::new("Composio API key", cx);
+            field.set_secret(true, cx);
+            field
+        });
+        composio_field.update(cx, |field, cx| field.set_value(composio_key, cx));
         let store2 = store.clone();
         cx.subscribe(&bg_field, move |_me, _f, event, cx| {
             if let TextFieldEvent::Submitted(path) = event {
@@ -607,7 +615,20 @@ impl SettingsView {
             }
         })
         .detach();
-        Self { store, bg_field }
+        let store2 = store.clone();
+        cx.subscribe(&composio_field, move |_me, _field, event, cx| {
+            if let TextFieldEvent::Submitted(key) = event {
+                store2.update(cx, |s, cx| {
+                    s.update_settings(|settings| settings.composio_api_key = key.clone(), cx);
+                });
+            }
+        })
+        .detach();
+        Self {
+            store,
+            bg_field,
+            composio_field,
+        }
     }
 }
 
@@ -920,6 +941,83 @@ impl gpui::Render for SettingsView {
             .into_any_element(),
         ];
         page = page.child(settings_section("Behavior", &p, behavior));
+
+        let composio_field = self.composio_field.clone();
+        let composio_key = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1().min_w(px(0.)).child(composio_field))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(p.muted)
+                    .cursor_pointer()
+                    .hover(|d| d.text_color(p.text))
+                    .child("Get a key")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.open_url("https://composio.dev");
+                    }),
+            );
+        let driver_path = PathBuf::from(&settings.cua_driver_path)
+            .is_file()
+            .then(|| PathBuf::from(&settings.cua_driver_path))
+            .or_else(|| crate::agent_runner::find_binary("cua-driver"))
+            .map(|path| path.display().to_string());
+        let computer_use_store = store.clone();
+        let computer_use = settings.computer_use;
+        let driver_status = driver_path
+            .map(|path| format!("Cua driver found at {path}"))
+            .unwrap_or_else(|| {
+                "Install cua-driver to enable: https://github.com/trycua/cua".into()
+            });
+        page = page.child(settings_section(
+            "Integrations",
+            &p,
+            [
+                settings_row(
+                    "Composio API key",
+                    Some("Press Return to save"),
+                    composio_key,
+                    &p,
+                    false,
+                    true,
+                    false,
+                )
+                .into_any_element(),
+                settings_row(
+                    "Computer use",
+                    None,
+                    settings_switch("computer-use", computer_use, &p).on_mouse_down(
+                        MouseButton::Left,
+                        move |_, _, cx| {
+                            computer_use_store.update(cx, |s, cx| {
+                                s.update_settings(
+                                    |settings| settings.computer_use = !settings.computer_use,
+                                    cx,
+                                )
+                            })
+                        },
+                    ),
+                    &p,
+                    false,
+                    false,
+                    true,
+                )
+                .into_any_element(),
+                settings_row(
+                    "Cua driver",
+                    Some(&driver_status),
+                    div().text_color(p.faint).child("Status"),
+                    &p,
+                    true,
+                    false,
+                    false,
+                )
+                .into_any_element(),
+            ],
+        ));
 
         let data_path = store.read(cx).paths.root.display().to_string();
         let state_path = store.read(cx).paths.state_file().display().to_string();
