@@ -5,16 +5,17 @@
 
 use gpui::{
     Animation, AnimationExt, Context, Entity, Focusable, FontWeight, MouseButton,
-    PathPromptOptions, ScrollHandle, SharedString, StyledText, Window, div, prelude::*, px,
+    PathPromptOptions, ScrollHandle, SharedString, StyledText, Window, div, img, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
 };
 
+use base64::Engine;
 use futures::StreamExt;
 
 use crate::agent_runner::{self, AgentEvent, HARNESSES, RunConfig};
@@ -64,6 +65,8 @@ pub struct AgentChatView {
     picker_open: bool,
     /// Steps whose output is expanded.
     expanded: HashSet<String>,
+    expanded_groups: HashSet<String>,
+    artifacts: HashMap<String, PathBuf>,
 }
 
 impl AgentChatView {
@@ -110,6 +113,8 @@ impl AgentChatView {
             scroll: ScrollHandle::new(),
             picker_open: false,
             expanded: HashSet::new(),
+            expanded_groups: HashSet::new(),
+            artifacts: HashMap::new(),
         };
         me.items = me.load(cx);
         let has_turns = me.items.iter().any(|i| matches!(i, Item::User { .. }));
@@ -158,11 +163,12 @@ impl AgentChatView {
     fn send(&mut self, text: String, cx: &mut Context<Self>) {
         let first = !self.items.iter().any(|i| matches!(i, Item::User { .. }));
         let tab = self.tab(cx);
+        let settings = self.store.read(cx).state.settings.clone();
         let harness = tab
             .as_ref()
             .map(|t| t.command.clone())
             .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| self.store.read(cx).state.settings.agent_harness.clone());
+            .unwrap_or_else(|| settings.agent_harness.clone());
         if first {
             let id = self.tab_id.clone();
             let t = text.clone();
@@ -179,6 +185,15 @@ impl AgentChatView {
             guard: tab.as_ref().and_then(|t| t.guard).unwrap_or_default(),
             session: tab.as_ref().map(|t| t.session.clone()).unwrap_or_default(),
             prompt: text,
+            composio_api_key: settings.composio_api_key,
+            computer_use: settings.computer_use,
+            cua_driver_path: Path::new(&settings.cua_driver_path)
+                .is_file()
+                .then(|| settings.cua_driver_path.clone())
+                .or_else(|| {
+                    agent_runner::find_binary("cua-driver").map(|path| path.display().to_string())
+                })
+                .unwrap_or_default(),
             tab_id: self.tab_id.clone(),
             first_turn: first || tab.as_ref().is_none_or(|t| t.session.is_empty()),
         };
@@ -327,6 +342,22 @@ impl AgentChatView {
                         text: format!("Stopped — {e}"),
                     });
                 }
+                let artifacts = self
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::Text { text, .. } => Some(parse_markdown(text)),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter_map(|block| match block {
+                        MarkdownBlock::Artifact { kind, content } => Some((kind, content)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                for (kind, content) in artifacts {
+                    self.open_artifact(&kind, &content, cx);
+                }
                 self.active = None;
                 self.started = None;
             }
@@ -380,6 +411,53 @@ impl AgentChatView {
         })
         .detach();
     }
+
+    fn open_artifact(&mut self, kind: &str, content: &str, cx: &mut Context<Self>) {
+        let key = format!("{kind}:{content}");
+        let root = self
+            .store
+            .read(cx)
+            .paths
+            .root
+            .join("artifacts")
+            .join(&self.tab_id);
+        let path = self.artifacts.get(&key).cloned().unwrap_or_else(|| {
+            let _ = std::fs::create_dir_all(&root);
+            let mut number = 1;
+            while root.join(format!("{number}.html")).exists() {
+                number += 1;
+            }
+            root.join(format!("{number}.html"))
+        });
+        if let Some(html) = artifact_html(kind, content, Theme::of(cx).palette.is_dark) {
+            if std::fs::write(&path, html).is_err() {
+                return;
+            }
+            self.artifacts.insert(key, path.clone());
+            let url = format!("hifi://preview/{}", path.display());
+            let path_text = path.to_string_lossy().to_string();
+            let chat_id = self.tab_id.clone();
+            self.store.update(cx, |store, cx| {
+                if let Some(existing) = store
+                    .state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.url == path_text)
+                    .map(|tab| tab.id.clone())
+                {
+                    store.focus_tab(&existing, cx);
+                } else {
+                    let group = store.state.tab(&chat_id).map(|tab| tab.group_id.clone());
+                    store.open_tab(
+                        &url,
+                        group,
+                        Some((chat_id, hifi_core::SplitSide::Right)),
+                        cx,
+                    );
+                }
+            });
+        }
+    }
 }
 
 fn short(text: &str, n: usize) -> String {
@@ -410,6 +488,8 @@ enum MarkdownBlock {
     Bullet(InlineText),
     Heading { level: usize, text: InlineText },
     Code(String),
+    Image { alt: String, src: String },
+    Artifact { kind: String, content: String },
     Blank,
 }
 
@@ -487,16 +567,49 @@ fn heading_line(line: &str) -> Option<(usize, &str)> {
 fn parse_markdown(text: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
     let mut code_lines = Vec::new();
+    let mut math_lines = Vec::new();
     let mut in_code = false;
+    let mut in_math = false;
+    let mut code_kind = String::new();
 
     for line in text.lines() {
+        if !in_code && line.trim() == "$$" {
+            if in_math {
+                blocks.push(MarkdownBlock::Artifact {
+                    kind: "math".into(),
+                    content: math_lines.join("\n"),
+                });
+                math_lines.clear();
+                in_math = false;
+            } else {
+                in_math = true;
+            }
+            continue;
+        }
+        if in_math {
+            math_lines.push(line.to_string());
+            continue;
+        }
         if line.trim_start().starts_with("```") {
             if in_code {
-                blocks.push(MarkdownBlock::Code(code_lines.join("\n")));
+                let code = code_lines.join("\n");
+                if matches!(code_kind.as_str(), "mermaid" | "math" | "html" | "hifi-ui") {
+                    blocks.push(MarkdownBlock::Artifact {
+                        kind: code_kind.clone(),
+                        content: code,
+                    });
+                } else {
+                    blocks.push(MarkdownBlock::Code(code));
+                }
                 code_lines.clear();
                 in_code = false;
             } else {
                 in_code = true;
+                code_kind = line
+                    .trim_start()
+                    .trim_start_matches('`')
+                    .trim()
+                    .to_ascii_lowercase();
             }
             continue;
         }
@@ -506,6 +619,17 @@ fn parse_markdown(text: &str) -> Vec<MarkdownBlock> {
             blocks.push(MarkdownBlock::Blank);
         } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
             blocks.push(MarkdownBlock::Bullet(parse_inline(item)));
+        } else if let Some((alt, src)) = parse_image_line(line) {
+            blocks.push(MarkdownBlock::Image { alt, src });
+        } else if let Some(math) = line
+            .trim()
+            .strip_prefix("$$")
+            .and_then(|value| value.strip_suffix("$$"))
+        {
+            blocks.push(MarkdownBlock::Artifact {
+                kind: "math".into(),
+                content: math.trim().into(),
+            });
         } else if let Some((level, heading)) = heading_line(line) {
             blocks.push(MarkdownBlock::Heading {
                 level,
@@ -516,9 +640,196 @@ fn parse_markdown(text: &str) -> Vec<MarkdownBlock> {
         }
     }
     if in_code {
-        blocks.push(MarkdownBlock::Code(code_lines.join("\n")));
+        let code = code_lines.join("\n");
+        if matches!(code_kind.as_str(), "mermaid" | "math" | "html" | "hifi-ui") {
+            blocks.push(MarkdownBlock::Artifact {
+                kind: code_kind,
+                content: code,
+            });
+        } else {
+            blocks.push(MarkdownBlock::Code(code));
+        }
+    }
+    if in_math {
+        blocks.push(MarkdownBlock::Artifact {
+            kind: "math".into(),
+            content: math_lines.join("\n"),
+        });
     }
     blocks
+}
+
+fn parse_image_line(line: &str) -> Option<(String, String)> {
+    let inner = line.strip_prefix("![")?;
+    let (alt, rest) = inner.split_once("](")?;
+    let src = rest.strip_suffix(')')?;
+    let absolute = src.starts_with("http://")
+        || src.starts_with("https://")
+        || src.starts_with('/')
+        || Path::new(src).is_absolute();
+    absolute.then(|| (alt.to_string(), src.to_string()))
+}
+
+fn step_group_end(items: &[Item], start: usize) -> Option<usize> {
+    if !matches!(items.get(start), Some(Item::Step { .. })) {
+        return None;
+    }
+    let end = items[start..]
+        .iter()
+        .position(|item| !matches!(item, Item::Step { .. }))
+        .map_or(items.len(), |offset| start + offset);
+    (end - start >= 3).then_some(end)
+}
+
+fn looks_like_diff(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.starts_with("@@") || line.starts_with("+++") || line.starts_with("---"))
+}
+
+fn diff_summary(output: &str) -> (usize, usize) {
+    output.lines().fold((0, 0), |(added, deleted), line| {
+        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+            (added, deleted)
+        } else if line.starts_with('+') {
+            (added + 1, deleted)
+        } else if line.starts_with('-') {
+            (added, deleted + 1)
+        } else {
+            (added, deleted)
+        }
+    })
+}
+
+fn artifact_html(kind: &str, content: &str, dark: bool) -> Option<String> {
+    let palette = if dark {
+        "color-scheme:dark;--bg:#111;--fg:#eee;--muted:#aaa;--border:#333"
+    } else {
+        "color-scheme:light;--bg:#fff;--fg:#171717;--muted:#666;--border:#ddd"
+    };
+    let style = format!(
+        "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>:root{{{palette}}}*{{box-sizing:border-box}}html,body{{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font:15px -apple-system,BlinkMacSystemFont,sans-serif}}body{{padding:32px}}a{{color:inherit}}button,input,textarea{{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px}}pre{{white-space:pre-wrap}}.mermaid{{display:flex;justify-content:center}}</style>"
+    );
+    let body = match kind {
+        "mermaid" => format!(
+            "<pre class=\"mermaid\">{}</pre><script>{}</script><script>mermaid.initialize({{startOnLoad:true,theme:'neutral'}})</script>",
+            escape_html(content),
+            include_str!("../assets/vendor/mermaid-11.4.1.min.js"),
+        ),
+        "math" => format!(
+            "<style>{}</style><div id=\"math\"></div><script>{}</script><script>katex.render({},document.getElementById('math'),{{displayMode:true,throwOnError:false}})</script>",
+            inline_katex_css(),
+            include_str!("../assets/vendor/katex-0.16.11.min.js"),
+            serde_json::to_string(content).ok()?,
+        ),
+        "html" | "hifi-ui" => content.to_string(),
+        _ => return None,
+    };
+    let bridge = "<script>window.hifi={send:text=>window.ipc.postMessage(JSON.stringify({type:'ui_send',text:String(text)}))}</script>";
+    Some(format!(
+        "<!doctype html><html><head>{style}</head><body>{body}{bridge}</body></html>"
+    ))
+}
+
+fn inline_katex_css() -> String {
+    let mut css = include_str!("../assets/vendor/katex-0.16.11.min.css").to_string();
+    for (name, font) in [
+        (
+            "KaTeX_AMS-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_AMS-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Caligraphic-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Caligraphic-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Caligraphic-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Caligraphic-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Fraktur-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Fraktur-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Fraktur-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Fraktur-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-BoldItalic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-BoldItalic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Math-BoldItalic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Math-BoldItalic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Math-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Math-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Script-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Script-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size1-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size1-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size2-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size2-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size3-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size3-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size4-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size4-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Typewriter-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Typewriter-Regular.woff2").as_slice(),
+        ),
+    ] {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(font);
+        css = css.replace(
+            &format!("url(fonts/{name}.woff2)"),
+            &format!("url(data:font/woff2;base64,{encoded})"),
+        );
+        css = css.replace(&format!(",url(fonts/{name}.woff) format(\"woff\")"), "");
+        css = css.replace(&format!(",url(fonts/{name}.ttf) format(\"truetype\")"), "");
+    }
+    css
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn inline_element(inline: &InlineText) -> StyledText {
@@ -542,7 +853,11 @@ fn inline_element(inline: &InlineText) -> StyledText {
         .with_font_family_overrides(mono_ranges)
 }
 
-fn markdown_text(text: &str, p: Palette) -> gpui::AnyElement {
+fn markdown_text(
+    text: &str,
+    p: Palette,
+    mut open_artifact: impl FnMut(String, String) -> gpui::AnyElement,
+) -> gpui::AnyElement {
     let mut content = div().w_full().flex().flex_col().gap(px(6.));
     for block in parse_markdown(text) {
         let element = match block {
@@ -582,6 +897,15 @@ fn markdown_text(text: &str, p: Palette) -> gpui::AnyElement {
                 .text_size(px(12.))
                 .line_height(px(18.))
                 .child(code),
+            MarkdownBlock::Image { alt, src } => div()
+                .w_full()
+                .max_w(px(720.))
+                .max_h(px(320.))
+                .overflow_hidden()
+                .rounded(px(10.))
+                .child(img(src).max_w(px(720.)).max_h(px(320.)).rounded(px(10.)))
+                .child(div().text_size(px(10.)).text_color(p.faint).child(alt)),
+            MarkdownBlock::Artifact { kind, content } => div().child(open_artifact(kind, content)),
             MarkdownBlock::Blank => div().h(px(4.)).flex_none(),
         };
         content = content.child(element.flex_none());
@@ -625,20 +949,37 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn display_tool_title(tool: &str, title: &str, output: &str, cwd: &str) -> String {
     let tool = tool.to_ascii_lowercase();
+    if tool.contains("web_search") || tool == "search" {
+        return "Searched".into();
+    }
+    if tool.contains("browser_open") || tool.contains("navigate") {
+        let url = serde_json::from_str::<serde_json::Value>(output)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("url")
+                    .or_else(|| value.get("href"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| title.to_string());
+        let host = hifi_core::host_of(&url);
+        return if host.is_empty() {
+            "Opened page".into()
+        } else {
+            format!("Opened {host}")
+        };
+    }
     if tool.contains("browser_click") || tool.contains("browser_type") {
         let verb = if tool.contains("browser_click") {
-            "Click"
+            "Clicked"
         } else {
-            "Type into"
+            "Typed"
         };
         if let Ok(result) = serde_json::from_str::<serde_json::Value>(output)
             && let Some(label) = result.get("label").and_then(serde_json::Value::as_str)
         {
-            return if verb == "Click" {
-                format!("{verb} \"{label}\"")
-            } else {
-                format!("{verb} <{label}>")
-            };
+            return format!("{verb} {label}");
         }
         if let Some(index) = title
             .strip_prefix("[data-hifi=\"")
@@ -647,42 +988,72 @@ fn display_tool_title(tool: &str, title: &str, output: &str, cwd: &str) -> Strin
         {
             return format!("{verb} element #{index}");
         }
+        return verb.into();
     }
-    if !(tool.contains("write") || tool.contains("edit") || tool.contains("patch")) {
+    if tool.contains("browser_read")
+        || tool.contains("browser_snapshot")
+        || tool == "read"
+        || tool.contains("snapshot")
+    {
+        return "Read".into();
+    }
+    if tool.starts_with("doc_") {
+        let file = Path::new(title)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| title.to_string());
+        return format!("Created {file}");
+    }
+    if tool.contains("bash") || tool.contains("shell") || tool.contains("command") {
+        return "Ran".into();
+    }
+    if tool.contains("write") || tool.contains("edit") || tool.contains("patch") {
+        let base = normalize_path(Path::new(cwd));
+        let path = Path::new(title);
+        let resolved = normalize_path(
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                base.join(path)
+            }
+            .as_path(),
+        );
+        let file = if let Ok(relative) = resolved.strip_prefix(&base) {
+            relative.display().to_string()
+        } else {
+            resolved.display().to_string()
+        };
+        return format!("Edited {file}");
+    }
+    if tool.contains("read") {
+        return "Read".into();
+    }
+    if tool.contains("browser") {
+        return "Read".into();
+    }
+    if title.is_empty() {
         return title.to_string();
     }
-    let base = normalize_path(Path::new(cwd));
-    let path = Path::new(title);
-    let resolved = normalize_path(
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            base.join(path)
-        }
-        .as_path(),
-    );
-    if let Ok(relative) = resolved.strip_prefix(&base) {
-        relative.display().to_string()
-    } else {
-        resolved.display().to_string()
-    }
+    title.to_string()
 }
 
 fn tool_icon(tool: &str) -> &'static str {
     let t = tool.to_lowercase();
-    if t.contains("browser_open") || t.contains("navigate") || t.contains("webfetch") {
+    if t.contains("web_search") || t == "search" {
+        icons::MAGNIFER
+    } else if t.contains("browser_open") || t.contains("navigate") {
         icons::GLOBE
     } else if t.contains("browser_click") || t.contains("browser_type") {
-        icons::KEYBOARD
-    } else if t.contains("browser") {
+        icons::CURSOR_MARK
+    } else if t.contains("browser_read") || t.contains("browser_snapshot") || t.contains("read") {
         icons::EYE
-    } else if t == "bash" {
+    } else if t.contains("bash") || t.contains("shell") || t.contains("command") {
         icons::TERMINAL
-    } else if t == "edit" || t == "write" || t == "patch" {
-        icons::PEN_NEW_SQUARE
-    } else if t == "read" {
+    } else if t.starts_with("doc_") {
         icons::DOCUMENT
-    } else if t == "glob" || t == "grep" || t == "list" {
+    } else if t.contains("edit") || t.contains("write") || t.contains("patch") {
+        icons::PEN_NEW_SQUARE
+    } else if t == "glob" || t == "grep" || t == "list" || t.contains("search") {
         icons::MAGNIFER
     } else if t == "todowrite" || t == "todoread" {
         icons::CHECKLIST
@@ -873,6 +1244,15 @@ fn step_row(
 
 impl gpui::Render for AgentChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.active.is_none() {
+            let id = self.tab_id.clone();
+            let prompt = self
+                .store
+                .update(cx, |store, _| store.take_agent_prompt(&id));
+            if let Some(prompt) = prompt {
+                self.send(prompt, cx);
+            }
+        }
         let p = Theme::of(cx).palette;
         let tab = self.tab(cx);
         let harness = tab
@@ -932,7 +1312,81 @@ impl gpui::Render for AgentChatView {
             );
         }
 
-        for (i, item) in self.items.iter().enumerate() {
+        let mut i = 0;
+        while i < self.items.len() {
+            if let Some(end) = step_group_end(&self.items, i) {
+                let first_id = match &self.items[i] {
+                    Item::Step { id, .. } => id.clone(),
+                    _ => unreachable!(),
+                };
+                let running = self.items[i..end]
+                    .iter()
+                    .any(|item| matches!(item, Item::Step { done: false, .. }));
+                let last_title = match &self.items[end - 1] {
+                    Item::Step {
+                        tool,
+                        title,
+                        output,
+                        ..
+                    } => display_tool_title(tool, title, output, &cwd),
+                    _ => String::new(),
+                };
+                let expanded = running || self.expanded_groups.contains(&first_id);
+                let count = end - i;
+                let group_key = first_id.clone();
+                let group_row = div()
+                    .id(SharedString::from(format!("step-group-{first_id}")))
+                    .w_full()
+                    .h(px(30.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.wash(0.04)))
+                    .child(glyph(
+                        if expanded {
+                            icons::ALT_ARROW_DOWN
+                        } else {
+                            icons::ALT_ARROW_RIGHT
+                        },
+                        11.,
+                        p.faint,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_size(px(11.5))
+                            .text_color(p.muted)
+                            .truncate()
+                            .child(format!("{count} steps · {last_title}")),
+                    )
+                    .when(running, |d| {
+                        d.child(glyph(icons::RESTART, 12., p.muted).with_animation(
+                            SharedString::from(format!("step-group-spinner-{first_id}")),
+                            Animation::new(Duration::from_millis(900)).repeat(),
+                            |svg, delta| {
+                                svg.with_transformation(gpui::Transformation::rotate(
+                                    gpui::radians(delta * std::f32::consts::TAU),
+                                ))
+                            },
+                        ))
+                    })
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                        if !this.expanded_groups.remove(&group_key) {
+                            this.expanded_groups.insert(group_key.clone());
+                        }
+                        cx.notify();
+                    }));
+                transcript = transcript.child(group_row);
+                if !expanded {
+                    i = end;
+                    continue;
+                }
+            }
+            let item = &self.items[i];
             let el = match item {
                 Item::User { text } => div()
                     .w_full()
@@ -1034,7 +1488,48 @@ impl gpui::Render for AgentChatView {
                             )
                         })
                         .when(expanded && has_output, |d| {
-                            d.child(
+                            let output_view = if looks_like_diff(output) {
+                                let (added, deleted) = diff_summary(output);
+                                let mut diff = div()
+                                    .ml(px(23.))
+                                    .mb(px(6.))
+                                    .p(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(p.wash(0.04))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .px(px(4.))
+                                            .pb(px(4.))
+                                            .text_size(px(10.5))
+                                            .text_color(p.muted)
+                                            .child(format!("+{added} −{deleted}")),
+                                    );
+                                for line in output.lines().take(150) {
+                                    let wash = if line.starts_with('+') && !line.starts_with("+++")
+                                    {
+                                        Some(p.diff_add())
+                                    } else if line.starts_with('-') && !line.starts_with("---") {
+                                        Some(p.diff_del())
+                                    } else {
+                                        None
+                                    };
+                                    diff = diff.child(
+                                        div()
+                                            .w_full()
+                                            .px(px(4.))
+                                            .when_some(wash, |d, wash| d.bg(wash))
+                                            .font_family(FONT_MONO)
+                                            .text_size(px(11.))
+                                            .line_height(px(16.))
+                                            .text_color(p.muted)
+                                            .child(line.to_string()),
+                                    );
+                                }
+                                diff
+                            } else {
                                 div()
                                     .ml(px(23.))
                                     .mb(px(6.))
@@ -1045,14 +1540,79 @@ impl gpui::Render for AgentChatView {
                                     .text_size(px(11.))
                                     .line_height(px(16.))
                                     .text_color(p.muted)
-                                    .child(short(output, 1500)),
-                            )
+                                    .child(short(output, 1500))
+                            };
+                            d.child(output_view)
                         })
                 }
-                Item::Text { text, .. } => div()
-                    .py(px(8.))
-                    .text_color(p.text)
-                    .child(markdown_text(text, p)),
+                Item::Text { text, .. } => {
+                    let view = cx.entity().downgrade();
+                    div().py(px(8.)).text_color(p.text).child(markdown_text(
+                        text,
+                        p,
+                        move |kind, content| {
+                            let icon = match kind.as_str() {
+                                "mermaid" => icons::GIT_BRANCH,
+                                "math" => icons::PI_MARK,
+                                _ => icons::DOCUMENT,
+                            };
+                            let heading = content
+                                .lines()
+                                .next()
+                                .unwrap_or(&kind)
+                                .trim()
+                                .chars()
+                                .take(56)
+                                .collect::<String>();
+                            let artifact_kind = kind.clone();
+                            let artifact_content = content.clone();
+                            let view = view.clone();
+                            div()
+                                .w_full()
+                                .p(px(12.))
+                                .rounded(px(9.))
+                                .border_1()
+                                .border_color(p.border)
+                                .bg(p.ink(0.04))
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(glyph(icon, 15., p.muted))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .text_size(px(12.))
+                                        .text_color(p.text)
+                                        .truncate()
+                                        .child(if heading.is_empty() {
+                                            kind.to_uppercase()
+                                        } else {
+                                            heading
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(9.))
+                                        .py(px(5.))
+                                        .rounded(px(6.))
+                                        .bg(p.wash(0.07))
+                                        .text_size(px(11.))
+                                        .text_color(p.muted)
+                                        .child("Open"),
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    let kind = artifact_kind.clone();
+                                    let content = artifact_content.clone();
+                                    let _ = view.update(cx, |view, cx| {
+                                        view.open_artifact(&kind, &content, cx);
+                                    });
+                                })
+                                .into_any_element()
+                        },
+                    ))
+                }
                 Item::Note { text } => div()
                     .w_full()
                     .min_w(px(0.))
@@ -1068,6 +1628,7 @@ impl gpui::Render for AgentChatView {
                     .child(text.clone()),
             };
             transcript = transcript.child(el.flex_none());
+            i += 1;
         }
 
         if let Some(t) = self.started {
@@ -1347,7 +1908,21 @@ impl gpui::Render for AgentChatView {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarkdownBlock, compact_error, parse_inline, parse_markdown};
+    use super::{
+        Item, MarkdownBlock, artifact_html, compact_error, diff_summary, inline_katex_css,
+        looks_like_diff, parse_image_line, parse_inline, parse_markdown, step_group_end,
+    };
+
+    fn step(id: &str) -> Item {
+        Item::Step {
+            id: id.into(),
+            tool: "read".into(),
+            title: id.into(),
+            output: String::new(),
+            done: true,
+            error: None,
+        }
+    }
 
     #[test]
     fn compact_errors_truncate_after_180_characters() {
@@ -1413,6 +1988,84 @@ mod tests {
         assert_eq!(
             blocks,
             vec![MarkdownBlock::Code("let x = 1;\nprintln!(\"{x}\");".into())]
+        );
+    }
+
+    #[test]
+    fn groups_only_three_or_more_consecutive_steps() {
+        let two = vec![step("a"), step("b")];
+        let three = vec![step("a"), step("b"), step("c")];
+
+        assert_eq!(step_group_end(&two, 0), None);
+        assert_eq!(step_group_end(&three, 0), Some(3));
+    }
+
+    #[test]
+    fn detects_and_summarizes_unified_diffs() {
+        let diff = "@@ -1,1 +1,1 @@\n-old\n+new\n context\n";
+
+        assert!(looks_like_diff(diff));
+        assert_eq!(diff_summary(diff), (1, 1));
+        assert!(!looks_like_diff("plain output"));
+    }
+
+    #[test]
+    fn parses_only_absolute_or_remote_markdown_images() {
+        assert_eq!(
+            parse_image_line("![diagram](https://example.com/diagram.png)"),
+            Some(("diagram".into(), "https://example.com/diagram.png".into()))
+        );
+        assert_eq!(
+            parse_image_line("![local](/tmp/local.png)"),
+            Some(("local".into(), "/tmp/local.png".into()))
+        );
+        assert_eq!(parse_image_line("![relative](images/diagram.png)"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_absolute_markdown_images() {
+        assert_eq!(
+            parse_image_line(r"![local](C:\Users\devin\Documents\diagram.png)"),
+            Some((
+                "local".into(),
+                r"C:\Users\devin\Documents\diagram.png".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn artifact_html_embeds_math_fonts_without_relative_resources() {
+        let html = artifact_html("math", "x^2", false).unwrap();
+        assert!(html.contains("data:font/woff2;base64,"));
+        assert!(!inline_katex_css().contains("url(fonts/"));
+        let mermaid = artifact_html("mermaid", "graph TD; A-->B;", false).unwrap();
+        assert!(mermaid.contains("mermaid.initialize"));
+        assert!(!mermaid.contains("<script src="));
+    }
+
+    #[test]
+    fn parses_all_supported_artifact_blocks() {
+        let blocks = parse_markdown(
+            "```mermaid\ngraph LR\nA-->B\n```\n```math\nx^2\n```\n$$y^2$$\n```html\n<h1>HTML</h1>\n```\n```hifi-ui\n<button>Reply</button>\n```",
+        );
+        let artifacts = blocks
+            .into_iter()
+            .filter_map(|block| match block {
+                MarkdownBlock::Artifact { kind, content } => Some((kind, content)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            artifacts,
+            vec![
+                ("mermaid".into(), "graph LR\nA-->B".into()),
+                ("math".into(), "x^2".into()),
+                ("math".into(), "y^2".into()),
+                ("html".into(), "<h1>HTML</h1>".into()),
+                ("hifi-ui".into(), "<button>Reply</button>".into()),
+            ]
         );
     }
 }

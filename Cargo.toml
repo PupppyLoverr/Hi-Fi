@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/hifi-core",
+    "crates/hifi-docs",
     "crates/hifi-app",
     "crates/hifi-cli",
 ]
@@ -14,6 +15,7 @@ publish = false
 
 [workspace.dependencies]
 hifi-core = { path = "crates/hifi-core" }
+base64 = "0.22"
 
 # gpui — zeronsh/zui, the same fork cosmos uses (backdrop blur + edge fades +
 # native-view compositing above the GPU scene).

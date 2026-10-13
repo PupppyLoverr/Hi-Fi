@@ -166,6 +166,7 @@ impl Tab {
                     self.title.clone()
                 }
             }
+            TabKind::Preview if !self.title.is_empty() => self.title.clone(),
             TabKind::Terminal | TabKind::Agent | TabKind::Diff | TabKind::Preview => {
                 let kind = self.kind.as_str();
                 let mut cap = kind.to_string();
@@ -539,6 +540,12 @@ pub struct Settings {
     /// Default working folder for new chats; empty = home.
     #[serde(default)]
     pub agent_cwd: String,
+    #[serde(default)]
+    pub composio_api_key: String,
+    #[serde(default)]
+    pub computer_use: bool,
+    #[serde(default)]
+    pub cua_driver_path: String,
 }
 
 fn default_harness() -> String {
@@ -577,6 +584,9 @@ impl Default for Settings {
             agent_model: default_model(),
             agent_guard: Guard::default(),
             agent_cwd: String::new(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
         }
     }
 }
@@ -632,7 +642,7 @@ impl WorkspaceState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GroupId, SplitNode, SplitSide, Tab, TabKind};
+    use super::{GroupId, Settings, SplitNode, SplitSide, Tab, TabKind};
 
     #[test]
     fn removing_split_leaf_promotes_sibling() {
@@ -652,5 +662,18 @@ mod tests {
         tab.title = "x".repeat(45);
         assert_eq!(tab.short_title().chars().count(), 41);
         assert!(tab.short_title().ends_with('…'));
+    }
+
+    #[test]
+    fn integrations_settings_default_when_loading_old_state() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("composioApiKey");
+        object.remove("computerUse");
+        object.remove("cuaDriverPath");
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert!(settings.composio_api_key.is_empty());
+        assert!(!settings.computer_use);
+        assert!(settings.cua_driver_path.is_empty());
     }
 }

@@ -33,6 +33,20 @@ pub fn route(input: &str) -> RoutedUrl {
             _ => RoutedUrl::Internal(TabKind::NewTab),
         };
     }
+    let path = std::path::Path::new(trimmed);
+    if (trimmed.starts_with('/') || path.is_absolute())
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "pdf" | "docx" | "pptx" | "xlsx"
+                )
+            })
+    {
+        return RoutedUrl::Preview(trimmed.into());
+    }
     RoutedUrl::External(normalize_url(trimmed))
 }
 
@@ -78,10 +92,19 @@ fn urlencoding(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_url;
+    use super::{RoutedUrl, normalize_url, route};
 
     #[test]
     fn file_urls_are_searches() {
         assert_eq!(normalize_url("file:///x"), "search:file:///x");
+    }
+
+    #[test]
+    fn absolute_document_paths_route_to_preview() {
+        assert_eq!(
+            route("/Users/alex/brief.docx"),
+            RoutedUrl::Preview("/Users/alex/brief.docx".into())
+        );
+        assert!(matches!(route("brief.docx"), RoutedUrl::External(_)));
     }
 }

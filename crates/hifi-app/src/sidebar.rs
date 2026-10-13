@@ -98,6 +98,9 @@ pub fn mark_icon(command: &str) -> &'static str {
 }
 
 pub fn kind_icon(tab: &Tab) -> &'static str {
+    if tab.kind == TabKind::Preview && hifi_docs::DocKind::from_path(&tab.url).is_some() {
+        return icons::DOCUMENT;
+    }
     match tab.kind {
         TabKind::Web => icons::GLOBAL,
         TabKind::NewTab => icons::MAGNIFER,

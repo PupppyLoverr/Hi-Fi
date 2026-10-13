@@ -31,6 +31,11 @@ impl StateFile {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(state)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
         std::fs::rename(&tmp, &self.path)
     }
 }
