@@ -116,6 +116,42 @@ mod tests {
     }
 
     #[test]
+    fn ooxml_round_trip_unescapes_text_and_attribute_entities() {
+        let text = "Notion & <Bear> \"quoted\" 'apostrophe'";
+
+        let docx_path = temp_path("docx");
+        let docx = Document::docx("Entities", vec![Block::Paragraph { text: text.into() }]);
+        write(&docx_path, &docx).unwrap();
+        assert_eq!(read(&docx_path).unwrap(), docx);
+        let _ = std::fs::remove_file(docx_path);
+
+        let pptx_path = temp_path("pptx");
+        let pptx = Document::pptx(
+            "Entities",
+            vec![Slide {
+                title: text.into(),
+                bullets: vec![text.into()],
+                notes: text.into(),
+            }],
+        );
+        write(&pptx_path, &pptx).unwrap();
+        assert_eq!(read(&pptx_path).unwrap(), pptx);
+        let _ = std::fs::remove_file(pptx_path);
+
+        let xlsx_path = temp_path("xlsx");
+        let xlsx = Document::xlsx(
+            "Entities",
+            vec![Sheet {
+                name: text.into(),
+                rows: vec![vec![Cell::Text(text.into())]],
+            }],
+        );
+        write(&xlsx_path, &xlsx).unwrap();
+        assert_eq!(read(&xlsx_path).unwrap(), xlsx);
+        let _ = std::fs::remove_file(xlsx_path);
+    }
+
+    #[test]
     fn pdf_xref_offsets_point_to_objects() {
         let path = temp_path("pdf");
         let doc = Document::pdf(
@@ -161,6 +197,27 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let source = String::from_utf8_lossy(&bytes);
         assert!(source.matches("/Type /Page /Parent").count() > 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pdf_read_unescapes_titles_and_joins_wrapped_lines() {
+        let path = temp_path("pdf");
+        let text = "A wrapped paragraph that is deliberately long enough to span multiple lines when written to an A4 PDF page.";
+        write(
+            &path,
+            &Document::pdf(
+                "Rust (Programming Language)",
+                vec![Block::Paragraph { text: text.into() }],
+            ),
+        )
+        .unwrap();
+        let readback = read(&path).unwrap();
+        assert_eq!(readback.title, "Rust (Programming Language)");
+        assert_eq!(
+            readback.blocks,
+            vec![Block::Paragraph { text: text.into() }]
+        );
         let _ = std::fs::remove_file(path);
     }
 

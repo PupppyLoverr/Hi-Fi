@@ -451,7 +451,7 @@ fn mcp_json(cfg: &RunConfig, hifi: &Path) -> String {
             json!({
                 "command": cfg.cua_driver_path,
                 "args": ["mcp"],
-                "env": {"CUA_PERMISSION_LEVEL": cua_permission(cfg.guard)}
+                "env": {"CUA_DRIVER_PERMISSION_MODE": cua_permission(cfg.guard)}
             }),
         );
     }
@@ -487,7 +487,7 @@ fn add_opencode_integrations(config: &mut Value, cfg: &RunConfig) {
             json!({
                 "type": "local",
                 "command": [cfg.cua_driver_path, "mcp"],
-                "environment": {"CUA_PERMISSION_LEVEL": cua_permission(cfg.guard)},
+                "environment": {"CUA_DRIVER_PERMISSION_MODE": cua_permission(cfg.guard)},
                 "enabled": true
             }),
         );
@@ -582,10 +582,8 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
                 json!("https://connect.composio.dev/mcp")
             ),
             "-c".into(),
-            format!(
-                "mcp_servers.composio.http_headers={{\"x-consumer-api-key\"={}}}",
-                json!(cfg.composio_api_key)
-            ),
+            "mcp_servers.composio.env_http_headers={\"x-consumer-api-key\"=\"HIFI_COMPOSIO_API_KEY\"}"
+                .into(),
         ]);
     }
     if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
@@ -596,7 +594,7 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
             "mcp_servers.cua.args=[\"mcp\"]".into(),
             "-c".into(),
             format!(
-                "mcp_servers.cua.env={{ CUA_PERMISSION_LEVEL = \"{}\" }}",
+                "mcp_servers.cua.env={{ CUA_DRIVER_PERMISSION_MODE = \"{}\" }}",
                 cua_permission(cfg.guard)
             ),
         ]);
@@ -606,6 +604,11 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
     }
     args.push(cfg.prompt.clone());
     args
+}
+
+fn codex_composio_env(cfg: &RunConfig) -> Option<(&'static str, &str)> {
+    (!cfg.composio_api_key.is_empty())
+        .then_some(("HIFI_COMPOSIO_API_KEY", cfg.composio_api_key.as_str()))
 }
 
 /// What the harness is told about where it runs, once per chat.
@@ -673,6 +676,9 @@ pub fn spawn(mut cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run,
         command.args(claude_args(&cfg, &hifi));
     } else if selected.protocol == Protocol::CodexExec {
         command.args(codex_args(&cfg, &hifi));
+        if let Some((name, value)) = codex_composio_env(&cfg) {
+            command.env(name, value);
+        }
     }
     let mut child = command
         .spawn()
@@ -1361,7 +1367,7 @@ mod tests {
             "test-key"
         );
         assert_eq!(
-            claude_mcp["mcpServers"]["cua"]["env"]["CUA_PERMISSION_LEVEL"],
+            claude_mcp["mcpServers"]["cua"]["env"]["CUA_DRIVER_PERMISSION_MODE"],
             "bounded"
         );
         let amp = amp_args(&configured, Path::new("/bin/hifi"));
@@ -1372,13 +1378,18 @@ mod tests {
             .clone();
         assert!(amp_mcp.contains("x-consumer-api-key"));
         let codex = codex_args(&configured, Path::new("/bin/hifi"));
-        assert!(codex.iter().any(|arg| arg.contains("http_headers")));
+        assert!(codex.iter().any(|arg| arg.contains("env_http_headers")));
+        assert!(!codex.iter().any(|arg| arg.contains("test-key")));
+        assert_eq!(
+            codex_composio_env(&configured),
+            Some(("HIFI_COMPOSIO_API_KEY", "test-key"))
+        );
 
         let mut opencode = opencode_config(Guard::Strict, Path::new("/bin/hifi"), "tab-1");
         add_opencode_integrations(&mut opencode, &configured);
         assert_eq!(opencode["mcp"]["composio"]["enabled"], true);
         assert_eq!(
-            opencode["mcp"]["cua"]["environment"]["CUA_PERMISSION_LEVEL"],
+            opencode["mcp"]["cua"]["environment"]["CUA_DRIVER_PERMISSION_MODE"],
             "bounded"
         );
         assert_eq!(cua_permission(Guard::Balanced), "standard");

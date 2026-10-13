@@ -41,7 +41,7 @@ fn mcp_server(cfg: &RunConfig, hifi: &std::path::Path) -> Value {
             "command": cfg.cua_driver_path,
             "args": ["mcp"],
             "env": [{
-                "name": "CUA_PERMISSION_LEVEL",
+                "name": "CUA_DRIVER_PERMISSION_MODE",
                 "value": crate::agent_runner::cua_permission(cfg.guard)
             }]
         }));

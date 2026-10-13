@@ -209,13 +209,8 @@ pub(super) fn read(path: &Path) -> Result<Document> {
     }
     let source = String::from_utf8_lossy(&bytes);
     let title = source
-        .split_once("/Title (")
-        .and_then(|(_, tail)| tail.split_once(')').map(|(title, _)| title.to_string()))
-        .map(|s| {
-            s.replace("\\(", "(")
-                .replace("\\)", ")")
-                .replace("\\\\", "\\")
-        })
+        .split_once("/Title")
+        .and_then(|(_, tail)| extract_pdf_strings(tail).into_iter().next())
         .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_default();
     let mut blocks = Vec::new();
@@ -224,10 +219,28 @@ pub(super) fn read(path: &Path) -> Result<Document> {
         let Some((stream, after)) = tail.split_once("\nendstream") else {
             break;
         };
-        for extracted in extract_pdf_strings(stream) {
-            if !extracted.trim().is_empty() {
-                blocks.push(Block::Paragraph { text: extracted });
+        let mut paragraph = String::new();
+        let mut previous_y = None;
+        for (y, line) in extract_pdf_lines(stream) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
             }
+            if let Some(last_y) = previous_y
+                && !(0.0..=26.0).contains(&(last_y - y))
+            {
+                blocks.push(Block::Paragraph {
+                    text: std::mem::take(&mut paragraph),
+                });
+            }
+            if !paragraph.is_empty() {
+                paragraph.push(' ');
+            }
+            paragraph.push_str(line);
+            previous_y = Some(y);
+        }
+        if !paragraph.is_empty() {
+            blocks.push(Block::Paragraph { text: paragraph });
         }
         rest = after;
     }
@@ -242,35 +255,117 @@ pub(super) fn read(path: &Path) -> Result<Document> {
 
 fn extract_pdf_strings(stream: &str) -> Vec<String> {
     let mut output = Vec::new();
-    let mut rest = stream;
-    while let Some(start) = rest.find('(') {
-        let mut chars = rest[start + 1..].chars().peekable();
-        let mut text = String::new();
-        let mut consumed = 0;
-        while let Some(c) = chars.next() {
-            consumed += c.len_utf8();
-            match c {
-                ')' => break,
-                '\\' => {
-                    if let Some(next) = chars.next() {
-                        consumed += next.len_utf8();
-                        text.push(match next {
-                            'n' | 'r' => ' ',
-                            't' => '\t',
-                            other => other,
-                        });
+    let bytes = stream.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let Some(start) = bytes[cursor..].iter().position(|byte| *byte == b'(') else {
+            break;
+        };
+        let start = cursor + start;
+        let mut index = start + 1;
+        let mut depth = 1;
+        let mut text = Vec::new();
+        while index < bytes.len() && depth > 0 {
+            let byte = bytes[index];
+            index += 1;
+            match byte {
+                b'\\' if index < bytes.len() => {
+                    let escaped = bytes[index];
+                    index += 1;
+                    match escaped {
+                        b'n' => text.push(b'\n'),
+                        b'r' => text.push(b'\r'),
+                        b't' => text.push(b'\t'),
+                        b'b' => text.push(8),
+                        b'f' => text.push(12),
+                        b'(' | b')' | b'\\' => text.push(escaped),
+                        b'\n' => {}
+                        b'\r' => {
+                            if bytes.get(index) == Some(&b'\n') {
+                                index += 1;
+                            }
+                        }
+                        b'0'..=b'7' => {
+                            let mut value = u16::from(escaped - b'0');
+                            for _ in 0..2 {
+                                if let Some(digit @ b'0'..=b'7') = bytes.get(index).copied() {
+                                    value = value * 8 + u16::from(digit - b'0');
+                                    index += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            text.push(value as u8);
+                        }
+                        other => text.push(other),
+                    }
+                }
+                b'(' => {
+                    depth += 1;
+                    text.push(byte);
+                }
+                b')' => {
+                    depth -= 1;
+                    if depth > 0 {
+                        text.push(byte);
                     }
                 }
                 other => text.push(other),
             }
         }
-        output.push(text);
-        rest = &rest[start + 1 + consumed..];
-        if let Some(i) = rest.find("Tj") {
-            rest = &rest[i + 2..];
+        if depth == 0 {
+            output.push(String::from_utf8_lossy(&text).into_owned());
+            cursor = index;
+        } else {
+            break;
         }
     }
     output
+}
+
+fn extract_pdf_lines(stream: &str) -> Vec<(f32, String)> {
+    let mut lines: Vec<(f32, String)> = Vec::new();
+    let mut previous_segment: Option<(f32, f32)> = None;
+    let mut rest = stream;
+    while let Some((_, tail)) = rest.split_once("BT") {
+        let Some((text_object, after)) = tail.split_once("ET") else {
+            break;
+        };
+        if let Some((position, _)) = text_object.split_once(" Tm") {
+            let coordinates: Vec<_> = position.split_whitespace().rev().take(2).collect();
+            let x = coordinates
+                .get(1)
+                .and_then(|value| value.parse::<f32>().ok());
+            let y = coordinates
+                .first()
+                .and_then(|value| value.parse::<f32>().ok());
+            let size = text_object
+                .split_once(" Tf")
+                .and_then(|(font, _)| font.split_whitespace().last())
+                .and_then(|value| value.parse::<u8>().ok())
+                .unwrap_or(11);
+            let text = extract_pdf_strings(text_object).join("");
+            if let (Some(x), Some(y)) = (x, y)
+                && !text.is_empty()
+            {
+                if let Some((last_y, line)) = lines.last_mut()
+                    && (*last_y - y).abs() < 0.1
+                {
+                    if let Some((previous_x, previous_width)) = previous_segment
+                        && x - (previous_x + previous_width) > 1.5
+                    {
+                        line.push(' ');
+                    }
+                    line.push_str(&text);
+                } else {
+                    lines.push((y, text.clone()));
+                }
+                previous_segment = Some((x, pdf_text_width(&text, size)));
+            }
+        }
+        rest = after;
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -282,6 +377,14 @@ mod tests {
         assert_eq!(
             extract_pdf_strings("BT (one) Tj ET\nBT (two\\(x\\)) Tj ET"),
             ["one", "two(x)"]
+        );
+    }
+
+    #[test]
+    fn unescapes_control_and_octal_sequences() {
+        assert_eq!(
+            extract_pdf_strings(r"(line\n\(nested\)\\\101)"),
+            ["line\n(nested)\\A"]
         );
     }
 }

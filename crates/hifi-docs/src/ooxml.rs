@@ -240,6 +240,14 @@ fn parse_xml(input: &str) -> Result<Node> {
                     .text
                     .push_str(&quick_xml::escape::unescape(&decoded)?);
             }
+            Event::GeneralRef(e) => {
+                let reference = format!("&{};", e.decode()?);
+                stack
+                    .last_mut()
+                    .unwrap()
+                    .text
+                    .push_str(&quick_xml::escape::unescape(&reference)?);
+            }
             Event::CData(e) => stack.last_mut().unwrap().text.push_str(&e.decode()?),
             Event::End(_) if stack.len() > 1 => {
                 let n = stack.pop().unwrap();

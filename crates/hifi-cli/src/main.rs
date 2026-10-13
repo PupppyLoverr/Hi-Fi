@@ -336,7 +336,11 @@ fn doc_command(command: DocCommand, socket: &std::path::Path, timeout: u64) -> R
                 "unsupported document extension"
             );
             let url = format!("hifi://preview/{}", path.to_string_lossy());
-            let response = client::call(socket, methods::TAB_OPEN, json!({"url": url}), timeout)
+            let agent_tab = std::env::var("HIFI_AGENT_TAB")
+                .ok()
+                .filter(|value| !value.is_empty());
+            let params = mcp::doc_open_params(&url, agent_tab.as_deref());
+            let response = client::call(socket, methods::TAB_OPEN, params, timeout)
                 .context("opening document in Hi-Fi")?;
             if !response.ok {
                 anyhow::bail!(response.error.unwrap_or_else(|| "unknown error".into()));

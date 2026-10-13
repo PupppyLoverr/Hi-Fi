@@ -151,7 +151,8 @@ fn doc_open(arguments: &Value, ctx: &Ctx) -> Result<String> {
         "unsupported document extension"
     );
     let url = format!("hifi://preview/{}", path.to_string_lossy());
-    let response = (ctx.call_user_visible)(methods::TAB_OPEN, json!({"url": url}))?;
+    let params = doc_open_params(&url, ctx.agent_tab.as_deref());
+    let response = (ctx.call_user_visible)(methods::TAB_OPEN, params)?;
     if !response.ok {
         bail!(response.error.unwrap_or_else(|| "unknown error".into()));
     }
@@ -162,6 +163,14 @@ fn doc_open(arguments: &Value, ctx: &Ctx) -> Result<String> {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     Ok(format!("Opened {requested} in a user-visible tab ({id})."))
+}
+
+pub(crate) fn doc_open_params(url: &str, agent_tab: Option<&str>) -> Value {
+    let mut params = json!({"url": url, "newTab": true});
+    if let Some(agent_tab) = agent_tab.filter(|tab| !tab.is_empty()) {
+        params["rightOf"] = json!(agent_tab);
+    }
+    params
 }
 
 fn browser_open(arguments: &Value, ctx: &Ctx) -> Result<String> {
@@ -531,6 +540,19 @@ mod tests {
         )
         .expect("valid JSON");
         assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 14);
+    }
+
+    #[test]
+    fn doc_open_requests_a_new_visible_tab_to_the_right_of_its_chat() {
+        let params = doc_open_params("hifi://preview/tmp/report.docx", Some("chat-1"));
+        assert_eq!(params["url"], "hifi://preview/tmp/report.docx");
+        assert_eq!(params["newTab"], true);
+        assert_eq!(params["rightOf"], "chat-1");
+        assert!(
+            doc_open_params("hifi://preview/tmp/report.docx", None)
+                .get("rightOf")
+                .is_none()
+        );
     }
 
     #[test]

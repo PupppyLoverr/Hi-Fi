@@ -1209,10 +1209,54 @@ impl Shell {
                 } else {
                     url
                 };
+                let force_new_tab = job
+                    .request
+                    .params
+                    .get("newTab")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let (group, anchor) = if force_new_tab {
+                    let store = self.store.read(cx);
+                    let anchor = anchor
+                        .filter(|(id, _)| {
+                            store.state.tab(id).is_some_and(|tab| {
+                                store.state.group(&tab.group_id).is_some_and(|group| {
+                                    group.tab_ids().iter().any(|tab_id| tab_id == id)
+                                })
+                            })
+                        })
+                        .or_else(|| {
+                            store
+                                .state
+                                .active_space()
+                                .and_then(|space| {
+                                    space
+                                        .active_group
+                                        .as_ref()
+                                        .and_then(|id| store.state.group(id))
+                                        .or_else(|| space.groups.first())
+                                        .and_then(|group| {
+                                            group.active_tab.clone().filter(|id| {
+                                                group.tab_ids().iter().any(|tab_id| tab_id == id)
+                                            })
+                                        })
+                                })
+                                .map(|id| (id, hifi_core::SplitSide::Right))
+                        });
+                    let group = anchor
+                        .as_ref()
+                        .and_then(|(id, _)| store.state.tab(id).map(|tab| tab.group_id.clone()))
+                        .or(group);
+                    (group, anchor)
+                } else {
+                    (group, anchor)
+                };
                 if !hifi_core::schemes::allowed_navigation(&target_url) {
                     return self.finish_ipc(job, Err("navigation scheme is not allowed".into()));
                 }
-                if let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf")) {
+                if !force_new_tab
+                    && let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf"))
+                {
                     let id = self
                         .store
                         .update(cx, |s, cx| s.open_agent_tab(&target_url, &owner, cx));
