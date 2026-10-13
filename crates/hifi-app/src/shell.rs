@@ -79,6 +79,7 @@ pub struct Shell {
     /// The tab kind each cached pane was built for; a tab whose kind has
     /// since changed (New Tab -> Agent, ...) gets a fresh pane.
     pane_kinds: HashMap<TabId, TabKind>,
+    artifact_html: HashMap<TabId, String>,
     /// Find-bar input, created on first ⌘F.
     find_input: Option<Entity<TextField>>,
     /// WebEvent source; drained each render.
@@ -166,6 +167,7 @@ impl Shell {
             panes: HashMap::new(),
             pane_errors: HashMap::new(),
             pane_kinds: HashMap::new(),
+            artifact_html: HashMap::new(),
             find_input: Some(find_input),
             web_rx,
             web_tx,
@@ -839,6 +841,33 @@ impl Shell {
                         .as_ref()
                         .and_then(|v| v.get("type"))
                         .and_then(|v| v.as_str())
+                        == Some("ui_send")
+                    {
+                        let artifact_root = self.store.read(cx).paths.root.join("artifacts");
+                        let chat_id = self.store.read(cx).state.tab(&tab).and_then(|artifact| {
+                            let path = std::path::Path::new(&artifact.url);
+                            path.starts_with(&artifact_root).then(|| {
+                                path.parent()?
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                            })?
+                        });
+                        let text = message
+                            .as_ref()
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_string);
+                        if let (Some(chat_id), Some(text)) = (chat_id, text) {
+                            self.store.update(cx, |store, cx| {
+                                store.queue_agent_prompt(&chat_id, text, cx);
+                            });
+                        }
+                    } else if message
+                        .as_ref()
+                        .and_then(|v| v.get("type"))
+                        .and_then(|v| v.as_str())
                         == Some("doc_save")
                     {
                         let saved = (|| -> anyhow::Result<()> {
@@ -1051,10 +1080,16 @@ impl Shell {
         }
         let document =
             tab.kind == TabKind::Preview && hifi_docs::DocKind::from_path(&tab.url).is_some();
-        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes) || document;
+        let artifacts_root = self.store.read(cx).paths.root.join("artifacts");
+        let artifact = tab.kind == TabKind::Preview
+            && std::path::Path::new(&tab.url)
+                .extension()
+                .is_some_and(|ext| ext == "html")
+            && std::path::Path::new(&tab.url).starts_with(&artifacts_root);
+        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes) || document || artifact;
         // hifi:// urls never reach the network — the nav delegate would
         // cancel them into WebEvent::Url and open a duplicate tab.
-        let load_url = if tab.url.starts_with("hifi://") || document {
+        let load_url = if tab.url.starts_with("hifi://") || document || artifact {
             ""
         } else {
             &tab.url
@@ -1105,6 +1140,16 @@ impl Shell {
                                 "<!doctype html><meta charset=\"utf-8\"><body style=\"font:14px -apple-system;padding:32px\">Could not open document: {message}</body>"
                             ));
                         }
+                    }
+                } else if artifact {
+                    let html = self
+                        .artifact_html
+                        .get(&tab.id)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&tab.url).ok());
+                    if let Some(html) = html {
+                        host.load_html(&html);
+                        self.artifact_html.insert(tab.id.clone(), html);
                     }
                 }
                 self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));

@@ -116,6 +116,14 @@ impl Palette {
         self.wash(0.08)
     }
 
+    pub fn diff_add(&self) -> Hsla {
+        self.success.opacity(0.10)
+    }
+
+    pub fn diff_del(&self) -> Hsla {
+        self.danger.opacity(0.10)
+    }
+
     /// Selected row plate (cosmos `glass_selected_bg`).
     pub fn selected(&self) -> Hsla {
         self.wash(if self.is_dark { 0.11 } else { 0.06 })

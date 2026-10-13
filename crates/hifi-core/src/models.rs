@@ -540,6 +540,12 @@ pub struct Settings {
     /// Default working folder for new chats; empty = home.
     #[serde(default)]
     pub agent_cwd: String,
+    #[serde(default)]
+    pub composio_api_key: String,
+    #[serde(default)]
+    pub computer_use: bool,
+    #[serde(default)]
+    pub cua_driver_path: String,
 }
 
 fn default_harness() -> String {
@@ -578,6 +584,9 @@ impl Default for Settings {
             agent_model: default_model(),
             agent_guard: Guard::default(),
             agent_cwd: String::new(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
         }
     }
 }

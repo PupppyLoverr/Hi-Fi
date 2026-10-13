@@ -6,7 +6,7 @@ use hifi_core::{
     Group, GroupId, HifiPaths, RoutedUrl, Settings, Space, SplitNode, SplitSide, Tab, TabId,
     TabKind, WorkspaceState, route,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::theme::Theme;
 
@@ -48,6 +48,7 @@ pub struct Store {
     pub failed_agents: HashSet<TabId>,
     pub pending_context_menu: Option<(TabId, Point<Pixels>)>,
     pub pending_space_menu: Option<Point<Pixels>>,
+    pending_agent_prompts: HashMap<TabId, String>,
 }
 
 fn prune_empty_dock_tabs(state: &mut WorkspaceState, keep_one_per_dock: bool) {
@@ -248,6 +249,7 @@ impl Store {
             failed_agents: HashSet::new(),
             pending_context_menu: None,
             pending_space_menu: None,
+            pending_agent_prompts: HashMap::new(),
         })
     }
 
@@ -289,6 +291,22 @@ impl Store {
         } else {
             self.open_tab("hifi://settings", None, None, cx);
         }
+    }
+
+    pub fn queue_agent_prompt(&mut self, tab_id: &str, prompt: String, cx: &mut Context<Self>) {
+        if self
+            .state
+            .tab(tab_id)
+            .is_some_and(|tab| tab.kind == TabKind::Agent)
+        {
+            self.pending_agent_prompts
+                .insert(tab_id.to_string(), prompt);
+            cx.notify();
+        }
+    }
+
+    pub fn take_agent_prompt(&mut self, tab_id: &str) -> Option<String> {
+        self.pending_agent_prompts.remove(tab_id)
     }
 
     // ----- tab ops -----

@@ -202,6 +202,9 @@ pub struct RunConfig {
     pub guard: Guard,
     pub session: String,
     pub prompt: String,
+    pub composio_api_key: String,
+    pub computer_use: bool,
+    pub cua_driver_path: String,
     /// Owning chat tab: browser tools open tabs under it.
     pub tab_id: String,
     pub first_turn: bool,
@@ -526,7 +529,9 @@ Permission level: {} ({}). To use the web, call the hifi browser_* tools: browse
 open a page in your own tab (the user's tabs are never touched), then browser_read for the \
 text, browser_snapshot for clickable elements, browser_click / browser_type / browser_scroll \
 to interact. Use doc_create, doc_read, and doc_open for PDF, DOCX, PPTX, and XLSX files; \
-after creating a document, call doc_open so the user sees it. Keep answers concise.\n\nTask: ",
+after creating a document, call doc_open so the user sees it. Visual answers may use fenced \
+mermaid, math, or hifi-ui blocks; hifi-ui can call hifi.send(text) to reply to you. Keep answers \
+concise.\n\nTask: ",
         guard.label(),
         guard.describe()
     )
@@ -1080,6 +1085,9 @@ mod tests {
             guard: Guard::Strict,
             session: "s".into(),
             prompt: "hello".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
             tab_id: "tab-1".into(),
             first_turn: false,
         };
@@ -1240,6 +1248,9 @@ mod tests {
             guard: Guard::Strict,
             session: String::new(),
             prompt: "Reply with exactly the word PONG and nothing else.".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
             tab_id: "test-tab".into(),
             first_turn: false,
         };
