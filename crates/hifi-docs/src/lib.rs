@@ -22,9 +22,56 @@ pub fn write(path: &Path, doc: &Document) -> Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
+    let mut sanitized = doc.clone();
+    sanitize_document(&mut sanitized);
     match kind {
-        DocKind::Pdf => pdf::write(path, doc),
-        DocKind::Docx | DocKind::Pptx | DocKind::Xlsx => ooxml::write(path, doc),
+        DocKind::Pdf => pdf::write(path, &sanitized),
+        DocKind::Docx | DocKind::Pptx | DocKind::Xlsx => ooxml::write(path, &sanitized),
+    }
+}
+
+fn sanitize_document(doc: &mut Document) {
+    fn clean(text: &mut String) {
+        text.retain(|c| {
+            let code = c as u32;
+            !((code < 0x20 && c != '\t' && c != '\n')
+                || (0xE000..=0xF8FF).contains(&code)
+                || (0xF0000..=0xFFFFD).contains(&code)
+                || (0x100000..=0x10FFFD).contains(&code))
+        });
+    }
+
+    clean(&mut doc.title);
+    for block in &mut doc.blocks {
+        match block {
+            Block::Heading { text, .. }
+            | Block::Paragraph { text }
+            | Block::Bullet { text }
+            | Block::Numbered { text }
+            | Block::Quote { text }
+            | Block::Code { text } => clean(text),
+            Block::Table { rows } => {
+                for cell in rows.iter_mut().flatten() {
+                    clean(cell);
+                }
+            }
+            Block::PageBreak => {}
+        }
+    }
+    for slide in &mut doc.slides {
+        clean(&mut slide.title);
+        clean(&mut slide.notes);
+        for bullet in &mut slide.bullets {
+            clean(bullet);
+        }
+    }
+    for sheet in &mut doc.sheets {
+        clean(&mut sheet.name);
+        for cell in sheet.rows.iter_mut().flatten() {
+            if let Cell::Text(text) = cell {
+                clean(text);
+            }
+        }
     }
 }
 
@@ -233,5 +280,76 @@ mod tests {
         assert!(html.contains("Delivery begins Monday"));
         assert!(html.contains("doc_save"));
         assert!(html.contains("Save"));
+        assert!(html.contains("editorSelector"));
+        assert!(html.contains("selectNodeContents"));
+        assert!(html.contains("PageDown"));
+    }
+
+    #[test]
+    fn write_removes_editor_control_and_private_use_characters() {
+        let dirty = "workflow.\u{4}\u{f700} EDITED";
+        let clean = "workflow. EDITED";
+        let mut preserved = Document::docx(
+            "Title",
+            vec![Block::Paragraph {
+                text: "line one\n\tline two".into(),
+            }],
+        );
+        sanitize_document(&mut preserved);
+        assert_eq!(
+            preserved.blocks,
+            vec![Block::Paragraph {
+                text: "line one\n\tline two".into()
+            }]
+        );
+
+        let docx_path = temp_path("docx");
+        write(
+            &docx_path,
+            &Document::docx("Title", vec![Block::Paragraph { text: dirty.into() }]),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&docx_path).unwrap().blocks,
+            vec![Block::Paragraph { text: clean.into() }]
+        );
+        let _ = std::fs::remove_file(docx_path);
+
+        let pptx_path = temp_path("pptx");
+        write(
+            &pptx_path,
+            &Document::pptx(
+                "Title",
+                vec![Slide {
+                    title: dirty.into(),
+                    bullets: vec![dirty.into()],
+                    notes: dirty.into(),
+                }],
+            ),
+        )
+        .unwrap();
+        let slide = &read(&pptx_path).unwrap().slides[0];
+        assert_eq!(slide.title, clean);
+        assert_eq!(slide.bullets, [clean]);
+        assert_eq!(slide.notes, clean);
+        let _ = std::fs::remove_file(pptx_path);
+
+        let xlsx_path = temp_path("xlsx");
+        write(
+            &xlsx_path,
+            &Document::xlsx(
+                "Title",
+                vec![Sheet {
+                    name: "Sheet1".into(),
+                    rows: vec![vec![Cell::Text(dirty.into())]],
+                }],
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&xlsx_path).unwrap().sheets[0].rows,
+            vec![vec![Cell::Text(clean.into())]]
+        );
+        let _ = std::fs::remove_file(xlsx_path);
     }
 }

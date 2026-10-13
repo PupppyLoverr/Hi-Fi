@@ -54,13 +54,44 @@ pub fn editor_html(doc: &Document, path: &str, pdf_bytes: Option<&[u8]>, dark: b
             DocKind::Pptx => pptx_app(),
             DocKind::Pdf => String::new(),
         };
+        let keyboard = editor_keyboard_js();
         format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>{}</title><style>{}</style></head><body><header><div class="filename">{}</div><div class="tools" id="toolbar"></div></header><main id="app"></main><script>const d={data};{app}</script></body></html>"#,
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>{}</title><style>{}</style></head><body><header><div class="filename">{}</div><div class="tools" id="toolbar"></div></header><main id="app"></main><script>const d={data};{keyboard}{app}</script></body></html>"#,
             html(filename),
             base_css(bg, text, muted, faint, accent, border, wash),
             html(filename)
         )
     }
+}
+
+fn editor_keyboard_js() -> &'static str {
+    r#"
+const editorSelector='#app [contenteditable="true"],#app input,#app textarea';
+const editorKeys=new Set(['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','Home','End','Tab','Enter','Escape','Insert']);
+const privateUse=c=>{const n=c.codePointAt(0)||0;return (n>=0xE000&&n<=0xF8FF)||(n>=0xF0000&&n<=0xFFFFD)||(n>=0x100000&&n<=0x10FFFD)};
+const invalidText=c=>{const n=c.codePointAt(0)||0;return (n<0x20&&c!=='\t'&&c!=='\n')||privateUse(c)};
+const editorField=target=>target instanceof Element?target.closest(editorSelector):null;
+document.addEventListener('beforeinput',e=>{if(editorField(e.target)&&typeof e.data==='string'&&Array.from(e.data).some(invalidText))e.preventDefault()},true);
+document.addEventListener('keydown',e=>{
+  const field=editorField(e.target);if(!field)return;
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='a'){
+    e.preventDefault();e.stopPropagation();
+    if(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement)field.select();
+    else{const r=document.createRange();r.selectNodeContents(field);const s=getSelection();s.removeAllRanges();s.addRange(r)}
+    return;
+  }
+  if(e.key==='Home'||e.key==='End'){
+    e.preventDefault();e.stopPropagation();
+    if(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement){const p=e.key==='Home'?0:field.value.length;field.setSelectionRange(p,p)}
+    else{const s=getSelection();if(s&&s.modify)s.modify('move',e.key==='Home'?'backward':'forward','lineboundary');else{const r=document.createRange();r.selectNodeContents(field);r.collapse(e.key==='Home');s.removeAllRanges();s.addRange(r)}}
+    return;
+  }
+  if(e.metaKey||e.ctrlKey||e.altKey||e.isComposing)return;
+  const key=e.key||'',one=Array.from(key).length===1;
+  const printable=one&&!/[\u0000-\u001f\u007f-\u009f]/.test(key)&&!Array.from(key).some(privateUse);
+  if(!printable&&!editorKeys.has(key))e.preventDefault();
+},true);
+"#
 }
 
 fn base_css(

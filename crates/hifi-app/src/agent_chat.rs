@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::Engine;
 use futures::StreamExt;
 
 use crate::agent_runner::{self, AgentEvent, HARNESSES, RunConfig};
@@ -718,7 +719,7 @@ fn artifact_html(kind: &str, content: &str, dark: bool) -> Option<String> {
         ),
         "math" => format!(
             "<style>{}</style><div id=\"math\"></div><script>{}</script><script>katex.render({},document.getElementById('math'),{{displayMode:true,throwOnError:false}})</script>",
-            include_str!("../assets/vendor/katex-0.16.11.min.css"),
+            inline_katex_css(),
             include_str!("../assets/vendor/katex-0.16.11.min.js"),
             serde_json::to_string(content).ok()?,
         ),
@@ -729,6 +730,101 @@ fn artifact_html(kind: &str, content: &str, dark: bool) -> Option<String> {
     Some(format!(
         "<!doctype html><html><head>{style}</head><body>{body}{bridge}</body></html>"
     ))
+}
+
+fn inline_katex_css() -> String {
+    let mut css = include_str!("../assets/vendor/katex-0.16.11.min.css").to_string();
+    for (name, font) in [
+        (
+            "KaTeX_AMS-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_AMS-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Caligraphic-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Caligraphic-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Caligraphic-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Caligraphic-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Fraktur-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Fraktur-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Fraktur-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Fraktur-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-BoldItalic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-BoldItalic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Main-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Main-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Math-BoldItalic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Math-BoldItalic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Math-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Math-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Bold",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Bold.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Italic",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Italic.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_SansSerif-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_SansSerif-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Script-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Script-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size1-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size1-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size2-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size2-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size3-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size3-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Size4-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Size4-Regular.woff2").as_slice(),
+        ),
+        (
+            "KaTeX_Typewriter-Regular",
+            include_bytes!("../assets/vendor/fonts/KaTeX_Typewriter-Regular.woff2").as_slice(),
+        ),
+    ] {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(font);
+        css = css.replace(
+            &format!("url(fonts/{name}.woff2)"),
+            &format!("url(data:font/woff2;base64,{encoded})"),
+        );
+        css = css.replace(&format!(",url(fonts/{name}.woff) format(\"woff\")"), "");
+        css = css.replace(&format!(",url(fonts/{name}.ttf) format(\"truetype\")"), "");
+    }
+    css
 }
 
 fn escape_html(text: &str) -> String {
@@ -1814,8 +1910,8 @@ impl gpui::Render for AgentChatView {
 #[cfg(test)]
 mod tests {
     use super::{
-        Item, MarkdownBlock, compact_error, diff_summary, looks_like_diff, parse_image_line,
-        parse_inline, parse_markdown, step_group_end,
+        Item, MarkdownBlock, artifact_html, compact_error, diff_summary, inline_katex_css,
+        looks_like_diff, parse_image_line, parse_inline, parse_markdown, step_group_end,
     };
 
     fn step(id: &str) -> Item {
@@ -1925,6 +2021,16 @@ mod tests {
             Some(("local".into(), "/tmp/local.png".into()))
         );
         assert_eq!(parse_image_line("![relative](images/diagram.png)"), None);
+    }
+
+    #[test]
+    fn artifact_html_embeds_math_fonts_without_relative_resources() {
+        let html = artifact_html("math", "x^2", false).unwrap();
+        assert!(html.contains("data:font/woff2;base64,"));
+        assert!(!inline_katex_css().contains("url(fonts/"));
+        let mermaid = artifact_html("mermaid", "graph TD; A-->B;", false).unwrap();
+        assert!(mermaid.contains("mermaid.initialize"));
+        assert!(!mermaid.contains("<script src="));
     }
 
     #[test]

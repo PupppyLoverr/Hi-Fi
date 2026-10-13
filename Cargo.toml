@@ -15,6 +15,7 @@ publish = false
 
 [workspace.dependencies]
 hifi-core = { path = "crates/hifi-core" }
+base64 = "0.22"
 
 # gpui — zeronsh/zui, the same fork cosmos uses (backdrop blur + edge fades +
 # native-view compositing above the GPU scene).

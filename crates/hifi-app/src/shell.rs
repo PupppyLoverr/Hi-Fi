@@ -58,6 +58,13 @@ fn accepts_nav_url(kind: TabKind) -> bool {
     kind == TabKind::Web
 }
 
+fn is_artifact_html_path(path: &std::path::Path, artifacts_root: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        && path.starts_with(artifacts_root)
+}
+
 fn accepts_native_title(kind: TabKind, title: &str) -> bool {
     kind == TabKind::Web
         || (!title.trim().is_empty() && !title.trim().eq_ignore_ascii_case("about:blank"))
@@ -1082,10 +1089,7 @@ impl Shell {
             tab.kind == TabKind::Preview && hifi_docs::DocKind::from_path(&tab.url).is_some();
         let artifacts_root = self.store.read(cx).paths.root.join("artifacts");
         let artifact = tab.kind == TabKind::Preview
-            && std::path::Path::new(&tab.url)
-                .extension()
-                .is_some_and(|ext| ext == "html")
-            && std::path::Path::new(&tab.url).starts_with(&artifacts_root);
+            && is_artifact_html_path(std::path::Path::new(&tab.url), &artifacts_root);
         let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes) || document || artifact;
         // hifi:// urls never reach the network — the nav delegate would
         // cancel them into WebEvent::Url and open a duplicate tab.
@@ -1626,6 +1630,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = Theme::of(cx).palette;
+        let artifacts_root = self.store.read(cx).paths.root.join("artifacts");
         let web_kind = |k: TabKind| matches!(k, TabKind::Web | TabKind::Notes);
         match self.pane_kinds.insert(tab.id.clone(), tab.kind) {
             Some(old) if old != tab.kind && !(web_kind(old) && web_kind(tab.kind)) => {
@@ -1770,7 +1775,10 @@ impl Shell {
                 );
                 div().size_full().child(view).into_any()
             }
-            TabKind::Preview if hifi_docs::DocKind::from_path(&tab.url).is_some() => {
+            TabKind::Preview
+                if hifi_docs::DocKind::from_path(&tab.url).is_some()
+                    || is_artifact_html_path(std::path::Path::new(&tab.url), &artifacts_root) =>
+            {
                 match self.web_host(tab, Theme::of(cx).palette.is_dark, window, cx) {
                     Some(host) => Self::web_surface(&host, &self.focus).into_any(),
                     None => {
@@ -3544,8 +3552,9 @@ impl gpui::Render for Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{accepts_native_title, accepts_nav_url};
+    use super::{accepts_native_title, accepts_nav_url, is_artifact_html_path};
     use hifi_core::TabKind;
+    use std::path::Path;
 
     #[test]
     fn native_navigation_urls_only_update_web_tabs() {
@@ -3562,5 +3571,16 @@ mod tests {
         assert!(!accepts_native_title(TabKind::Preview, " ABOUT:BLANK "));
         assert!(accepts_native_title(TabKind::Preview, "report.docx"));
         assert!(accepts_native_title(TabKind::Web, ""));
+    }
+
+    #[test]
+    fn artifact_html_paths_route_to_webview() {
+        let root = Path::new("/Users/example/Library/Application Support/HiFi/artifacts");
+        assert!(is_artifact_html_path(&root.join("chat-id/1.html"), root));
+        assert!(!is_artifact_html_path(&root.join("chat-id/1.png"), root));
+        assert!(!is_artifact_html_path(
+            Path::new("/Users/example/Library/Application Support/HiFi/notes/1.html"),
+            root
+        ));
     }
 }
