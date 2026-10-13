@@ -1,22 +1,23 @@
 //! Hi-Fi theme — the cosmos design tokens, ported 1:1.
 //!
-//! Dark:  bg #060606 / shell #0d0d0d / dialog #161616 / raised #343438 /
-//!        card #0e0e0e / text #e8e8ea / muted #a9a9ae / faint #85858a
-//! Light: bg #ffffff / shell #f3f3f5 / card #ffffff / text #303035 /
+//! Dark:  bg/card #0b0b0c / shell #141416 / dialog #161616 / raised #343438 /
+//!        text #e8e8ea / muted #a9a9ae / faint #85858a
+//! Light: bg #ffffff / shell #eef3f8 / card #ffffff / text #303035 /
 //!        muted #62626a / faint #797981
-//! Radii: 16 / 10 / 6. Fonts: platform UI font + Geist Mono (code/terminal).
+//! Radii: 12 / 10 / 9 / 6. Fonts: platform UI font + Geist Mono (code/terminal).
 
-use gpui::{App, Global, Hsla, hsla};
+use gpui::{App, BoxShadow, Global, Hsla, hsla, px};
 use hifi_core::{Appearance, Settings};
 
 pub const FONT_MONO: &str = "Geist Mono";
-
-/// Corner radii.
-pub mod radius {
-    use gpui::{Pixels, px};
-    pub const BUBBLE: Pixels = px(16.);
-    pub const ROUND: Pixels = px(6.);
-}
+pub const CARD_INSET: f32 = 8.0;
+pub const CARD_RADIUS: f32 = 12.0;
+pub const TOOLBAR_H: f32 = 44.0;
+pub const PANE_STRIP_H: f32 = 30.0;
+pub const ROW_H: f32 = 32.0;
+pub const ROW_RADIUS: f32 = 9.0;
+pub const SECTION_HEADER_H: f32 = 28.0;
+pub const SIDEBAR_WIDTH: f32 = 248.0;
 
 pub mod space {
     use gpui::{Pixels, px};
@@ -35,12 +36,9 @@ pub struct Palette {
     pub muted: Hsla,
     pub faint: Hsla,
     pub accent: Hsla,
-    #[allow(dead_code)]
-    pub accent_soft: Hsla,
     pub border: Hsla,
     pub border_strong: Hsla,
     pub danger: Hsla,
-    #[allow(dead_code)]
     pub success: Hsla,
     pub is_dark: bool,
 }
@@ -153,18 +151,27 @@ impl Palette {
         }
     }
 
+    pub fn shadow_card(&self) -> Vec<BoxShadow> {
+        if self.is_dark {
+            return Vec::new();
+        }
+        vec![
+            BoxShadow::new(px(0.), px(1.), self.ink(0.04)).blur_radius(px(2.)),
+            BoxShadow::new(px(0.), px(8.), self.ink(0.06)).blur_radius(px(24.)),
+        ]
+    }
+
     pub fn dark(accent: Hsla) -> Self {
         Self {
-            bg: color(0x060606),
-            shell: color(0x0d0d0d),
+            bg: color(0x0b0b0c),
+            shell: color(0x141416),
             dialog: color(0x161616),
             raised: color(0x343438),
-            card: color(0x0e0e0e),
+            card: color(0x0b0b0c),
             text: color(0xe8e8ea),
             muted: color(0xa9a9ae),
             faint: color(0x85858a),
             accent,
-            accent_soft: accent.opacity(0.16),
             border: hsla(0., 0., 1., 0.07),
             border_strong: hsla(0., 0., 1., 0.13),
             danger: color(0xef6a6a),
@@ -184,7 +191,6 @@ impl Palette {
             muted: color(0x62626a),
             faint: color(0x797981),
             accent,
-            accent_soft: accent.opacity(0.14),
             border: hsla(0., 0., 0., 0.07),
             border_strong: hsla(0., 0., 0., 0.13),
             danger: color(0xd13d3d),
@@ -204,19 +210,11 @@ impl Global for Theme {}
 
 impl Theme {
     pub const SPACE_SM: f32 = 8.0;
-    pub const SIDEBAR_WIDTH: f32 = 244.0;
     pub const SIDEBAR_MIN: f32 = 200.0;
     pub const SIDEBAR_MAX: f32 = 320.0;
-    pub const SIDEBAR_TOP_PAD: f32 = 38.0;
-    pub const SPACE_SWITCHER_H: f32 = 28.0;
-    pub const SECTION_HEADER_H: f32 = 24.0;
-    pub const ROW_H: f32 = 30.0;
-    pub const ROW_RADIUS: f32 = 8.0;
-    pub const SPACE_DOCK_H: f32 = 48.0;
-    pub const PANE_TOOLBAR_H: f32 = 40.0;
     pub const TOOLBAR_BTN: f32 = 24.0;
-    pub const ADDRESS_H: f32 = 24.0;
-    pub const ICON_OPTICAL: f32 = 14.0;
+    pub const ADDRESS_H: f32 = 28.0;
+    pub const ICON_OPTICAL: f32 = 15.0;
 
     /// Whether surfaces sit on the compositor-blurred glass shell.
     pub const fn is_frost() -> bool {

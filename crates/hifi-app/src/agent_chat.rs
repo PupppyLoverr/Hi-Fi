@@ -52,6 +52,101 @@ enum Item {
     },
 }
 
+pub(crate) fn latest_assistant_preview(path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let items: Vec<Item> = serde_json::from_str(&contents).ok()?;
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            Item::Text { text, .. } => Some(assistant_preview(text)),
+            _ => None,
+        })
+        .flatten()
+}
+
+fn assistant_preview(text: &str) -> Option<String> {
+    let mut fence = None;
+    let mut had_fence = false;
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some((marker, length)) = fence {
+            if is_closing_fence(trimmed, marker, length) {
+                fence = None;
+            }
+            continue;
+        }
+
+        if let Some((marker, length)) = fence_marker(trimmed) {
+            fence = Some((marker, length));
+            had_fence = true;
+            continue;
+        }
+
+        let cleaned = strip_preview_prefix(line)
+            .replace("**", "")
+            .replace("__", "")
+            .replace("$$", "")
+            .replace('`', "");
+        let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !cleaned.is_empty() {
+            lines.push(cleaned);
+            if lines.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    let preview = lines.join(" ");
+    if preview.is_empty() {
+        had_fence.then(|| "Created an artifact".into())
+    } else {
+        Some(preview)
+    }
+}
+
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let length = line.chars().take_while(|ch| *ch == marker).count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn is_closing_fence(line: &str, marker: char, minimum_length: usize) -> bool {
+    let length = line.chars().take_while(|ch| *ch == marker).count();
+    length >= minimum_length && line[length..].trim().is_empty()
+}
+
+fn strip_preview_prefix(line: &str) -> &str {
+    let mut line = line.trim_start();
+    loop {
+        let marker = line.chars().next();
+        if matches!(marker, Some('#' | '-' | '*' | '>')) {
+            line = line[1..].trim_start();
+            continue;
+        }
+
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0
+            && line[digits..].starts_with('.')
+            && line[digits + 1..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            line = line[digits + 1..].trim_start();
+            continue;
+        }
+
+        return line;
+    }
+}
+
 pub struct AgentChatView {
     store: Entity<Store>,
     tab_id: String,
@@ -78,7 +173,7 @@ impl AgentChatView {
     ) -> Self {
         let settings_id = tab_id.clone();
         store.update(cx, |s, cx| s.hydrate_agent_settings(&settings_id, cx));
-        let input = cx.new(|cx| TextField::new("Reply, @ for context", cx));
+        let input = cx.new(|cx| TextField::new("Reply, @ context", cx));
         cx.subscribe(&input, |me: &mut AgentChatView, input, event, cx| {
             let TextFieldEvent::Submitted(text) = event else {
                 return;
@@ -708,7 +803,7 @@ fn artifact_html(kind: &str, content: &str, dark: bool) -> Option<String> {
         "color-scheme:light;--bg:#fff;--fg:#171717;--muted:#666;--border:#ddd"
     };
     let style = format!(
-        "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>:root{{{palette}}}*{{box-sizing:border-box}}html,body{{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font:15px -apple-system,BlinkMacSystemFont,sans-serif}}body{{padding:32px}}a{{color:inherit}}button,input,textarea{{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px}}pre{{white-space:pre-wrap}}.mermaid{{display:flex;justify-content:center}}</style>"
+        "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>:root{{{palette}}}*{{box-sizing:border-box}}html,body{{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font:15px -apple-system,BlinkMacSystemFont,sans-serif}}body{{padding:24px}}a{{color:inherit}}button,input,textarea{{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px}}pre{{white-space:pre-wrap}}.mermaid{{display:flex;justify-content:center;width:100%;max-width:100%;overflow-x:auto}}.mermaid svg{{max-width:100%;width:100%;height:auto}}</style>"
     );
     let body = match kind {
         "mermaid" => format!(
@@ -862,8 +957,8 @@ fn markdown_text(
     for block in parse_markdown(text) {
         let element = match block {
             MarkdownBlock::Text(inline) => div()
-                .text_size(px(13.5))
-                .line_height(px(21.))
+                .text_size(px(14.))
+                .line_height(px(22.4))
                 .child(inline_element(&inline)),
             MarkdownBlock::Bullet(inline) => div()
                 .flex()
@@ -874,17 +969,17 @@ fn markdown_text(
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .text_size(px(13.5))
-                        .line_height(px(21.))
+                        .text_size(px(14.))
+                        .line_height(px(22.4))
                         .child(inline_element(&inline)),
                 ),
             MarkdownBlock::Heading { level, text } => div()
                 .text_size(px(match level {
-                    1 => 16.,
-                    2 => 14.5,
-                    _ => 13.5,
+                    1 => 18.,
+                    2 => 16.,
+                    _ => 14.,
                 }))
-                .line_height(px(21.))
+                .line_height(px(22.4))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(inline_element(&text)),
             MarkdownBlock::Code(code) => div()
@@ -894,16 +989,20 @@ fn markdown_text(
                 .rounded(px(8.))
                 .bg(p.ink(0.04))
                 .font_family(FONT_MONO)
-                .text_size(px(12.))
-                .line_height(px(18.))
+                .text_size(px(12.5))
+                .line_height(px(19.))
                 .child(code),
             MarkdownBlock::Image { alt, src } => div()
                 .w_full()
-                .max_w(px(720.))
+                .max_w(px(420.))
                 .max_h(px(320.))
                 .overflow_hidden()
                 .rounded(px(10.))
-                .child(img(src).max_w(px(720.)).max_h(px(320.)).rounded(px(10.)))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.card)
+                .p(px(4.))
+                .child(img(src).max_w(px(420.)).max_h(px(320.)).rounded(px(7.)))
                 .child(div().text_size(px(10.)).text_color(p.faint).child(alt)),
             MarkdownBlock::Artifact { kind, content } => div().child(open_artifact(kind, content)),
             MarkdownBlock::Blank => div().h(px(4.)).flex_none(),
@@ -920,6 +1019,17 @@ fn compact_error(error: &str) -> String {
         visible.push('…');
     }
     visible
+}
+
+fn artifact_kind_label(kind: &str) -> String {
+    let lower = kind.to_ascii_lowercase();
+    let mut chars = lower.chars();
+    let Some(first) = chars.next() else {
+        return lower;
+    };
+    let mut label = first.to_uppercase().collect::<String>();
+    label.push_str(chars.as_str());
+    label
 }
 
 fn error_label(error: &str) -> &'static str {
@@ -1084,22 +1194,29 @@ pub fn chip(
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
     let p = *p;
+    let label: SharedString = label.into();
+    let icon_only = label.is_empty();
     div()
         .id(id.into())
         .flex()
         .items_center()
         .gap(px(6.))
-        .h(px(24.))
+        .h(px(28.))
         .pl(px(7.))
         .pr(if chevron { px(5.) } else { px(8.) })
+        .when(icon_only, |d| {
+            d.w(px(28.)).px(px(0.)).justify_center().gap(px(0.))
+        })
         .rounded(px(8.))
-        .text_size(px(11.5))
+        .text_size(px(12.5))
         .text_color(p.muted)
         .cursor_pointer()
         .hover(|s| s.bg(p.wash(0.06)).text_color(p.text))
         .child(glyph(icon, 13., p.text.opacity(0.8)))
-        .child(div().min_w(px(0.)).truncate().child(label.into()))
-        .when(chevron, |d| {
+        .when(!icon_only, |d| {
+            d.child(div().min_w(px(0.)).truncate().child(label))
+        })
+        .when(chevron && !icon_only, |d| {
             d.child(glyph(icons::ALT_ARROW_DOWN, 9., p.faint))
         })
 }
@@ -1226,7 +1343,7 @@ fn step_row(
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(glyph(icon, 14., p.muted))
+        .child(glyph(icon, 14., p.faint))
         .child(
             div()
                 .flex_1()
@@ -1234,8 +1351,7 @@ fn step_row(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .font_family(crate::theme::FONT_MONO)
-                .text_size(px(11.5))
+                .text_size(px(13.5))
                 .text_color(p.muted)
                 .child(title),
         )
@@ -1254,6 +1370,7 @@ impl gpui::Render for AgentChatView {
             }
         }
         let p = Theme::of(cx).palette;
+        let compact_width = f32::from(window.viewport_size().width) < 760.;
         let tab = self.tab(cx);
         let harness = tab
             .as_ref()
@@ -1279,7 +1396,7 @@ impl gpui::Render for AgentChatView {
 
         let mut transcript = div()
             .w_full()
-            .max_w(px(720.))
+            .max_w(px(760.))
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -1313,8 +1430,11 @@ impl gpui::Render for AgentChatView {
         }
 
         let mut i = 0;
+        let mut expanded_step_group_until = 0;
         while i < self.items.len() {
-            if let Some(end) = step_group_end(&self.items, i) {
+            if i >= expanded_step_group_until
+                && let Some(end) = step_group_end(&self.items, i)
+            {
                 let first_id = match &self.items[i] {
                     Item::Step { id, .. } => id.clone(),
                     _ => unreachable!(),
@@ -1322,15 +1442,6 @@ impl gpui::Render for AgentChatView {
                 let running = self.items[i..end]
                     .iter()
                     .any(|item| matches!(item, Item::Step { done: false, .. }));
-                let last_title = match &self.items[end - 1] {
-                    Item::Step {
-                        tool,
-                        title,
-                        output,
-                        ..
-                    } => display_tool_title(tool, title, output, &cwd),
-                    _ => String::new(),
-                };
                 let expanded = running || self.expanded_groups.contains(&first_id);
                 let count = end - i;
                 let group_key = first_id.clone();
@@ -1360,8 +1471,7 @@ impl gpui::Render for AgentChatView {
                             .min_w(px(0.))
                             .text_size(px(11.5))
                             .text_color(p.muted)
-                            .truncate()
-                            .child(format!("{count} steps · {last_title}")),
+                            .child(format!("{count} steps")),
                     )
                     .when(running, |d| {
                         d.child(glyph(icons::RESTART, 12., p.muted).with_animation(
@@ -1385,6 +1495,7 @@ impl gpui::Render for AgentChatView {
                     i = end;
                     continue;
                 }
+                expanded_step_group_until = end;
             }
             let item = &self.items[i];
             let el = match item {
@@ -1396,13 +1507,15 @@ impl gpui::Render for AgentChatView {
                     .mb(px(10.))
                     .child(
                         div()
-                            .max_w(px(460.))
+                            .max_w(gpui::relative(0.85))
+                            .min_w(px(0.))
                             .px(px(14.))
                             .py(px(9.))
-                            .rounded(px(12.))
-                            .bg(p.ink(0.07))
-                            .text_size(px(13.5))
+                            .rounded(px(14.))
+                            .bg(p.ink(0.05))
+                            .text_size(px(14.))
                             .text_color(p.text)
+                            .whitespace_normal()
                             .child(text.clone()),
                     ),
                 Item::Step {
@@ -1564,41 +1677,76 @@ impl gpui::Render for AgentChatView {
                                 .chars()
                                 .take(56)
                                 .collect::<String>();
+                            let kind_label = artifact_kind_label(&kind);
                             let artifact_kind = kind.clone();
                             let artifact_content = content.clone();
                             let view = view.clone();
                             div()
                                 .w_full()
+                                .h(px(56.))
                                 .p(px(12.))
-                                .rounded(px(9.))
+                                .rounded(px(12.))
                                 .border_1()
                                 .border_color(p.border)
-                                .bg(p.ink(0.04))
+                                .bg(p.card)
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
-                                .child(glyph(icon, 15., p.muted))
+                                .child(
+                                    div()
+                                        .size(px(32.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(8.))
+                                        .bg(p.ink(0.05))
+                                        .child(glyph(icon, 16., p.muted)),
+                                )
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w(px(0.))
-                                        .text_size(px(12.))
-                                        .text_color(p.text)
-                                        .truncate()
-                                        .child(if heading.is_empty() {
-                                            kind.to_uppercase()
-                                        } else {
-                                            heading
-                                        }),
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .text_size(px(13.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(p.text)
+                                                .child(if heading.is_empty() {
+                                                    "Untitled".to_string()
+                                                } else {
+                                                    heading
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .text_size(px(12.))
+                                                .text_color(p.faint)
+                                                .child(kind_label),
+                                        ),
                                 )
                                 .child(
                                     div()
-                                        .px(px(9.))
-                                        .py(px(5.))
+                                        .h(px(28.))
+                                        .flex_none()
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
                                         .rounded(px(6.))
-                                        .bg(p.wash(0.07))
-                                        .text_size(px(11.))
+                                        .text_size(px(12.))
                                         .text_color(p.muted)
+                                        .hover(|s| s.bg(p.wash(0.06)))
                                         .child("Open"),
                                 )
                                 .cursor_pointer()
@@ -1715,15 +1863,13 @@ impl gpui::Render for AgentChatView {
         let send_btn = div()
             .id("chat-send")
             .flex_none()
-            .size(px(30.))
+            .size(px(28.))
             .rounded_full()
             .flex()
             .items_center()
             .justify_center()
             .when(can_send || running, |d| d.cursor_pointer())
-            .bg(if running {
-                p.danger
-            } else if can_send {
+            .bg(if running || can_send {
                 p.text
             } else {
                 p.ink(0.08)
@@ -1768,34 +1914,34 @@ impl gpui::Render for AgentChatView {
 
         let composer = div()
             .w_full()
-            .max_w(px(720.))
-            .px(px(20.))
-            .pb(px(12.))
+            .max_w(px(760.))
+            .px(px(12.))
+            .pb(px(16.))
             .flex()
             .flex_col()
             .gap(px(4.))
             .children(tab_strip)
             .child(
                 div()
-                    .h(px(48.))
+                    .min_h(px(48.))
                     .pl(px(8.))
                     .pr(px(8.))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .rounded(px(16.))
-                    .bg(p.glass_overlay())
+                    .gap(px(4.))
+                    .rounded(px(14.))
+                    .bg(p.card)
                     .border_1()
                     .border_color(if self.input.read(cx).focus_handle(cx).is_focused(window) {
                         p.border_strong
                     } else {
                         p.hairline(0.22)
                     })
-                    .shadow_md()
+                    .shadow(p.shadow_card())
                     .child(
                         div()
                             .size(px(28.))
-                            .rounded(px(9.))
+                            .rounded_full()
                             .flex()
                             .items_center()
                             .justify_center()
@@ -1805,8 +1951,7 @@ impl gpui::Render for AgentChatView {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(40.))
-                            .overflow_hidden()
+                            .min_w(px(108.))
                             .text_size(px(13.5))
                             .text_color(p.text)
                             .child(self.input.clone()),
@@ -1829,24 +1974,36 @@ impl gpui::Render for AgentChatView {
                         } else {
                             format!("{cwd}\nSession: {session}")
                         };
-                        chip("chat-local", icons::FOLDER, folder_label(&cwd), true, &p)
-                            .max_w(px(150.))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| crate::sidebar::SpaceTooltip(session_hint.clone()))
-                                    .into()
-                            })
-                            .on_click(
-                                cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    this.pick_folder(cx)
-                                }),
-                            )
+                        chip(
+                            "chat-local",
+                            icons::FOLDER,
+                            if compact_width {
+                                String::new()
+                            } else {
+                                folder_label(&cwd)
+                            },
+                            !compact_width,
+                            &p,
+                        )
+                        .max_w(px(150.))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::sidebar::SpaceTooltip(session_hint.clone()))
+                                .into()
+                        })
+                        .on_click(
+                            cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.pick_folder(cx)),
+                        )
                     })
                     .child(
                         chip(
                             "chat-guard",
                             icons::SHIELD,
-                            format!("Guard · {}", guard.label()),
-                            true,
+                            if compact_width {
+                                String::new()
+                            } else {
+                                format!("Guard · {}", guard.label())
+                            },
+                            !compact_width,
                             &p,
                         )
                         .max_w(px(130.))
@@ -1865,8 +2022,12 @@ impl gpui::Render for AgentChatView {
                         chip(
                             "chat-model",
                             h_icon,
-                            agent_runner::model_short(&model).to_string(),
-                            true,
+                            if compact_width {
+                                String::new()
+                            } else {
+                                agent_runner::model_short(&model).to_string()
+                            },
+                            !compact_width,
                             &p,
                         )
                         .max_w(px(150.))
@@ -1909,8 +2070,9 @@ impl gpui::Render for AgentChatView {
 #[cfg(test)]
 mod tests {
     use super::{
-        Item, MarkdownBlock, artifact_html, compact_error, diff_summary, inline_katex_css,
-        looks_like_diff, parse_image_line, parse_inline, parse_markdown, step_group_end,
+        Item, MarkdownBlock, artifact_html, artifact_kind_label, assistant_preview, compact_error,
+        diff_summary, inline_katex_css, looks_like_diff, parse_image_line, parse_inline,
+        parse_markdown, step_group_end,
     };
 
     fn step(id: &str) -> Item {
@@ -1929,6 +2091,31 @@ mod tests {
         let error = "x".repeat(181);
 
         assert_eq!(compact_error(&error), format!("{}…", "x".repeat(180)));
+    }
+
+    #[test]
+    fn recent_preview_uses_artifact_fallback_for_fenced_only_replies() {
+        let preview = assistant_preview("```mermaid\nflowchart LR\nA --> B\n```");
+
+        assert_eq!(preview.as_deref(), Some("Created an artifact"));
+    }
+
+    #[test]
+    fn recent_preview_strips_inline_markdown_and_collapses_whitespace() {
+        let preview = assistant_preview(
+            "# **Saved** to `/tmp/hifi-docs-test2/`.\n\n- __ready__ and $$done$$",
+        );
+
+        assert_eq!(
+            preview.as_deref(),
+            Some("Saved to /tmp/hifi-docs-test2/. ready and done")
+        );
+    }
+
+    #[test]
+    fn artifact_kind_labels_use_title_case() {
+        assert_eq!(artifact_kind_label("mermaid"), "Mermaid");
+        assert_eq!(artifact_kind_label("MATH"), "Math");
     }
 
     #[test]
