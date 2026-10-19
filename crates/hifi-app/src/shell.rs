@@ -65,6 +65,15 @@ fn is_artifact_html_path(path: &std::path::Path, artifacts_root: &std::path::Pat
         && path.starts_with(artifacts_root)
 }
 
+fn artifact_html_with_view_sizing(html: &str) -> String {
+    const STYLE: &str = "<style>svg{max-width:100%!important;width:100%;height:auto} body{margin:0;padding:24px;display:flex;justify-content:center}</style>";
+    if let Some(head_end) = html.to_ascii_lowercase().find("</head>") {
+        format!("{}{STYLE}{}", &html[..head_end], &html[head_end..])
+    } else {
+        format!("{STYLE}{html}")
+    }
+}
+
 fn accepts_native_title(kind: TabKind, title: &str) -> bool {
     kind == TabKind::Web
         || (!title.trim().is_empty() && !title.trim().eq_ignore_ascii_case("about:blank"))
@@ -281,6 +290,7 @@ impl Shell {
             });
         }
         self.context_menu = Some((f32::from(anchor.x), f32::from(anchor.y), items));
+        cx.notify();
     }
 
     fn open_pane_menu(
@@ -293,6 +303,7 @@ impl Shell {
         let anchor = point(anchor.x, anchor.y + px(surface_chrome::CONTROL_SIZE));
         let store = self.store.clone();
         let shell = cx.entity().downgrade();
+        let peek_shell = cx.entity().downgrade();
         let id = tab.id.clone();
         let dismiss: Rc<dyn Fn(&mut App)> = Rc::new(move |app| {
             let _ = shell.update(app, |this, cx| {
@@ -315,6 +326,33 @@ impl Shell {
             selected: false,
         };
         let mut items = Vec::new();
+        let has_dock_tabs = self
+            .store
+            .read(cx)
+            .state
+            .active_space()
+            .and_then(|space| {
+                let group_id = space
+                    .active_group
+                    .as_deref()
+                    .or_else(|| space.groups.first().map(|group| group.id.as_str()))?;
+                space.groups.iter().find(|group| group.id == group_id)
+            })
+            .is_some_and(|group| !group.dock.tabs.is_empty());
+        if has_dock_tabs {
+            let peek_id = id.clone();
+            items.push(item(
+                "pane-switch-tab",
+                "Switch Dock Tab",
+                icons::WIDGET,
+                Rc::new(move |app| {
+                    let _ = peek_shell.update(app, |this, cx| {
+                        this.open_tab_peek(&peek_id, true, anchor, cx);
+                    });
+                }),
+                false,
+            ));
+        }
         let store_split = store.clone();
         let split_id = id.clone();
         let split_dismiss = dismiss.clone();
@@ -1152,7 +1190,7 @@ impl Shell {
                         .cloned()
                         .or_else(|| std::fs::read_to_string(&tab.url).ok());
                     if let Some(html) = html {
-                        host.load_html(&html);
+                        host.load_html(&artifact_html_with_view_sizing(&html));
                         self.artifact_html.insert(tab.id.clone(), html);
                     }
                 }
@@ -1814,16 +1852,25 @@ impl Shell {
         &mut self,
         tab_id: &TabId,
         focused: bool,
-        origin: bool,
-        top_right: bool,
+        _origin: bool,
+        _top_right: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(tab) = self.store.read(cx).state.tab(tab_id).cloned() else {
             return div().into_any();
         };
-        let p = Theme::of(cx).palette;
-        let header = self.pane_header(&tab, false, focused, origin, top_right, cx);
+        let multiple = self
+            .store
+            .read(cx)
+            .state
+            .spaces
+            .iter()
+            .flat_map(|space| &space.groups)
+            .find(|group| group.id == tab.group_id)
+            .and_then(|group| group.root.as_ref())
+            .is_some_and(|root| split_leaf_count(root) > 1);
+        let header = multiple.then(|| self.pane_strip(&tab, focused, cx));
         let body = self.pane_body(&tab, window, cx);
 
         div()
@@ -1834,12 +1881,71 @@ impl Shell {
             .min_w(px(120.))
             .min_h(px(80.))
             .overflow_hidden()
-            .rounded(px(10.))
-            .border_1()
-            .border_color(p.hairline(0.10))
-            .bg(p.bg)
-            .child(header)
+            .children(header)
             .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
+            .into_any()
+    }
+
+    fn pane_strip(
+        &self,
+        tab: &hifi_core::Tab,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = Theme::of(cx).palette;
+        let store = self.store.clone();
+        let focus_id = tab.id.clone();
+        let close_store = store.clone();
+        let close_id = tab.id.clone();
+        div()
+            .id(SharedString::from(format!("pane-strip-{}", tab.id)))
+            .group("pane-strip")
+            .h(px(crate::theme::PANE_STRIP_H))
+            .flex_none()
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .border_b_1()
+            .border_color(p.border)
+            .child(crate::sidebar::tab_badge(tab, 13., &p))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(12.5))
+                    .font_weight(if focused {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    .text_color(if focused { p.text } else { p.muted })
+                    .child(tab.display_title()),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("pane-close-{}", tab.id)))
+                    .size(px(20.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .opacity(0.)
+                    .group_hover("pane-strip", |d| d.opacity(1.))
+                    .hover(|d| d.bg(p.glass_hover()))
+                    .child(glyph(icons::CLOSE, 12., p.muted))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        close_store.update(cx, |s, cx| s.close_tab(&close_id, cx));
+                    }),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                store.update(cx, |s, cx| s.focus_tab(&focus_id, cx));
+            })
             .into_any()
     }
 
@@ -1852,12 +1958,29 @@ impl Shell {
         docked: bool,
         focused: bool,
         origin: bool,
-        top_right: bool,
+        _top_right: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = Theme::of(cx).palette;
         let store = self.store.clone();
         let id = tab.id.clone();
+        let dock_open = self
+            .store
+            .read(cx)
+            .state
+            .active_space()
+            .and_then(|space| {
+                let group_id = space
+                    .active_group
+                    .as_deref()
+                    .or_else(|| space.groups.first().map(|group| group.id.as_str()))?;
+                space
+                    .groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+                    .map(|group| group.dock.open)
+            })
+            .unwrap_or(false);
 
         let collapsed = self.store.read(cx).sidebar_collapsed;
         let mut header = surface_chrome::toolbar(&p)
@@ -1894,31 +2017,29 @@ impl Shell {
                 },
             ));
         }
-        if tab.kind == TabKind::Web {
-            header = header
-                .child(nav(
-                    "nav-back",
-                    icons::ARROW_LEFT,
-                    tab.can_go_back,
-                    |s, id| s.pending_back.push(id),
-                ))
-                .child(nav(
-                    "nav-fwd",
-                    icons::ARROW_RIGHT,
-                    tab.can_go_forward,
-                    |s, id| s.pending_forward.push(id),
-                ))
-                .child(nav(
-                    "nav-reload",
-                    if tab.loading {
-                        icons::CLOSE
-                    } else {
-                        icons::REFRESH
-                    },
-                    true,
-                    |s, id| s.pending_reload.push(id),
-                ));
-        }
+        header = header
+            .child(nav(
+                "nav-back",
+                icons::ARROW_LEFT,
+                tab.kind == TabKind::Web && tab.can_go_back,
+                |s, id| s.pending_back.push(id),
+            ))
+            .child(nav(
+                "nav-fwd",
+                icons::ARROW_RIGHT,
+                tab.kind == TabKind::Web && tab.can_go_forward,
+                |s, id| s.pending_forward.push(id),
+            ))
+            .child(nav(
+                "nav-reload",
+                if tab.loading {
+                    icons::CLOSE
+                } else {
+                    icons::REFRESH
+                },
+                tab.kind == TabKind::Web,
+                |s, id| s.pending_reload.push(id),
+            ));
 
         let (lead_icon, primary, secondary): (&'static str, String, String) = match tab.kind {
             TabKind::Web => {
@@ -1957,7 +2078,7 @@ impl Shell {
             ),
             TabKind::NewTab => (
                 icons::MAGNIFER,
-                "Search or enter address".into(),
+                "Search or type a URL".into(),
                 String::new(),
             ),
             TabKind::Settings => (icons::SETTINGS, "Settings".into(), String::new()),
@@ -1971,15 +2092,8 @@ impl Shell {
                 String::new(),
             ),
         };
-        let omnibox = matches!(tab.kind, TabKind::Web | TabKind::NewTab);
         let placeholder = tab.kind == TabKind::NewTab;
-        let text_c = if placeholder {
-            p.faint
-        } else if focused {
-            p.text
-        } else {
-            p.muted
-        };
+        let text_c = if placeholder { p.faint } else { p.muted };
         let label = div()
             .flex_1()
             .flex()
@@ -1997,103 +2111,32 @@ impl Shell {
                     .child(primary),
             )
             .when(!secondary.is_empty(), |d| {
-                let sep = if omnibox { "" } else { "  ·  " };
                 d.child(
                     div()
                         .flex_1()
                         .min_w(px(0.))
                         .overflow_hidden()
                         .text_ellipsis()
-                        .text_size(px(11.))
-                        .text_color(p.faint)
-                        .child(format!("{sep}{secondary}")),
+                        .text_size(px(13.))
+                        .text_color(p.muted)
+                        .child(secondary),
                 )
             });
-        if omnibox {
-            let addr_id = id.clone();
-            header = header.child(
-                surface_chrome::input(&p)
-                    .id(SharedString::from(format!("addr:{}", tab.id)))
-                    .cursor_text()
-                    .when(focused, |s| {
-                        s.bg(p.ink(0.08)).border_1().border_color(p.border_strong)
-                    })
-                    .hover(|s| s.bg(p.ink(0.06)))
-                    .child(glyph(lead_icon, 12., p.faint))
-                    .child(label)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.open_address(Some(addr_id.clone()), cx);
-                        }),
-                    ),
-            );
-        } else {
-            header = header.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h(px(surface_chrome::CONTROL_SIZE))
-                    .px(px(4.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(glyph(lead_icon, surface_chrome::ICON_SIZE, p.muted))
-                    .child(label),
-            );
-        }
-
-        let peek_count = if docked {
-            self.store
-                .read(cx)
-                .state
-                .active_space()
-                .and_then(|space| {
-                    let gid = space
-                        .active_group
-                        .clone()
-                        .or_else(|| space.groups.first().map(|g| g.id.clone()))?;
-                    space
-                        .groups
-                        .iter()
-                        .find(|group| group.id == gid)
-                        .map(|group| group.dock.tabs.len())
-                })
-                .unwrap_or(1)
-        } else {
-            1
-        };
+        let addr_id = id.clone();
         header = header.child(
-            div()
-                .id("tab-peek")
-                .size(px(surface_chrome::CONTROL_SIZE))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(surface_chrome::CONTROL_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.wash(0.14)))
-                .child(glyph(icons::WIDGET, surface_chrome::ICON_SIZE, p.muted))
-                .when(peek_count > 1, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(p.faint)
-                            .child(peek_count.to_string()),
-                    )
-                })
+            surface_chrome::input(&p)
+                .id(SharedString::from(format!("addr:{}", tab.id)))
+                .cursor_text()
+                .bg(p.bg.opacity(0.))
+                .rounded(px(8.))
+                .hover(|s| s.bg(p.wash(0.06)))
+                .child(glyph(lead_icon, 14., p.muted))
+                .child(label)
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.open_tab_peek(&id, docked, event.position, cx);
-                        }
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.open_address(Some(addr_id.clone()), cx);
                     }),
                 ),
         );
@@ -2112,13 +2155,12 @@ impl Shell {
             icons::SPLIT_COLUMNS,
             hifi_core::SplitSide::Right,
         ));
-        if top_right || docked {
+        {
             header = header.child({
                 let store = store.clone();
-                let id = id.clone();
                 toolbar_button(
-                    "dock-move",
-                    if docked {
+                    "dock-toggle",
+                    if dock_open {
                         icons::SIDEBAR_LEFT
                     } else {
                         icons::SIDEBAR_RIGHT
@@ -2126,13 +2168,7 @@ impl Shell {
                     focused,
                     p,
                     move |cx| {
-                        store.update(cx, |s, cx| {
-                            if docked {
-                                s.undock_tab(&id, cx)
-                            } else {
-                                s.dock_tab(&id, cx)
-                            }
-                        });
+                        store.update(cx, |s, cx| s.toggle_dock(cx));
                     },
                 )
             });
@@ -2147,10 +2183,9 @@ impl Shell {
                 .justify_center()
                 .rounded(px(surface_chrome::CONTROL_RADIUS))
                 .cursor_pointer()
-                .text_size(px(19.))
                 .text_color(p.muted)
-                .hover(|s| s.bg(p.wash(0.14)))
-                .child("⋯")
+                .hover(|s| s.bg(p.wash(0.06)))
+                .child(glyph(icons::ELLIPSIS, 15., p.muted))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
@@ -2159,27 +2194,8 @@ impl Shell {
                     }),
                 ),
         );
-        let has_multiple_panes = self
-            .store
-            .read(cx)
-            .state
-            .spaces
-            .iter()
-            .flat_map(|space| &space.groups)
-            .find(|group| group.id == tab.group_id)
-            .and_then(|group| group.root.as_ref())
-            .is_some_and(|root| split_leaf_count(root) > 1);
-        if has_multiple_panes || docked {
-            header = header.child({
-                let store = store.clone();
-                let id = id.clone();
-                toolbar_button("close", icons::CLOSE, true, p, move |cx| {
-                    store.update(cx, |s, cx| s.close_tab(&id, cx));
-                })
-            });
-        }
         #[cfg(any(target_os = "windows", target_os = "linux"))]
-        if top_right && !docked {
+        if _top_right && !docked {
             header = header.child(window_caption_controls(p));
         }
         header = header.child(
@@ -2302,26 +2318,6 @@ impl Shell {
                 .into();
                 let reset_path = my_path.clone();
                 let reset_store = store.clone();
-                let grip = div()
-                    .absolute()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(horizontal, |d| {
-                        d.top_0().bottom_0().left(px(-5.5)).w(px(17.))
-                    })
-                    .when(!horizontal, |d| {
-                        d.left_0().right_0().top(px(-5.5)).h(px(17.))
-                    })
-                    .child(
-                        div()
-                            .rounded_full()
-                            .opacity(0.)
-                            .when(horizontal, |d| d.w(px(2.)).h(px(28.)))
-                            .when(!horizontal, |d| d.h(px(2.)).w(px(28.)))
-                            .bg(p.border)
-                            .group_hover("split-handle", |s| s.opacity(1.).bg(p.text.opacity(0.5))),
-                    );
                 let hit_target = div()
                     .id(handle_id)
                     .group("split-handle")
@@ -2340,7 +2336,6 @@ impl Shell {
                             .h(px(17.))
                             .cursor_row_resize()
                     })
-                    .child(grip)
                     .occlude()
                     .on_click(move |event, _, cx| {
                         if event.click_count() == 2 {
@@ -2362,8 +2357,8 @@ impl Shell {
                 let handle = div()
                     .relative()
                     .flex_none()
-                    .when(horizontal, |d| d.w(px(6.)).h_full())
-                    .when(!horizontal, |d| d.h(px(6.)).w_full())
+                    .when(horizontal, |d| d.w(px(1.)).h_full().bg(p.border))
+                    .when(!horizontal, |d| d.h(px(1.)).w_full().bg(p.border))
                     .child(hit_target);
 
                 let mut row = div()
@@ -2484,14 +2479,12 @@ impl Shell {
             .and_then(|id| self.store.read(cx).state.tab(id).cloned())
         {
             Some(tab) => {
-                let header = Some(self.pane_header(&tab, true, true, false, true, cx));
                 let body = self.pane_body(&tab, window, cx);
                 div()
                     .flex_1()
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .children(header)
                     .child(div().flex_1().min_h(px(0.)).child(body))
                     .into_any()
             }
@@ -2504,21 +2497,26 @@ impl Shell {
             .dock_menu_open
             .then(|| self.render_dock_menu(cx));
         div()
-            .h_full()
+            .flex()
+            .min_h(px(0.))
             .w(px(width))
             .flex_none()
             .relative()
-            .p(px(DOCK_GUTTER))
+            .py(px(crate::theme::CARD_INSET))
+            .pr(px(crate::theme::CARD_INSET))
             .child(
                 div()
-                    .size_full()
+                    .w_full()
+                    .flex_1()
+                    .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .rounded(px(10.))
+                    .rounded(px(crate::theme::CARD_RADIUS))
                     .overflow_hidden()
                     .border_1()
-                    .border_color(p.hairline(0.10))
+                    .border_color(p.border)
                     .bg(p.bg)
+                    .shadow(p.shadow_card())
                     .child(body),
             )
             .when_some(menu, |d, m| d.child(m))
@@ -2774,7 +2772,7 @@ fn window_caption_controls(p: Palette) -> AnyElement {
 
 /// GPUI-only strip on the dock's leading edge: native webviews swallow
 /// mouse events, so the resize handle needs painted space of its own.
-const DOCK_GUTTER: f32 = 6.0;
+const DOCK_GUTTER: f32 = crate::theme::CARD_INSET;
 
 /// Narrowest a split pane can be dragged to; pages lay out badly below it.
 const MIN_PANE: f32 = 220.0;
@@ -2821,7 +2819,7 @@ fn min_extent(node: &SplitNode, horizontal: bool) -> f32 {
                 min_extent(second, horizontal),
             );
             if (*direction == hifi_core::SplitDirection::Horizontal) == horizontal {
-                a + b + 6.
+                a + b + 1.
             } else {
                 a.max(b)
             }
@@ -2848,7 +2846,7 @@ fn toolbar_button(
         .occlude()
         .when(enabled, |d| {
             d.cursor_pointer()
-                .hover(|s| s.bg(p.wash(0.14)))
+                .hover(|s| s.bg(p.wash(0.06)))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     on_click(cx)
@@ -3194,12 +3192,18 @@ impl gpui::Render for Shell {
             .map_or(320., |n| min_extent(n, true).max(320.));
         let dock_max = (f32::from(window.viewport_size().width) - sidebar_now - main_min).max(280.);
         let dock_width = dock_width.max(360.).min(dock_max);
+        let main_toolbar = self
+            .store
+            .read(cx)
+            .active_tab_id()
+            .and_then(|id| self.store.read(cx).state.tab(&id).cloned())
+            .map(|tab| self.pane_header(&tab, false, true, false, false, cx));
         let mut root = div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
-            .when(!Theme::is_frost(), |root| root.bg(p.bg))
+            .bg(p.glass())
             .text_color(p.text)
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -3323,21 +3327,6 @@ impl gpui::Render for Shell {
                     s.dock_open("hifi://notes", cx);
                 });
             }))
-            // cosmos sidebar tone: a slightly lighter column spanning the
-            // full window height, hairlined on its right edge.
-            .when(sidebar_now > 0., |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(px(sidebar_now))
-                        .bg(p.glass())
-                        .border_r_1()
-                        .border_color(p.border),
-                )
-            })
             .child({
                 // Body row: sidebar · content · dock. The two resize handles
                 // float over this row; its bounds drive the width math
@@ -3371,12 +3360,7 @@ impl gpui::Render for Shell {
                         });
                     });
                 if !collapsed {
-                    row = row.child(
-                        div()
-                            .h_full()
-                            .pt(px(Theme::SIDEBAR_TOP_PAD))
-                            .child(self.sidebar.clone()),
-                    );
+                    row = row.child(div().h_full().child(self.sidebar.clone()));
                 }
                 if !collapsed && !sb_compact {
                     row = row.child(
@@ -3401,17 +3385,32 @@ impl gpui::Render for Shell {
                         .min_w(px(0.))
                         .h_full()
                         .flex()
+                        .mt(px(crate::theme::CARD_INSET))
+                        .mb(px(crate::theme::CARD_INSET))
+                        .mr(px(crate::theme::CARD_INSET))
+                        .flex_col()
+                        .rounded(px(crate::theme::CARD_RADIUS))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(p.border)
                         .bg(p.bg)
-                        .pl(px(DOCK_GUTTER))
-                        .pt(px(DOCK_GUTTER))
-                        .pb(px(DOCK_GUTTER))
-                        .when(!dock_open, |d| d.pr(px(DOCK_GUTTER)))
-                        .child(content),
+                        .shadow(p.shadow_card())
+                        .children(main_toolbar)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.))
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .child(content),
+                        ),
                 );
                 if dock_open {
                     row = row.child(
                         div()
-                            .h_full()
+                            .flex_none()
+                            .flex()
+                            .min_h(px(0.))
                             .child(self.render_dock(dock_width, window, cx)),
                     );
                     row = row.child(
@@ -3523,25 +3522,32 @@ impl gpui::Render for Shell {
             root = root.child(
                 div()
                     .absolute()
-                    .top(px(52.))
-                    .right(px(16.))
-                    .max_w(px(420.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(p.border)
-                    .bg(p.card)
-                    .px(px(12.))
-                    .py(px(8.))
-                    .text_size(px(12.))
-                    .text_color(if error { p.danger } else { p.text })
-                    .shadow_lg()
-                    .child(message)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
-                            this.toast = None;
-                            cx.notify();
-                        }),
+                    .left_0()
+                    .right_0()
+                    .bottom(px(16.))
+                    .flex()
+                    .justify_center()
+                    .px(px(16.))
+                    .child(
+                        div()
+                            .max_w(px(420.))
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.glass_overlay())
+                            .px(px(12.))
+                            .py(px(8.))
+                            .text_size(px(13.))
+                            .text_color(if error { p.danger } else { p.text })
+                            .shadow_lg()
+                            .child(message)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                                    this.toast = None;
+                                    cx.notify();
+                                }),
+                            ),
                     ),
             );
         }
@@ -3552,7 +3558,10 @@ impl gpui::Render for Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{accepts_native_title, accepts_nav_url, is_artifact_html_path};
+    use super::{
+        accepts_native_title, accepts_nav_url, artifact_html_with_view_sizing,
+        is_artifact_html_path,
+    };
     use hifi_core::TabKind;
     use std::path::Path;
 
@@ -3581,6 +3590,14 @@ mod tests {
         assert!(!is_artifact_html_path(
             Path::new("/Users/example/Library/Application Support/HiFi/notes/1.html"),
             root
+        ));
+    }
+
+    #[test]
+    fn artifact_html_gets_view_sizing_before_head_close() {
+        let html = artifact_html_with_view_sizing("<html><head></head><body></body></html>");
+        assert!(html.contains(
+            "<head><style>svg{max-width:100%!important;width:100%;height:auto} body{margin:0;padding:24px;display:flex;justify-content:center}</style></head>"
         ));
     }
 }

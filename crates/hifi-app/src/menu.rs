@@ -55,8 +55,8 @@ pub fn context_menu(
         div()
             .w(px(240.))
             .p(px(4.))
-            .rounded(px(8.))
-            .bg(p.card)
+            .rounded(px(10.))
+            .bg(p.glass_overlay())
             .border_1()
             .border_color(p.border)
             .shadow_lg(),
@@ -74,7 +74,7 @@ pub fn context_menu(
                 .items_center()
                 .gap(px(8.))
                 .rounded(px(6.))
-                .text_size(px(12.))
+                .text_size(px(13.))
                 .text_color(color)
                 .when(item.selected, |d| d.bg(p.selected()))
                 .when(item.separator_before, |d| {

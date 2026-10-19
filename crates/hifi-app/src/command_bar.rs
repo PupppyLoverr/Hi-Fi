@@ -8,7 +8,7 @@ use gpui::{
 use crate::assets::icons;
 use crate::store::Store;
 use crate::text_input::{TextField, TextFieldEvent};
-use crate::theme::{Theme, radius, space};
+use crate::theme::{Theme, space};
 use crate::views::glyph;
 
 #[derive(Clone)]
@@ -290,8 +290,8 @@ impl gpui::Render for CommandBar {
                     .items_center()
                     .gap(space::SM)
                     .px(px(12.))
-                    .h(px(30.))
-                    .rounded(radius::ROUND)
+                    .h(px(36.))
+                    .rounded(px(8.))
                     .cursor_pointer()
                     .bg(if active {
                         p.wash(0.06)
@@ -336,11 +336,13 @@ impl gpui::Render for CommandBar {
 
         div()
             .w(px(640.))
-            .rounded(radius::BUBBLE)
-            .bg(p.dialog)
+            .rounded(px(14.))
+            .bg(p.glass_overlay())
             .border_1()
-            .border_color(p.hairline(0.10))
-            .shadow_lg()
+            .border_color(p.border)
+            .shadow(vec![
+                gpui::BoxShadow::new(px(0.), px(16.), p.ink(0.18)).blur_radius(px(48.)),
+            ])
             .flex()
             .flex_col()
             .p(px(8.))
@@ -352,9 +354,9 @@ impl gpui::Render for CommandBar {
                     .items_center()
                     .gap(space::SM)
                     .px(px(8.))
-                    .h(px(40.))
+                    .h(px(48.))
                     .child(glyph(icons::COMMAND, 16., p.accent))
-                    .child(div().flex_1().child(self.input.clone())),
+                    .child(div().flex_1().text_size(px(15.)).child(self.input.clone())),
             )
             .child(list)
     }
