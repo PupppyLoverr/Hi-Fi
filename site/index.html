@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hi-Fi: the browser that does the work</title>
+<meta name="description" content="Hi-Fi is a native browser, workspace and agent runtime in one 10 MB app. Browse, write, code and delegate to Claude Code, Codex, OpenCode and eight more agents, without leaving your tabs.">
+<link rel="icon" href="assets/icon.png">
+<style>
+:root{--bg:#f6f7f9;--ink:#0b0b0c;--muted:#5d6068;--faint:#8b8e96;--line:rgba(10,12,20,.08);--glass:rgba(255,255,255,.62);--glass-strong:rgba(255,255,255,.82);--r:22px}
+@media (prefers-color-scheme:dark){:root{--bg:#060606;--ink:#ededef;--muted:#a1a1a8;--faint:#6e6e75;--line:rgba(255,255,255,.08);--glass:rgba(22,22,24,.55);--glass-strong:rgba(26,26,28,.8)}}
+*{box-sizing:border-box;margin:0}
+html{scroll-behavior:smooth}
+body{font:15px/1.6 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+.sky{position:fixed;inset:0;z-index:-1;background:
+ radial-gradient(60vw 40vw at 15% -5%,rgba(160,200,255,.45),transparent 60%),
+ radial-gradient(50vw 40vw at 95% 10%,rgba(200,215,255,.35),transparent 60%),
+ radial-gradient(70vw 50vw at 50% 110%,rgba(220,225,235,.6),transparent 60%),var(--bg)}
+@media (prefers-color-scheme:dark){.sky{background:radial-gradient(60vw 40vw at 15% -5%,rgba(90,110,160,.22),transparent 60%),radial-gradient(70vw 50vw at 60% 110%,rgba(70,70,80,.25),transparent 60%),var(--bg)}}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+nav{position:sticky;top:14px;z-index:10;margin:14px auto 0;max-width:1120px;padding:0 24px}
+nav .bar{display:flex;align-items:center;gap:28px;padding:10px 12px 10px 16px;border-radius:16px;background:var(--glass);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);border:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em}
+.brand img{width:26px;height:26px;border-radius:7px}
+nav .links{display:flex;gap:22px;color:var(--muted);font-size:14px;margin-left:8px}
+nav .links a:hover{color:var(--ink)}
+nav .cta{margin-left:auto;display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:12px;font-weight:500;font-size:14px;border:1px solid var(--line);background:var(--glass-strong);transition:transform .15s,background .15s}
+.btn:hover{transform:translateY(-1px)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:transparent}
+.btn.lg{height:46px;padding:0 22px;font-size:15px;border-radius:14px}
+header{text-align:center;padding:96px 0 40px}
+.eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:13px;color:var(--muted);padding:6px 12px;border-radius:999px;background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(16px)}
+.eyebrow b{color:var(--ink);font-weight:500}
+h1{font-size:clamp(40px,6.4vw,76px);line-height:1.02;letter-spacing:-.04em;font-weight:600;margin:22px auto 18px;max-width:900px}
+h1 span{color:var(--faint)}
+.lede{font-size:clamp(16px,1.6vw,19px);color:var(--muted);max-width:640px;margin:0 auto 32px}
+.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.meta{margin-top:18px;font-size:13px;color:var(--faint)}
+.shot{margin:56px auto 0;max-width:1120px;padding:10px;border-radius:28px;background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(30px);box-shadow:0 40px 120px -40px rgba(20,30,60,.35)}
+.shot img{display:block;width:100%;border-radius:20px}
+section{padding:110px 0 0}
+.kicker{font-size:13px;color:var(--faint);text-transform:uppercase;letter-spacing:.12em;margin-bottom:12px}
+h2{font-size:clamp(30px,4vw,46px);letter-spacing:-.03em;line-height:1.08;font-weight:600;max-width:720px}
+.sub{color:var(--muted);max-width:620px;margin-top:14px;font-size:17px}
+.grid{display:grid;gap:14px;margin-top:44px;grid-template-columns:repeat(6,1fr)}
+.card{grid-column:span 2;padding:26px;border-radius:var(--r);background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(24px);min-height:200px;display:flex;flex-direction:column}
+.card.w3{grid-column:span 3}.card.w4{grid-column:span 4}
+.card h3{font-size:17px;font-weight:600;letter-spacing:-.01em;margin:16px 0 6px}
+.card p{color:var(--muted);font-size:14.5px}
+.ic{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:var(--glass-strong);border:1px solid var(--line)}
+.ic svg{width:18px;height:18px;stroke:var(--ink);fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.mock{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:7px;font-size:13px}
+.step{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:11px;background:var(--glass-strong);border:1px solid var(--line);color:var(--muted)}
+.step i{width:6px;height:6px;border-radius:50%;background:var(--ink);opacity:.8;flex:none}
+.step.run i{animation:p 1.4s infinite}
+@keyframes p{50%{opacity:.2}}
+.step code{font:12px "Geist Mono",ui-monospace,Menlo,monospace;color:var(--ink)}
+.harness{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto;padding-top:18px}
+.harness span{font-size:13px;padding:6px 11px;border-radius:999px;background:var(--glass-strong);border:1px solid var(--line)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:44px}
+.stat{padding:24px;border-radius:var(--r);background:var(--glass);border:1px solid var(--line)}
+.stat b{display:block;font-size:34px;letter-spacing:-.03em;font-weight:600}
+.stat span{color:var(--muted);font-size:14px}
+.files{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:auto;padding-top:18px}
+.files div{aspect-ratio:3/4;border-radius:10px;background:var(--glass-strong);border:1px solid var(--line);display:grid;place-items:end start;padding:8px;font:11px "Geist Mono",ui-monospace,monospace;color:var(--muted)}
+.price{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:44px}
+.plan{padding:26px;border-radius:var(--r);background:var(--glass);border:1px solid var(--line);display:flex;flex-direction:column;gap:14px}
+.plan.hi{background:var(--glass-strong);box-shadow:0 30px 80px -40px rgba(20,30,60,.4);outline:1px solid var(--ink)}
+.plan h3{font-size:15px;font-weight:600}
+.plan .amt{font-size:38px;font-weight:600;letter-spacing:-.03em}
+.plan .amt small{font-size:14px;color:var(--muted);font-weight:400;letter-spacing:0}
+.plan ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--muted)}
+.plan li::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--ink);margin:0 10px 2px 0;opacity:.6}
+.plan .btn{margin-top:auto;justify-content:center}
+.faq{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:44px}
+.faq div{padding:22px;border-radius:var(--r);border:1px solid var(--line);background:var(--glass)}
+.faq b{display:block;margin-bottom:6px;font-weight:600}
+.faq p{color:var(--muted);font-size:14.5px}
+.final{text-align:center;padding:120px 0 40px}
+.final h2{margin:0 auto}
+footer{border-top:1px solid var(--line);margin-top:90px;padding:28px 0 48px;color:var(--faint);font-size:13px}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .7s ease,transform .7s ease}
+.reveal.in{opacity:1;transform:none}
+@media (max-width:880px){nav .links{display:none}.grid{grid-template-columns:1fr}.card,.card.w3,.card.w4{grid-column:auto}.stats,.price{grid-template-columns:1fr 1fr}.faq{grid-template-columns:1fr}}
+@media (max-width:520px){.stats,.price{grid-template-columns:1fr}header{padding-top:64px}}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}.step.run i{animation:none}}
+</style>
+</head>
+<body>
+<div class="sky"></div>
+<nav><div class="bar">
+ <a class="brand" href="#"><img src="assets/icon.png" alt="">Hi-Fi</a>
+ <div class="links"><a href="#product">Product</a><a href="#agents">Agents</a><a href="#workspace">Workspace</a><a href="#pricing">Pricing</a><a href="https://github.com/PupppyLoverr/Hi-Fi">GitHub</a></div>
+ <div class="cta"><a class="btn" href="https://github.com/PupppyLoverr/Hi-Fi">Star</a><a class="btn primary" href="#download">Download</a></div>
+</div></nav>
+
+<header class="wrap">
+ <span class="eyebrow"><b>New</b> Agent swarms, documents and computer use</span>
+ <h1>The browser that does the work. <span>You review it.</span></h1>
+ <p class="lede">Hi-Fi is a browser, a workspace and an agent runtime in one native app. Ask in plain language and Claude Code, Codex, OpenCode or eight other agents browse, write, code and file their work in their own tabs, while you keep using yours.</p>
+ <div class="actions" id="download">
+  <a class="btn primary lg" href="https://github.com/PupppyLoverr/Hi-Fi/releases">Download for macOS</a>
+  <a class="btn lg" href="https://github.com/PupppyLoverr/Hi-Fi/releases">Windows</a>
+  <a class="btn lg" href="https://github.com/PupppyLoverr/Hi-Fi/releases">Linux</a>
+ </div>
+ <p class="meta">Free and open source · about 10 MB · no Chromium</p>
+ <div class="shot reveal"><img src="assets/app.jpg" alt="Hi-Fi: sidebar, an agent chat with tool steps, and a live web page side by side"></div>
+</header>
+
+<section class="wrap" id="product">
+ <p class="kicker">Product</p>
+ <h2>One window for everything you used to switch between.</h2>
+ <p class="sub">Browsing, notes, terminals, diffs and agents share the same tabs, splits and spaces. Everything stays on your machine.</p>
+ <div class="grid">
+  <div class="card w4 reveal">
+   <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4a12 12 0 0 1 0 16M12 4a12 12 0 0 0 0 16"/><circle cx="12" cy="12" r="8"/></svg></div>
+   <h3>A real browser, built natively</h3>
+   <p>Rust and GPU-rendered chrome over each platform's own engine: WebKit on macOS and Linux, WebView2 on Windows. Tabs, groups, spaces, nested splits, a dock and a command bar on ⌘K.</p>
+  </div>
+  <div class="card reveal">
+   <div class="ic"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5"/></svg></div>
+   <h3>Pages</h3>
+   <p>A block editor with slash commands, to-dos and code blocks. Agents can save their findings straight into a page.</p>
+  </div>
+  <div class="card reveal">
+   <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m8 10 3 2-3 2M13 15h3"/></svg></div>
+   <h3>Terminals and worktrees</h3>
+   <p>Real PTYs, git worktree groups and live diffs beside the app you're building.</p>
+  </div>
+  <div class="card w4 reveal">
+   <div class="ic"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/></svg></div>
+   <h3>Documents, created and edited in-app</h3>
+   <p>Agents produce PDF, Word, PowerPoint and Excel files from one schema. Open them in a tab, edit the text, cells or slides and save. No office suite needed.</p>
+   <div class="files"><div>report.pdf</div><div>brief.docx</div><div>deck.pptx</div><div>model.xlsx</div></div>
+  </div>
+ </div>
+</section>
+
+<section class="wrap" id="agents">
+ <p class="kicker">Agents</p>
+ <h2>Delegate whole tasks. Watch every step.</h2>
+ <p class="sub">Each agent gets its own hidden browser tabs, so it can read, click and type like a person without touching the page you're on. Every step can be inspected.</p>
+ <div class="grid">
+  <div class="card w3 reveal">
+   <h3>Collapsible tool timeline</h3>
+   <p>Searches, page visits, clicks, commands and file edits stream in as they happen. Open any step to see the output.</p>
+   <div class="mock">
+    <div class="step"><i></i>Searched <code>best laptops under $1500 2026</code></div>
+    <div class="step"><i></i>Opened 6 pages in agent tabs</div>
+    <div class="step"><i></i>Edited <code>report.md</code> +48 −3</div>
+    <div class="step run"><i></i>Writing <code>comparison.xlsx</code></div>
+   </div>
+  </div>
+  <div class="card w3 reveal">
+   <h3>Bring your own agent</h3>
+   <p>Use the CLIs and subscriptions you already have. Hi-Fi speaks ACP, MCP and each harness's native stream format.</p>
+   <div class="harness"><span>Claude Code</span><span>Codex</span><span>OpenCode</span><span>Cursor</span><span>Devin</span><span>Grok</span><span>Amp</span><span>Hermes</span><span>Pi</span><span>Antigravity</span><span>Kimi Code</span></div>
+  </div>
+  <div class="card reveal">
+   <h3>Swarms</h3>
+   <p>Run several agents side by side in splits, each with its own tabs, folder and permissions.</p>
+  </div>
+  <div class="card reveal">
+   <h3>Guarded by default</h3>
+   <p>Strict, Balanced and Full levels. Balanced blocks destructive commands such as <code>rm -rf</code> and <code>git push</code> before they run.</p>
+  </div>
+  <div class="card reveal">
+   <h3>Your tools, connected</h3>
+   <p>Connect Gmail, Notion, Slack and hundreds of other apps through Composio, and give agents control of your desktop through the open-source Cua driver.</p>
+  </div>
+ </div>
+</section>
+
+<section class="wrap" id="workspace">
+ <p class="kicker">Built to stay fast</p>
+ <h2>Small enough to forget it's running.</h2>
+ <div class="stats">
+  <div class="stat reveal"><b>~10 MB</b><span>app download</span></div>
+  <div class="stat reveal"><b>~40 MB</b><span>app memory, idle</span></div>
+  <div class="stat reveal"><b>11</b><span>agent harnesses</span></div>
+  <div class="stat reveal"><b>3</b><span>platforms: macOS, Windows, Linux</span></div>
+ </div>
+</section>
+
+<section class="wrap" id="pricing">
+ <p class="kicker">Pricing</p>
+ <h2>Free for you. Paid when your team needs more.</h2>
+ <p class="sub">The browser, the workspace and every local agent are free forever. You bring your own models, so there's no markup on tokens.</p>
+ <div class="price">
+  <div class="plan reveal"><h3>Free</h3><div class="amt">$0</div><ul><li>Full browser and Pages</li><li>All 11 local harnesses</li><li>Documents and previews</li><li>Local-first, no account</li></ul><a class="btn" href="#download">Download</a></div>
+  <div class="plan hi reveal"><h3>Pro</h3><div class="amt">$12<small> /month</small></div><ul><li>Encrypted sync across devices (planned)</li><li>Scheduled and background agents</li><li>Swarms of up to 8 agents</li><li>Hosted computer-use sandboxes</li><li>Priority support</li></ul><a class="btn primary" href="#download">Start 14-day trial</a></div>
+  <div class="plan reveal"><h3>Team</h3><div class="amt">$24<small> /seat/month</small></div><ul><li>Shared spaces and Pages</li><li>Shared agent skills and prompts</li><li>Org-wide guard policies</li><li>Usage and audit log</li></ul><a class="btn" href="#download">Contact us</a></div>
+  <div class="plan reveal"><h3>Enterprise</h3><div class="amt">Custom</div><ul><li>SSO and SCIM</li><li>Self-hosted sync</li><li>Policy and DLP controls</li><li>Dedicated support</li></ul><a class="btn" href="#download">Talk to us</a></div>
+ </div>
+</section>
+
+<section class="wrap">
+ <p class="kicker">FAQ</p>
+ <h2>Questions</h2>
+ <div class="faq">
+  <div><b>Is it built on Chromium?</b><p>No. Hi-Fi uses the engine your OS already ships with, which is why it's about 10 MB and light on memory.</p></div>
+  <div><b>Do agents see my tabs?</b><p>No. Agents only see tabs they opened themselves. Your tabs, cookies and history stay out of reach unless you share a page.</p></div>
+  <div><b>Which models can I use?</b><p>Any model your harness supports, including free OpenCode models, Claude, GPT, Gemini, Grok and local models.</p></div>
+  <div><b>Where is my data?</b><p>On your device. Pages, chats and sessions are plain files in your app data folder. Nothing is uploaded unless you turn on sync, a planned Pro feature.</p></div>
+ </div>
+</section>
+
+<section class="wrap final">
+ <h2>Stop switching apps. Start delegating.</h2>
+ <p class="sub" style="margin:14px auto 30px">Free, open source and about 10 MB.</p>
+ <div class="actions"><a class="btn primary lg" href="#download">Download Hi-Fi</a><a class="btn lg" href="https://github.com/PupppyLoverr/Hi-Fi">View on GitHub</a></div>
+</section>
+
+<footer><div class="wrap"><span>© 2026 Hi-Fi. MIT licensed.</span><span><a href="https://github.com/PupppyLoverr/Hi-Fi">GitHub</a> · <a href="#pricing">Pricing</a></span></div></footer>
+<script>
+const io=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.classList.add('in');io.unobserve(x.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>

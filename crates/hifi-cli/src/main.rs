@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use hifi_core::HifiPaths;
 use hifi_core::ipc::{client, methods};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 mod mcp;
 
@@ -59,8 +60,27 @@ enum Command {
         #[command(subcommand)]
         command: BrowserCommand,
     },
+    /// Create, read, or open a local document.
+    Doc {
+        #[command(subcommand)]
+        command: DocCommand,
+    },
     /// MCP stdio server exposing Hi-Fi browser tools to agent harnesses.
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum DocCommand {
+    /// Create a document from a JSON spec file, or stdin when --json is "-".
+    Create {
+        path: PathBuf,
+        #[arg(long = "json", value_name = "SPEC")]
+        spec: String,
+    },
+    /// Print a document as JSON.
+    Read { path: PathBuf },
+    /// Open a document in a user-visible app tab.
+    Open { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -188,6 +208,7 @@ fn main() -> Result<()> {
 
     let (method, params) = match cli.command {
         Command::Mcp => return mcp::run(&socket),
+        Command::Doc { command } => return doc_command(command, &socket, t),
         Command::Ping => (methods::PING, json!({})),
         Command::Tab { command } => match command {
             TabCommand::Open {
@@ -282,6 +303,53 @@ fn main() -> Result<()> {
         Some(Value::Null) | None => {}
         Some(Value::String(s)) => println!("{s}"),
         Some(v) => println!("{}", serde_json::to_string_pretty(&v)?),
+    }
+    Ok(())
+}
+
+fn doc_command(command: DocCommand, socket: &std::path::Path, timeout: u64) -> Result<()> {
+    match command {
+        DocCommand::Create { path, spec } => {
+            let json = if spec == "-" {
+                let mut input = String::new();
+                let mut stdin = std::io::stdin();
+                std::io::Read::read_to_string(&mut stdin, &mut input)?;
+                input
+            } else {
+                std::fs::read_to_string(&spec)
+                    .with_context(|| format!("reading document spec {spec}"))?
+            };
+            let document: hifi_docs::Document =
+                serde_json::from_str(&json).context("parsing document JSON")?;
+            hifi_docs::write(&path, &document)?;
+            println!("Created {}", path.display());
+        }
+        DocCommand::Read { path } => {
+            let document = hifi_docs::read(&path)?;
+            println!("{}", serde_json::to_string_pretty(&document)?);
+        }
+        DocCommand::Open { path } => {
+            let path = std::fs::canonicalize(&path)
+                .with_context(|| format!("resolving {}", path.display()))?;
+            anyhow::ensure!(
+                hifi_docs::DocKind::from_path(&path).is_some(),
+                "unsupported document extension"
+            );
+            let url = format!("hifi://preview/{}", path.to_string_lossy());
+            let agent_tab = std::env::var("HIFI_AGENT_TAB")
+                .ok()
+                .filter(|value| !value.is_empty());
+            let params = mcp::doc_open_params(&url, agent_tab.as_deref());
+            let response = client::call(socket, methods::TAB_OPEN, params, timeout)
+                .context("opening document in Hi-Fi")?;
+            if !response.ok {
+                anyhow::bail!(response.error.unwrap_or_else(|| "unknown error".into()));
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.result.unwrap_or(Value::Null))?
+            );
+        }
     }
     Ok(())
 }

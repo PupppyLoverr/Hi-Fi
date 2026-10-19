@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
@@ -53,6 +54,22 @@ impl gpui::Render for DragGhost {
     }
 }
 
+fn accepts_nav_url(kind: TabKind) -> bool {
+    kind == TabKind::Web
+}
+
+fn is_artifact_html_path(path: &std::path::Path, artifacts_root: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        && path.starts_with(artifacts_root)
+}
+
+fn accepts_native_title(kind: TabKind, title: &str) -> bool {
+    kind == TabKind::Web
+        || (!title.trim().is_empty() && !title.trim().eq_ignore_ascii_case("about:blank"))
+}
+
 /// One in-flight IPC request waiting on the UI.
 pub struct IpcJob {
     pub request: hifi_core::IpcRequest,
@@ -69,6 +86,7 @@ pub struct Shell {
     /// The tab kind each cached pane was built for; a tab whose kind has
     /// since changed (New Tab -> Agent, ...) gets a fresh pane.
     pane_kinds: HashMap<TabId, TabKind>,
+    artifact_html: HashMap<TabId, String>,
     /// Find-bar input, created on first ⌘F.
     find_input: Option<Entity<TextField>>,
     /// WebEvent source; drained each render.
@@ -84,6 +102,8 @@ pub struct Shell {
     focus: gpui::FocusHandle,
     last_window_title: String,
     context_menu: Option<(f32, f32, Vec<crate::menu::MenuItem>)>,
+    toast: Option<String>,
+    toast_generation: u64,
 }
 
 impl Shell {
@@ -154,6 +174,7 @@ impl Shell {
             panes: HashMap::new(),
             pane_errors: HashMap::new(),
             pane_kinds: HashMap::new(),
+            artifact_html: HashMap::new(),
             find_input: Some(find_input),
             web_rx,
             web_tx,
@@ -164,6 +185,8 @@ impl Shell {
             focus: cx.focus_handle(),
             last_window_title: String::new(),
             context_menu: None,
+            toast: None,
+            toast_generation: 0,
         }
     }
 
@@ -440,27 +463,25 @@ impl Shell {
         for ev in web {
             match ev {
                 WebEvent::Title { tab, title } => {
-                    let is_empty_notes_title = self
-                        .store
-                        .read(cx)
-                        .state
-                        .tab(&tab)
-                        .is_some_and(|tab| tab.kind == TabKind::Notes && title.is_empty());
-                    if !is_empty_notes_title {
+                    let kind = self.store.read(cx).state.tab(&tab).map(|tab| tab.kind);
+                    if kind.is_some_and(|kind| accepts_native_title(kind, &title)) {
                         self.store.update(cx, |s, cx| {
                             s.tab_meta_update(&tab, Some(title), None, None, None, None, cx);
                         });
                     }
                 }
                 WebEvent::Url { tab, url } => {
-                    if url.starts_with("hifi://") {
-                        self.store.update(cx, |s, cx| {
-                            s.open_tab(&url, None, None, cx);
-                        });
-                    } else {
-                        self.store.update(cx, |s, cx| {
-                            s.tab_meta_update(&tab, None, Some(url), None, None, None, cx);
-                        });
+                    let kind = self.store.read(cx).state.tab(&tab).map(|tab| tab.kind);
+                    if kind.is_some_and(accepts_nav_url) {
+                        if url.starts_with("hifi://") {
+                            self.store.update(cx, |s, cx| {
+                                s.open_tab(&url, None, None, cx);
+                            });
+                        } else {
+                            self.store.update(cx, |s, cx| {
+                                s.tab_meta_update(&tab, None, Some(url), None, None, None, cx);
+                            });
+                        }
                     }
                 }
                 WebEvent::Loading { tab, loading } => {
@@ -822,14 +843,86 @@ impl Shell {
                     }
                 }
                 WebEvent::NotesSave { tab, html } => {
-                    let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
-                    self.store.update(cx, |s, cx| match page {
-                        Some(page) => {
-                            s.notes_save(&tab, &page.title, &page.html);
-                            s.set_title(&tab, page.title, cx);
+                    let message = serde_json::from_str::<serde_json::Value>(&html).ok();
+                    if message
+                        .as_ref()
+                        .and_then(|v| v.get("type"))
+                        .and_then(|v| v.as_str())
+                        == Some("ui_send")
+                    {
+                        let artifact_root = self.store.read(cx).paths.root.join("artifacts");
+                        let chat_id = self.store.read(cx).state.tab(&tab).and_then(|artifact| {
+                            let path = std::path::Path::new(&artifact.url);
+                            path.starts_with(&artifact_root).then(|| {
+                                path.parent()?
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                            })?
+                        });
+                        let text = message
+                            .as_ref()
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_string);
+                        if let (Some(chat_id), Some(text)) = (chat_id, text) {
+                            self.store.update(cx, |store, cx| {
+                                store.queue_agent_prompt(&chat_id, text, cx);
+                            });
                         }
-                        None => s.notes_save(&tab, "", &html),
-                    });
+                    } else if message
+                        .as_ref()
+                        .and_then(|v| v.get("type"))
+                        .and_then(|v| v.as_str())
+                        == Some("doc_save")
+                    {
+                        let saved = (|| -> anyhow::Result<()> {
+                            let target = self
+                                .store
+                                .read(cx)
+                                .state
+                                .tab(&tab)
+                                .map(|t| t.url.clone())
+                                .ok_or_else(|| anyhow::anyhow!("document tab is no longer open"))?;
+                            let document = serde_json::from_value::<hifi_docs::Document>(
+                                message
+                                    .as_ref()
+                                    .and_then(|v| v.get("document"))
+                                    .cloned()
+                                    .ok_or_else(|| anyhow::anyhow!("missing document payload"))?,
+                            )?;
+                            hifi_docs::write(std::path::Path::new(&target), &document)
+                        })();
+                        self.toast = Some(match saved {
+                            Ok(()) => "Saved".into(),
+                            Err(error) => format!("Could not save: {error}"),
+                        });
+                        self.toast_generation = self.toast_generation.wrapping_add(1);
+                        let generation = self.toast_generation;
+                        cx.notify();
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(2500))
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.toast_generation == generation {
+                                    this.toast = None;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    } else {
+                        let page = serde_json::from_str::<crate::notes::PageSave>(&html).ok();
+                        self.store.update(cx, |s, cx| match page {
+                            Some(page) => {
+                                s.notes_save(&tab, &page.title, &page.html);
+                                s.set_title(&tab, page.title, cx);
+                            }
+                            None => s.notes_save(&tab, "", &html),
+                        });
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 WebEvent::Redraw => {}
@@ -992,10 +1085,15 @@ impl Shell {
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
-        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes);
+        let document =
+            tab.kind == TabKind::Preview && hifi_docs::DocKind::from_path(&tab.url).is_some();
+        let artifacts_root = self.store.read(cx).paths.root.join("artifacts");
+        let artifact = tab.kind == TabKind::Preview
+            && is_artifact_html_path(std::path::Path::new(&tab.url), &artifacts_root);
+        let ipc = matches!(tab.kind, TabKind::Web | TabKind::Notes) || document || artifact;
         // hifi:// urls never reach the network — the nav delegate would
         // cancel them into WebEvent::Url and open a duplicate tab.
-        let load_url = if tab.url.starts_with("hifi://") {
+        let load_url = if tab.url.starts_with("hifi://") || document || artifact {
             ""
         } else {
             &tab.url
@@ -1026,6 +1124,37 @@ impl Shell {
                             .update(cx, |s, cx| s.set_title(&id, saved_title, cx));
                     }
                     host.load_html(&crate::notes::editor_html(&body, &title, is_dark));
+                } else if document {
+                    match hifi_docs::read(std::path::Path::new(&tab.url)) {
+                        Ok(doc) => {
+                            let pdf = (doc.kind == hifi_docs::DocKind::Pdf)
+                                .then(|| std::fs::read(&tab.url).ok())
+                                .flatten();
+                            host.load_html(&hifi_docs::editor_html(
+                                &doc,
+                                &tab.url,
+                                pdf.as_deref(),
+                                is_dark,
+                            ));
+                        }
+                        Err(error) => {
+                            let message =
+                                error.to_string().replace('&', "&amp;").replace('<', "&lt;");
+                            host.load_html(&format!(
+                                "<!doctype html><meta charset=\"utf-8\"><body style=\"font:14px -apple-system;padding:32px\">Could not open document: {message}</body>"
+                            ));
+                        }
+                    }
+                } else if artifact {
+                    let html = self
+                        .artifact_html
+                        .get(&tab.id)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&tab.url).ok());
+                    if let Some(html) = html {
+                        host.load_html(&html);
+                        self.artifact_html.insert(tab.id.clone(), html);
+                    }
                 }
                 self.panes.insert(tab.id.clone(), Pane::Web(host.clone()));
                 Some(host)
@@ -1084,10 +1213,54 @@ impl Shell {
                 } else {
                     url
                 };
+                let force_new_tab = job
+                    .request
+                    .params
+                    .get("newTab")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let (group, anchor) = if force_new_tab {
+                    let store = self.store.read(cx);
+                    let anchor = anchor
+                        .filter(|(id, _)| {
+                            store.state.tab(id).is_some_and(|tab| {
+                                store.state.group(&tab.group_id).is_some_and(|group| {
+                                    group.tab_ids().iter().any(|tab_id| tab_id == id)
+                                })
+                            })
+                        })
+                        .or_else(|| {
+                            store
+                                .state
+                                .active_space()
+                                .and_then(|space| {
+                                    space
+                                        .active_group
+                                        .as_ref()
+                                        .and_then(|id| store.state.group(id))
+                                        .or_else(|| space.groups.first())
+                                        .and_then(|group| {
+                                            group.active_tab.clone().filter(|id| {
+                                                group.tab_ids().iter().any(|tab_id| tab_id == id)
+                                            })
+                                        })
+                                })
+                                .map(|id| (id, hifi_core::SplitSide::Right))
+                        });
+                    let group = anchor
+                        .as_ref()
+                        .and_then(|(id, _)| store.state.tab(id).map(|tab| tab.group_id.clone()))
+                        .or(group);
+                    (group, anchor)
+                } else {
+                    (group, anchor)
+                };
                 if !hifi_core::schemes::allowed_navigation(&target_url) {
                     return self.finish_ipc(job, Err("navigation scheme is not allowed".into()));
                 }
-                if let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf")) {
+                if !force_new_tab
+                    && let Some(owner) = job.request.agent.clone().or_else(|| get("agentOf"))
+                {
                     let id = self
                         .store
                         .update(cx, |s, cx| s.open_agent_tab(&target_url, &owner, cx));
@@ -1457,6 +1630,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = Theme::of(cx).palette;
+        let artifacts_root = self.store.read(cx).paths.root.join("artifacts");
         let web_kind = |k: TabKind| matches!(k, TabKind::Web | TabKind::Notes);
         match self.pane_kinds.insert(tab.id.clone(), tab.kind) {
             Some(old) if old != tab.kind && !(web_kind(old) && web_kind(tab.kind)) => {
@@ -1600,6 +1774,29 @@ impl Shell {
                     cx,
                 );
                 div().size_full().child(view).into_any()
+            }
+            TabKind::Preview
+                if hifi_docs::DocKind::from_path(&tab.url).is_some()
+                    || is_artifact_html_path(std::path::Path::new(&tab.url), &artifacts_root) =>
+            {
+                match self.web_host(tab, Theme::of(cx).palette.is_dark, window, cx) {
+                    Some(host) => Self::web_surface(&host, &self.focus).into_any(),
+                    None => {
+                        let err = self
+                            .pane_errors
+                            .get(&tab.id)
+                            .cloned()
+                            .unwrap_or_else(|| "webview failed".into());
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(p.danger)
+                            .child(err)
+                            .into_any()
+                    }
+                }
             }
             TabKind::Preview => {
                 let view = self.view_pane(
@@ -1749,7 +1946,15 @@ impl Shell {
             TabKind::Terminal => (sidebar::kind_icon(tab), tab.display_title(), String::new()),
             TabKind::Agent => (sidebar::kind_icon(tab), tab.display_title(), String::new()),
             TabKind::Diff => (icons::GIT_BRANCH, tab.display_title(), String::new()),
-            TabKind::Preview => (icons::EYE, tab.display_title(), String::new()),
+            TabKind::Preview => (
+                if hifi_docs::DocKind::from_path(&tab.url).is_some() {
+                    icons::DOCUMENT
+                } else {
+                    icons::EYE
+                },
+                tab.display_title(),
+                String::new(),
+            ),
             TabKind::NewTab => (
                 icons::MAGNIFER,
                 "Search or enter address".into(),
@@ -3313,6 +3518,69 @@ impl gpui::Render for Shell {
             }
         }
 
+        if let Some(message) = self.toast.clone() {
+            let error = message.starts_with("Could not save:");
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(52.))
+                    .right(px(16.))
+                    .max_w(px(420.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.card)
+                    .px(px(12.))
+                    .py(px(8.))
+                    .text_size(px(12.))
+                    .text_color(if error { p.danger } else { p.text })
+                    .shadow_lg()
+                    .child(message)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                            this.toast = None;
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accepts_native_title, accepts_nav_url, is_artifact_html_path};
+    use hifi_core::TabKind;
+    use std::path::Path;
+
+    #[test]
+    fn native_navigation_urls_only_update_web_tabs() {
+        assert!(accepts_nav_url(TabKind::Web));
+        for kind in [TabKind::Notes, TabKind::Preview, TabKind::Settings] {
+            assert!(!accepts_nav_url(kind));
+        }
+    }
+
+    #[test]
+    fn non_web_titles_ignore_blank_navigation_titles() {
+        assert!(!accepts_native_title(TabKind::Preview, ""));
+        assert!(!accepts_native_title(TabKind::Notes, "about:blank"));
+        assert!(!accepts_native_title(TabKind::Preview, " ABOUT:BLANK "));
+        assert!(accepts_native_title(TabKind::Preview, "report.docx"));
+        assert!(accepts_native_title(TabKind::Web, ""));
+    }
+
+    #[test]
+    fn artifact_html_paths_route_to_webview() {
+        let root = Path::new("/Users/example/Library/Application Support/HiFi/artifacts");
+        assert!(is_artifact_html_path(&root.join("chat-id/1.html"), root));
+        assert!(!is_artifact_html_path(&root.join("chat-id/1.png"), root));
+        assert!(!is_artifact_html_path(
+            Path::new("/Users/example/Library/Application Support/HiFi/notes/1.html"),
+            root
+        ));
     }
 }

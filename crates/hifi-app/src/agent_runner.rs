@@ -202,6 +202,9 @@ pub struct RunConfig {
     pub guard: Guard,
     pub session: String,
     pub prompt: String,
+    pub composio_api_key: String,
+    pub computer_use: bool,
+    pub cua_driver_path: String,
     /// Owning chat tab: browser tools open tabs under it.
     pub tab_id: String,
     pub first_turn: bool,
@@ -426,9 +429,69 @@ fn write_opencode_config(config: &Value, tab_id: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
-fn mcp_json(hifi: &Path, tab: &str) -> String {
-    json!({"mcpServers":{"hifi":{"command":hifi,"args":["mcp"],"env":{"HIFI_AGENT_TAB":tab}}}})
-        .to_string()
+fn mcp_json(cfg: &RunConfig, hifi: &Path) -> String {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        "hifi".into(),
+        json!({"command":hifi,"args":["mcp"],"env":{"HIFI_AGENT_TAB":cfg.tab_id}}),
+    );
+    if !cfg.composio_api_key.is_empty() {
+        servers.insert(
+            "composio".into(),
+            json!({
+                "type": "http",
+                "url": "https://connect.composio.dev/mcp",
+                "headers": {"x-consumer-api-key": cfg.composio_api_key}
+            }),
+        );
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        servers.insert(
+            "cua".into(),
+            json!({
+                "command": cfg.cua_driver_path,
+                "args": ["mcp"],
+                "env": {"CUA_DRIVER_PERMISSION_MODE": cua_permission(cfg.guard)}
+            }),
+        );
+    }
+    json!({"mcpServers": servers}).to_string()
+}
+
+pub(crate) fn cua_permission(guard: Guard) -> &'static str {
+    if guard == Guard::Strict {
+        "bounded"
+    } else {
+        "standard"
+    }
+}
+
+fn add_opencode_integrations(config: &mut Value, cfg: &RunConfig) {
+    let Some(mcp) = config.get_mut("mcp").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if !cfg.composio_api_key.is_empty() {
+        mcp.insert(
+            "composio".into(),
+            json!({
+                "type": "remote",
+                "url": "https://connect.composio.dev/mcp",
+                "headers": {"x-consumer-api-key": cfg.composio_api_key},
+                "enabled": true
+            }),
+        );
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        mcp.insert(
+            "cua".into(),
+            json!({
+                "type": "local",
+                "command": [cfg.cua_driver_path, "mcp"],
+                "environment": {"CUA_DRIVER_PERMISSION_MODE": cua_permission(cfg.guard)},
+                "enabled": true
+            }),
+        );
+    }
 }
 
 pub fn claude_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
@@ -462,7 +525,7 @@ pub fn claude_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
     }
     args.extend([
         "--mcp-config".into(),
-        mcp_json(hifi, &cfg.tab_id),
+        mcp_json(cfg, hifi),
         cfg.prompt.clone(),
     ]);
     args
@@ -473,7 +536,7 @@ pub fn amp_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
         "--execute".into(),
         "--stream-json".into(),
         "--mcp-config".into(),
-        mcp_json(hifi, &cfg.tab_id),
+        mcp_json(cfg, hifi),
     ];
     if cfg.guard == Guard::Full {
         args.push("--dangerously-allow-all".into());
@@ -511,11 +574,41 @@ pub fn codex_args(cfg: &RunConfig, hifi: &Path) -> Vec<String> {
             cfg.tab_id
         ),
     ]);
+    if !cfg.composio_api_key.is_empty() {
+        args.extend([
+            "-c".into(),
+            format!(
+                "mcp_servers.composio.url={}",
+                json!("https://connect.composio.dev/mcp")
+            ),
+            "-c".into(),
+            "mcp_servers.composio.env_http_headers={\"x-consumer-api-key\"=\"HIFI_COMPOSIO_API_KEY\"}"
+                .into(),
+        ]);
+    }
+    if cfg.computer_use && !cfg.cua_driver_path.is_empty() {
+        args.extend([
+            "-c".into(),
+            format!("mcp_servers.cua.command={}", json!(cfg.cua_driver_path)),
+            "-c".into(),
+            "mcp_servers.cua.args=[\"mcp\"]".into(),
+            "-c".into(),
+            format!(
+                "mcp_servers.cua.env={{ CUA_DRIVER_PERMISSION_MODE = \"{}\" }}",
+                cua_permission(cfg.guard)
+            ),
+        ]);
+    }
     if !cfg.session.is_empty() {
         args.extend(["resume".into(), cfg.session.clone()]);
     }
     args.push(cfg.prompt.clone());
     args
+}
+
+fn codex_composio_env(cfg: &RunConfig) -> Option<(&'static str, &str)> {
+    (!cfg.composio_api_key.is_empty())
+        .then_some(("HIFI_COMPOSIO_API_KEY", cfg.composio_api_key.as_str()))
 }
 
 /// What the harness is told about where it runs, once per chat.
@@ -525,7 +618,10 @@ fn preamble(cwd: &str, guard: Guard) -> String {
 Permission level: {} ({}). To use the web, call the hifi browser_* tools: browser_open to \
 open a page in your own tab (the user's tabs are never touched), then browser_read for the \
 text, browser_snapshot for clickable elements, browser_click / browser_type / browser_scroll \
-to interact. Keep answers concise.\n\nTask: ",
+to interact. Use doc_create, doc_read, and doc_open for PDF, DOCX, PPTX, and XLSX files; \
+after creating a document, call doc_open so the user sees it. Visual answers may use fenced \
+mermaid, math, or hifi-ui blocks; hifi-ui can call hifi.send(text) to reply to you. Keep answers \
+concise.\n\nTask: ",
         guard.label(),
         guard.describe()
     )
@@ -570,8 +666,9 @@ pub fn spawn(mut cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run,
             command.arg("--session").arg(&cfg.session);
         }
         command.arg("--auto");
-        let path =
-            write_opencode_config(&opencode_config(cfg.guard, &hifi, &cfg.tab_id), &cfg.tab_id)?;
+        let mut config = opencode_config(cfg.guard, &hifi, &cfg.tab_id);
+        add_opencode_integrations(&mut config, &cfg);
+        let path = write_opencode_config(&config, &cfg.tab_id)?;
         command.env("OPENCODE_CONFIG", path).arg(&cfg.prompt);
     } else if selected.id == "amp" {
         command.args(amp_args(&cfg, &hifi));
@@ -579,6 +676,9 @@ pub fn spawn(mut cfg: RunConfig, tx: UnboundedSender<AgentEvent>) -> Result<Run,
         command.args(claude_args(&cfg, &hifi));
     } else if selected.protocol == Protocol::CodexExec {
         command.args(codex_args(&cfg, &hifi));
+        if let Some((name, value)) = codex_composio_env(&cfg) {
+            command.env(name, value);
+        }
     }
     let mut child = command
         .spawn()
@@ -1079,6 +1179,9 @@ mod tests {
             guard: Guard::Strict,
             session: "s".into(),
             prompt: "hello".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
             tab_id: "tab-1".into(),
             first_turn: false,
         };
@@ -1228,6 +1331,71 @@ mod tests {
     }
 
     #[test]
+    fn integrations_are_optional_and_computer_use_respects_guard() {
+        let base = RunConfig {
+            harness: "claude".into(),
+            model: String::new(),
+            cwd: ".".into(),
+            guard: Guard::Strict,
+            session: String::new(),
+            prompt: "hello".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
+            tab_id: "tab-1".into(),
+            first_turn: true,
+        };
+        let empty: Value = serde_json::from_str(&mcp_json(&base, Path::new("/bin/hifi"))).unwrap();
+        assert!(empty["mcpServers"].get("composio").is_none());
+        assert!(empty["mcpServers"].get("cua").is_none());
+
+        let configured = RunConfig {
+            composio_api_key: "test-key".into(),
+            computer_use: true,
+            cua_driver_path: "/bin/cua-driver".into(),
+            ..base.clone()
+        };
+        let claude = claude_args(&configured, Path::new("/bin/hifi"));
+        let mcp_arg = claude
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .unwrap()[1]
+            .clone();
+        let claude_mcp: Value = serde_json::from_str(&mcp_arg).unwrap();
+        assert_eq!(
+            claude_mcp["mcpServers"]["composio"]["headers"]["x-consumer-api-key"],
+            "test-key"
+        );
+        assert_eq!(
+            claude_mcp["mcpServers"]["cua"]["env"]["CUA_DRIVER_PERMISSION_MODE"],
+            "bounded"
+        );
+        let amp = amp_args(&configured, Path::new("/bin/hifi"));
+        let amp_mcp = amp
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .unwrap()[1]
+            .clone();
+        assert!(amp_mcp.contains("x-consumer-api-key"));
+        let codex = codex_args(&configured, Path::new("/bin/hifi"));
+        assert!(codex.iter().any(|arg| arg.contains("env_http_headers")));
+        assert!(!codex.iter().any(|arg| arg.contains("test-key")));
+        assert_eq!(
+            codex_composio_env(&configured),
+            Some(("HIFI_COMPOSIO_API_KEY", "test-key"))
+        );
+
+        let mut opencode = opencode_config(Guard::Strict, Path::new("/bin/hifi"), "tab-1");
+        add_opencode_integrations(&mut opencode, &configured);
+        assert_eq!(opencode["mcp"]["composio"]["enabled"], true);
+        assert_eq!(
+            opencode["mcp"]["cua"]["environment"]["CUA_DRIVER_PERMISSION_MODE"],
+            "bounded"
+        );
+        assert_eq!(cua_permission(Guard::Balanced), "standard");
+    }
+
+    #[test]
     #[ignore = "requires a configured OpenCode account and network access"]
     fn opencode_live_turn() {
         let cwd = std::env::temp_dir().join(format!("hifi-opencode-live-{}", std::process::id()));
@@ -1239,6 +1407,9 @@ mod tests {
             guard: Guard::Strict,
             session: String::new(),
             prompt: "Reply with exactly the word PONG and nothing else.".into(),
+            composio_api_key: String::new(),
+            computer_use: false,
+            cua_driver_path: String::new(),
             tab_id: "test-tab".into(),
             first_turn: false,
         };

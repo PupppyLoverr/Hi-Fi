@@ -55,6 +55,7 @@ pub struct TextField {
     /// Text color applied to content runs (placeholder is faint always).
     pub text_color: Option<gpui::Hsla>,
     pub placeholder_color: Option<gpui::Hsla>,
+    secret: bool,
 }
 
 impl gpui::EventEmitter<TextFieldEvent> for TextField {}
@@ -74,6 +75,7 @@ impl TextField {
             is_selecting: false,
             text_color: None,
             placeholder_color: None,
+            secret: false,
         }
     }
 
@@ -83,6 +85,11 @@ impl TextField {
 
     pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.placeholder = text.into();
+        cx.notify();
+    }
+
+    pub fn set_secret(&mut self, secret: bool, cx: &mut Context<Self>) {
+        self.secret = secret;
         cx.notify();
     }
 
@@ -515,7 +522,11 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.content.clone();
+        let content = if input.secret {
+            SharedString::from("*".repeat(input.content.len()))
+        } else {
+            input.content.clone()
+        };
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
         let style = window.text_style();

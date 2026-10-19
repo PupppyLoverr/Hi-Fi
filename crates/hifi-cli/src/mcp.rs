@@ -16,6 +16,7 @@ pub struct Ctx {
     pub agent_tab: Option<String>,
     pub wait_after_navigation: bool,
     pub call: Box<IpcCall>,
+    pub call_user_visible: Box<IpcCall>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,7 @@ pub fn run(socket: &Path) -> Result<()> {
         .filter(|value| !value.is_empty());
     let socket = socket.to_path_buf();
     let call_agent = agent_tab.clone();
+    let user_socket = socket.clone();
     let ctx = Ctx {
         agent_tab,
         wait_after_navigation: true,
@@ -44,6 +46,9 @@ pub fn run(socket: &Path) -> Result<()> {
                 IPC_TIMEOUT_SECS,
                 call_agent.as_deref(),
             )
+        }),
+        call_user_visible: Box::new(move |method, params| {
+            client::call(&user_socket, method, params, IPC_TIMEOUT_SECS)
         }),
     };
     let stdin = io::stdin();
@@ -106,12 +111,66 @@ fn handle_tool_call(id: Value, params: Value, ctx: &Ctx) -> String {
         "browser_screenshot" => browser_screenshot(&arguments, ctx),
         "browser_back" => browser_back(&arguments, ctx),
         "browser_close" => browser_close(&arguments, ctx),
+        "doc_create" => doc_create(&arguments),
+        "doc_read" => doc_read(&arguments),
+        "doc_open" => doc_open(&arguments, ctx),
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),
     };
     match result {
         Ok(text) => tool_response(id, text, false),
         Err(error) => tool_response(id, error.to_string(), true),
     }
+}
+
+fn doc_create(arguments: &Value) -> Result<String> {
+    let path = required_string(arguments, "path")?;
+    let document: hifi_docs::Document = serde_json::from_value(
+        arguments
+            .get("document")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing document"))?,
+    )?;
+    hifi_docs::write(Path::new(&path), &document)?;
+    Ok(format!(
+        "Created {path}. Call doc_open with this path to show it to the user."
+    ))
+}
+
+fn doc_read(arguments: &Value) -> Result<String> {
+    let path = required_string(arguments, "path")?;
+    let document = hifi_docs::read(Path::new(&path))?;
+    Ok(serde_json::to_string_pretty(&document)?)
+}
+
+fn doc_open(arguments: &Value, ctx: &Ctx) -> Result<String> {
+    let requested = required_string(arguments, "path")?;
+    let path = std::fs::canonicalize(requested)
+        .map_err(|error| anyhow::anyhow!("resolving {requested}: {error}"))?;
+    anyhow::ensure!(
+        hifi_docs::DocKind::from_path(&path).is_some(),
+        "unsupported document extension"
+    );
+    let url = format!("hifi://preview/{}", path.to_string_lossy());
+    let params = doc_open_params(&url, ctx.agent_tab.as_deref());
+    let response = (ctx.call_user_visible)(methods::TAB_OPEN, params)?;
+    if !response.ok {
+        bail!(response.error.unwrap_or_else(|| "unknown error".into()));
+    }
+    let id = response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    Ok(format!("Opened {requested} in a user-visible tab ({id})."))
+}
+
+pub(crate) fn doc_open_params(url: &str, agent_tab: Option<&str>) -> Value {
+    let mut params = json!({"url": url, "newTab": true});
+    if let Some(agent_tab) = agent_tab.filter(|tab| !tab.is_empty()) {
+        params["rightOf"] = json!(agent_tab);
+    }
+    params
 }
 
 fn browser_open(arguments: &Value, ctx: &Ctx) -> Result<String> {
@@ -390,6 +449,21 @@ fn tools() -> Vec<Value> {
             "Close an agent browser tab.",
             schema(&[("tab", "string")], &["tab"]),
         ),
+        tool(
+            "doc_create",
+            "Create .pdf, .docx, .pptx, or .xlsx from document JSON: {kind,title,blocks?,slides?,sheets?}. Blocks use {type:'heading',level,text}, paragraph/bullet/numbered/quote/code with text, {type:'table',rows:string[][]}, or {type:'page_break'}. Slides use {title,bullets?:string[],notes?:string}. Sheets use {name,rows:(string|number)[][]}; cell strings beginning '=' are formulas. After creation, call doc_open so the user sees the file.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"document":{"type":"object","properties":{"kind":{"type":"string","enum":["pdf","docx","pptx","xlsx"]},"title":{"type":"string"},"blocks":{"type":"array","items":{"type":"object"}},"slides":{"type":"array","items":{"type":"object"}},"sheets":{"type":"array","items":{"type":"object"}}},"required":["kind","title"]}},"required":["path","document"],"additionalProperties":false}),
+        ),
+        tool(
+            "doc_read",
+            "Read a .pdf, .docx, .pptx, or .xlsx file and return its document JSON: kind/title plus blocks, slides, or sheets.",
+            schema(&[("path", "string")], &["path"]),
+        ),
+        tool(
+            "doc_open",
+            "Open an existing .pdf, .docx, .pptx, or .xlsx path in a normal user-visible Hi-Fi tab (even when called by an agent).",
+            schema(&[("path", "string")], &["path"]),
+        ),
     ]
 }
 
@@ -431,10 +505,12 @@ mod tests {
     use super::*;
 
     fn test_ctx(response: IpcResponse) -> Ctx {
+        let user_response = response.clone();
         Ctx {
             agent_tab: None,
             wait_after_navigation: false,
             call: Box::new(move |_, _| Ok(response.clone())),
+            call_user_visible: Box::new(move |_, _| Ok(user_response.clone())),
         }
     }
 
@@ -453,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_eleven_tools() {
+    fn tools_list_has_fourteen_tools() {
         let ctx = test_ctx(IpcResponse::ok("test", Value::Null));
         let response: Value = serde_json::from_str(
             &handle_message(
@@ -463,7 +539,20 @@ mod tests {
             .expect("response"),
         )
         .expect("valid JSON");
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 11);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 14);
+    }
+
+    #[test]
+    fn doc_open_requests_a_new_visible_tab_to_the_right_of_its_chat() {
+        let params = doc_open_params("hifi://preview/tmp/report.docx", Some("chat-1"));
+        assert_eq!(params["url"], "hifi://preview/tmp/report.docx");
+        assert_eq!(params["newTab"], true);
+        assert_eq!(params["rightOf"], "chat-1");
+        assert!(
+            doc_open_params("hifi://preview/tmp/report.docx", None)
+                .get("rightOf")
+                .is_none()
+        );
     }
 
     #[test]
