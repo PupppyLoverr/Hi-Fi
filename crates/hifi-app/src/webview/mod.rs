@@ -42,6 +42,14 @@ pub use windows::WebPaneHost;
 /// Events a native page pushes to the app (engine callback → channel → GPUI).
 #[derive(Debug)]
 pub enum WebEvent {
+    ContextMenu {
+        tab: String,
+        x: f64,
+        y: f64,
+        href: String,
+        src: String,
+        selection: String,
+    },
     Title {
         tab: String,
         title: String,
@@ -85,6 +93,37 @@ pub enum WebEvent {
     Clipboard {
         text: String,
     },
+}
+
+/// Decode an IPC payload shared by browser context menus and Notes saves.
+pub fn parse_ipc_event(tab: &str, body: &str) -> Option<WebEvent> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    (value.get("type")?.as_str() == Some("ctx")).then(|| WebEvent::ContextMenu {
+        tab: tab.into(),
+        x: value
+            .get("x")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_default(),
+        y: value
+            .get("y")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_default(),
+        href: value
+            .get("href")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        src: value
+            .get("src")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        selection: value
+            .get("sel")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .into(),
+    })
 }
 
 /// Browser chords the app keymap owns even while a page holds focus.

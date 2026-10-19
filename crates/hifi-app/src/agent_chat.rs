@@ -178,8 +178,14 @@ impl AgentChatView {
             Ok(handle) => {
                 self.active = Some(handle);
                 self.started = Some(Instant::now());
+                let id = self.tab_id.clone();
+                self.store
+                    .update(cx, |s, cx| s.set_agent_running(&id, true, false, cx));
             }
             Err(e) => {
+                let id = self.tab_id.clone();
+                self.store
+                    .update(cx, |s, cx| s.set_agent_running(&id, false, true, cx));
                 self.items.push(Item::Note { text: e });
                 self.persist(cx);
                 cx.notify();
@@ -301,6 +307,10 @@ impl AgentChatView {
                 if self.active.is_none() {
                     return;
                 }
+                let failed = error.is_some();
+                let id = self.tab_id.clone();
+                self.store
+                    .update(cx, |s, cx| s.set_agent_running(&id, false, failed, cx));
                 if let Some(e) = error {
                     self.items.push(Item::Note {
                         text: format!("The harness stopped with an error: {}", short(&e, 600)),
@@ -326,6 +336,9 @@ impl AgentChatView {
         if let Some(run) = self.active.take() {
             run.stop();
         }
+        let id = self.tab_id.clone();
+        self.store
+            .update(cx, |s, cx| s.set_agent_running(&id, false, false, cx));
         self.started = None;
         self.items.push(Item::Note {
             text: "Stopped".into(),

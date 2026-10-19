@@ -321,7 +321,10 @@ static Page *new_page(guint id, gboolean ipc) {
         webkit_user_content_manager_register_script_message_handler(ucm, "ipc");
         WebKitUserScript *script = webkit_user_script_new(
             "window.ipc={postMessage:function(m){window.webkit.messageHandlers.ipc.postMessage("
-            "String(m))}};",
+            "String(m))}};document.addEventListener('contextmenu',function(e){e.preventDefault();"
+            "window.ipc.postMessage(JSON.stringify({type:'ctx',x:e.clientX,y:e.clientY,"
+            "href:(e.target.closest('a')||{}).href||'',src:e.target.tagName==='IMG'?e.target.src:'',"
+            "sel:String(getSelection())}))},true);",
             WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL,
             NULL);
         webkit_user_content_manager_add_script(ucm, script);

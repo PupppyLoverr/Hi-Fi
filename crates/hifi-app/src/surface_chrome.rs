@@ -5,17 +5,17 @@ use gpui::{Div, div, prelude::*, px};
 
 use crate::theme::{Palette, Theme};
 
-pub const HEADER_HEIGHT: f32 = Theme::TITLEBAR_HEIGHT;
-pub const CONTROL_SIZE: f32 = 24.0;
+pub const HEADER_HEIGHT: f32 = Theme::PANE_TOOLBAR_H;
+pub const CONTROL_SIZE: f32 = Theme::TOOLBAR_BTN;
 pub const CONTROL_RADIUS: f32 = 6.0;
-pub const ICON_SIZE: f32 = 14.0;
-pub const CONTROL_GAP: f32 = 4.0;
+pub const ICON_SIZE: f32 = Theme::ICON_OPTICAL;
+pub const CONTROL_GAP: f32 = 8.0;
 pub const EDGE_INSET: f32 = 8.0;
 
 /// Shared field treatment for the browser address and search controls.
 pub fn input(p: &Palette) -> Div {
     div()
-        .h(px(CONTROL_SIZE))
+        .h(px(Theme::ADDRESS_H))
         .min_w_0()
         .flex_1()
         .px(px(8.0))

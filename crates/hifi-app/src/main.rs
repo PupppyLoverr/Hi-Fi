@@ -9,6 +9,7 @@ mod command_bar;
 mod frost;
 mod ipc_server;
 mod jsbridge;
+mod menu;
 mod notes;
 mod shell;
 mod sidebar;
@@ -249,9 +250,9 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(720.), px(480.))),
                     titlebar: Some(TitlebarOptions {
-                        title: cfg!(target_os = "windows").then(|| "Hi-Fi".into()),
+                        title: None,
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(14.), px(14.))),
+                        traffic_light_position: Some(gpui::point(px(12.), px(12.))),
                     }),
                     app_owns_titlebar_drag: true,
                     // Frosted shell — sidebar/new-tab translucency reads the

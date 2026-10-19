@@ -239,10 +239,15 @@ fn read_packets(
                     });
                 }
                 b'P' => {
-                    let _ = route.tx.send(WebEvent::NotesSave {
-                        tab: route.tab.clone(),
-                        html: String::from_utf8_lossy(&data).into_owned(),
-                    });
+                    let body = String::from_utf8_lossy(&data);
+                    if let Some(event) = crate::webview::parse_ipc_event(&route.tab, &body) {
+                        let _ = route.tx.send(event);
+                    } else {
+                        let _ = route.tx.send(WebEvent::NotesSave {
+                            tab: route.tab.clone(),
+                            html: body.into_owned(),
+                        });
+                    }
                 }
                 b'J' => {
                     let cb = route.evals.lock().ok().and_then(|mut q| q.pop_front());
@@ -342,6 +347,10 @@ impl WebPaneHost {
     pub fn sync_bounds(&self, bounds: Bounds<Pixels>, visible: bool) {
         self.bounds.set(bounds);
         self.set_visible(visible);
+    }
+
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
     }
 
     /// Paint the latest frame into `bounds` (called from the pane canvas).

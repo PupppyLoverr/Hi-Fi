@@ -3,11 +3,11 @@
 //! segmented row), and the spaces/settings foot. It paints no fill of its
 //! own; the shell lays the cosmos sidebar tone under it.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, ScrollHandle, SharedString, Window,
-    div, hsla, prelude::*, px,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton,
+    ScrollHandle, SharedString, Window, div, hsla, point, prelude::*, px,
 };
 
 use crate::assets::icons;
@@ -16,11 +16,29 @@ use crate::theme::{Palette, Theme};
 use crate::views::glyph;
 use hifi_core::{SplitNode, Tab, TabId, TabKind};
 
+struct SpaceTooltip(String);
+
+impl gpui::Render for SpaceTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Theme::of(cx).palette;
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .bg(p.card)
+            .border_1()
+            .border_color(p.border)
+            .text_size(px(12.))
+            .text_color(p.text)
+            .child(self.0.clone())
+    }
+}
+
 /// Width of the rail in compact mode — wide enough to clear the traffic lights.
 pub const COMPACT_WIDTH: f32 = 76.;
 /// cosmos `shell/spaces.rs` section metrics.
 const SIDEBAR_SECTION_GAP: f32 = 12.0;
-const SIDEBAR_DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
+#[allow(dead_code)]
 const SIDEBAR_DISCLOSURE_BODY_INSET: f32 = 4.0;
 const PINNED_KEY: &str = "__pinned";
 
@@ -29,6 +47,8 @@ pub struct Sidebar {
     scroll: ScrollHandle,
     /// Disclosure sections the user folded (group ids, or `PINNED_KEY`).
     collapsed: HashSet<String>,
+    running_agents: HashSet<TabId>,
+    failed_agents: HashSet<TabId>,
 }
 
 impl Sidebar {
@@ -38,6 +58,8 @@ impl Sidebar {
             store,
             scroll: ScrollHandle::new(),
             collapsed: HashSet::new(),
+            running_agents: HashSet::new(),
+            failed_agents: HashSet::new(),
         }
     }
 }
@@ -75,7 +97,7 @@ pub fn mark_icon(command: &str) -> &'static str {
 pub fn kind_icon(tab: &Tab) -> &'static str {
     match tab.kind {
         TabKind::Web => icons::GLOBE,
-        TabKind::NewTab => icons::HOME,
+        TabKind::NewTab => icons::MAGNIFER,
         TabKind::Terminal | TabKind::Agent => mark_icon(&tab.command),
         TabKind::Diff => icons::GIT_BRANCH,
         TabKind::Preview => icons::EYE,
@@ -128,6 +150,7 @@ pub fn tab_badge(tab: &Tab, size: f32, p: &Palette) -> gpui::AnyElement {
 }
 
 /// Leaf stacks of a split tree, in visual order.
+#[allow(dead_code)]
 fn stacks(node: &SplitNode, out: &mut Vec<Vec<TabId>>) {
     match node {
         SplitNode::Leaf { tabs } => out.push(tabs.clone()),
@@ -171,13 +194,13 @@ fn action_row(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(30.))
+        .h(px(Theme::ROW_H))
         .flex()
         .flex_none()
         .items_center()
         .gap(px(8.))
         .px(px(8.))
-        .rounded(px(8.))
+        .rounded(px(Theme::ROW_RADIUS))
         .cursor_pointer()
         .text_size(px(13.))
         .text_color(p.text.opacity(0.8))
@@ -192,7 +215,25 @@ impl Sidebar {
         let store_f = self.store.clone();
         let store_m = self.store.clone();
         let store_x = self.store.clone();
+        let store_r = self.store.clone();
         let (tid, tid_m, tid_x) = (tab.id.clone(), tab.id.clone(), tab.id.clone());
+        let tid_r = tab.id.clone();
+        let status = if self.failed_agents.contains(&tab.id) {
+            glyph(icons::DANGER_TRIANGLE, 12., p.danger).into_any_element()
+        } else if self.running_agents.contains(&tab.id) {
+            div()
+                .size(px(6.))
+                .rounded_full()
+                .bg(p.accent)
+                .with_animation(
+                    SharedString::from(format!("agent-pulse-{}", tab.id)),
+                    Animation::new(Duration::from_millis(1200)).repeat(),
+                    |dot, delta| dot.opacity(0.4 + 0.6 * delta),
+                )
+                .into_any_element()
+        } else {
+            div().size(px(6.)).flex_none().into_any_element()
+        };
         div()
             .id(SharedString::from(format!("tab-{}", tab.id)))
             .group("sb-row")
@@ -202,8 +243,8 @@ impl Sidebar {
             .gap(px(8.))
             .px(px(8.))
             .py(px(6.))
-            .min_h(px(30.))
-            .rounded(px(8.))
+            .h(px(Theme::ROW_H))
+            .rounded(px(Theme::ROW_RADIUS))
             .cursor_pointer()
             .when(compact, |d| d.justify_center())
             .when(active, |d| {
@@ -213,6 +254,7 @@ impl Sidebar {
             })
             .when(!active, |d| d.hover(|s| s.bg(p.glass_hover())))
             .child(tab_badge(tab, 15., &p))
+            .child(status)
             .when(!compact, |d| {
                 let sub = row_subtitle(tab);
                 d.child(
@@ -279,10 +321,18 @@ impl Sidebar {
             .on_mouse_down(MouseButton::Middle, move |_, _, cx| {
                 store_m.update(cx, |s, cx| s.close_tab(&tid_m, cx));
             })
+            .on_mouse_down(MouseButton::Right, move |event, _, cx| {
+                cx.stop_propagation();
+                store_r.update(cx, |s, cx| {
+                    s.pending_context_menu = Some((tid_r.clone(), event.position));
+                    cx.notify();
+                });
+            })
             .into_any_element()
     }
 
     /// Radius shows a split as one row: a segment per visible pane.
+    #[allow(dead_code)]
     fn split_row(
         &self,
         gid: &str,
@@ -371,7 +421,7 @@ impl Sidebar {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(px(SIDEBAR_DISCLOSURE_HEADER_HEIGHT))
+            .h(px(Theme::SECTION_HEADER_H))
             .px(px(Theme::SPACE_SM))
             .cursor_pointer()
             .child(
@@ -412,14 +462,27 @@ fn basename(path: &str) -> String {
 /// Row title: the page title for web/pages, the harness for sessions.
 fn row_title(tab: &Tab) -> String {
     match tab.kind {
-        TabKind::Agent if !tab.prompt.is_empty() => tab.prompt.clone(),
+        TabKind::Agent if !tab.prompt.is_empty() => clean_prompt(&tab.display_title(), 48),
         TabKind::Notes if tab.title.is_empty() || tab.title == "Notes" => "Untitled".into(),
         TabKind::Notes => tab.title.clone(),
-        TabKind::Terminal | TabKind::Agent | TabKind::Diff => {
-            let t = tab.display_title();
-            t.split_once('/').map_or(t.clone(), |(k, _)| k.to_string())
-        }
         _ => tab.display_title(),
+    }
+}
+
+fn clean_prompt(prompt: &str, max_chars: usize) -> String {
+    let cleaned = prompt
+        .replace(['*', '`', '#', '_'], "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = cleaned.chars();
+    let short: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else if short.is_empty() {
+        "Agent".into()
+    } else {
+        short
     }
 }
 
@@ -442,11 +505,20 @@ impl gpui::Render for Sidebar {
         let p = Theme::of(cx).palette;
         let active_tab = self.store.read(cx).active_tab_id();
         let state = self.store.read(cx).state.clone();
+        self.running_agents = self.store.read(cx).running_agents.clone();
+        self.failed_agents = self.store.read(cx).failed_agents.clone();
         let compact = state.settings.compact_sidebar;
         let width = if compact {
             COMPACT_WIDTH
         } else {
-            state.settings.sidebar_width
+            if state.settings.sidebar_width > 0. {
+                state
+                    .settings
+                    .sidebar_width
+                    .clamp(Theme::SIDEBAR_MIN, Theme::SIDEBAR_MAX)
+            } else {
+                Theme::SIDEBAR_WIDTH
+            }
         };
         let Some(space) = state.active_space() else {
             return div().id("sidebar-empty");
@@ -458,10 +530,6 @@ impl gpui::Render for Sidebar {
             .map(|s| (s.id.clone(), s.name.clone()))
             .collect();
         let groups = space.groups.clone();
-        let active_group = space
-            .active_group
-            .clone()
-            .or_else(|| groups.first().map(|g| g.id.clone()));
         let tab_of = |id: &TabId| state.tab(id).cloned();
         let pinned: Vec<Tab> = groups
             .iter()
@@ -483,14 +551,8 @@ impl gpui::Render for Sidebar {
             .px(px(Theme::SPACE_SM))
             .pt(px(4.));
 
-        // Workspace header: the space switcher (cycles spaces).
+        // Workspace header: the space switcher menu.
         let space_name = space.name.clone();
-        let next_space = spaces
-            .iter()
-            .skip_while(|(id, _)| *id != space_id)
-            .nth(1)
-            .or_else(|| spaces.first())
-            .map(|(id, _)| id.clone());
         let store_hdr = self.store.clone();
         let initial: String = space_name
             .chars()
@@ -501,7 +563,7 @@ impl gpui::Render for Sidebar {
         list = list.child(
             div()
                 .id("sb-space-header")
-                .h(px(32.))
+                .h(px(Theme::SPACE_SWITCHER_H))
                 .flex()
                 .flex_none()
                 .items_center()
@@ -513,7 +575,7 @@ impl gpui::Render for Sidebar {
                 .hover(|s| s.bg(p.glass_hover()))
                 .child(
                     div()
-                        .size(px(20.))
+                        .size(px(Theme::ROW_ICON_WELL))
                         .flex_none()
                         .rounded_full()
                         .bg(p.accent)
@@ -535,263 +597,243 @@ impl gpui::Render for Sidebar {
                     )
                     .child(glyph(icons::ALT_ARROW_DOWN, 11., p.faint))
                 })
-                .on_click(move |_, _, cx| {
-                    if let Some(id) = next_space.clone() {
-                        store_hdr.update(cx, |s, cx| s.switch_space(&id, cx));
-                    }
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    cx.stop_propagation();
+                    store_hdr.update(cx, |s, cx| {
+                        s.pending_space_menu = Some(event.position);
+                        cx.notify();
+                    });
+                }),
+        );
+        let store_search = self.store.clone();
+        list = list.child(
+            action_row("sb-search", icons::MAGNIFER, "Search or jump…", compact, p)
+                .h(px(Theme::SIDEBAR_SEARCH_H))
+                .text_color(p.muted)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    store_search.update(cx, |s, cx| s.toggle_command_bar(cx));
                 }),
         );
 
         // Favorites: pinned tabs as a 3-up tile grid.
         if !pinned.is_empty() {
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+            list = list.child(self.disclosure(
+                "sb-pinned",
+                PINNED_KEY,
+                "PINNED",
+                !self.collapsed.contains(PINNED_KEY),
+                None,
+                p,
+                cx,
+            ));
             let mut grid = div().mt(px(8.)).flex().flex_wrap().flex_none().gap(px(6.));
-            for tab in &pinned {
-                let on = active_tab.as_ref() == Some(&tab.id);
-                let store = self.store.clone();
-                let tid = tab.id.clone();
-                grid = grid.child(
-                    div()
-                        .id(SharedString::from(format!("tile-{}", tab.id)))
-                        .h(px(38.))
-                        .when(compact, |d| d.w_full())
-                        .when(!compact, |d| {
-                            d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(10.))
-                        .cursor_pointer()
-                        .bg(if p.is_dark {
-                            p.ink(0.05)
-                        } else {
-                            hsla(0., 0., 1., 0.5)
-                        })
-                        .border_1()
-                        .border_color(if on {
-                            p.accent.opacity(0.6)
-                        } else {
-                            p.hairline(0.04)
-                        })
-                        .hover(|s| s.bg(p.pill()))
-                        .child(tab_badge(tab, 16., &p))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            store.update(cx, |s, cx| s.focus_tab(&tid, cx));
-                        }),
-                );
+            if !self.collapsed.contains(PINNED_KEY) {
+                for tab in &pinned {
+                    let on = active_tab.as_ref() == Some(&tab.id);
+                    let store = self.store.clone();
+                    let tid = tab.id.clone();
+                    grid = grid.child(
+                        div()
+                            .id(SharedString::from(format!("tile-{}", tab.id)))
+                            .h(px(38.))
+                            .when(compact, |d| d.w_full())
+                            .when(!compact, |d| {
+                                d.w(px(((width - 2. * Theme::SPACE_SM - 12.) / 3.).floor()))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(10.))
+                            .cursor_pointer()
+                            .bg(if p.is_dark {
+                                p.ink(0.05)
+                            } else {
+                                hsla(0., 0., 1., 0.5)
+                            })
+                            .border_1()
+                            .border_color(if on {
+                                p.accent.opacity(0.6)
+                            } else {
+                                p.hairline(0.04)
+                            })
+                            .hover(|s| s.bg(p.pill()))
+                            .child(tab_badge(tab, 16., &p))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                store.update(cx, |s, cx| s.focus_tab(&tid, cx));
+                            }),
+                    );
+                }
             }
             list = list.child(grid);
         }
 
-        // Chats (agent sessions) and Pages (Notion-style docs), space-wide.
-        let of_kind = |kind: TabKind| -> Vec<Tab> {
-            groups
-                .iter()
-                .flat_map(|g| g.tab_ids().into_iter().chain(g.dock.tabs.iter().cloned()))
-                .filter_map(|id| tab_of(&id))
-                .filter(|t| t.kind == kind && !t.pinned)
-                .collect()
-        };
-        let sections: [(
-            &str,
-            &str,
-            &'static str,
-            &'static str,
-            &'static str,
-            TabKind,
-            bool,
-        ); 2] = [
-            (
-                "sb-chats",
-                "Chats",
-                "New Chat",
-                icons::PEN_NEW_SQUARE,
-                "hifi://agent",
-                TabKind::Agent,
-                true,
-            ),
-            (
-                "sb-pages",
-                "Pages",
-                "New Page",
-                icons::DOCUMENT_ADD,
-                "hifi://notes",
-                TabKind::Notes,
-                false,
-            ),
-        ];
-        for (id, title, new_label, new_icon, url, kind, dock) in sections {
-            let open = !self.collapsed.contains(id);
-            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
-            if !compact {
-                list = list.child(self.disclosure(id, id, title, open, None, p, cx));
-            }
-            if !(open || compact) {
-                continue;
-            }
-            let store = self.store.clone();
-            let mut col = div().flex().flex_col().flex_none().gap(px(1.)).child(
-                action_row(id, new_icon, new_label, compact, p)
-                    .text_color(p.muted)
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        store.update(cx, |s, cx| {
-                            if dock {
-                                s.dock_open(url, cx);
-                            } else {
-                                s.open_tab(url, None, None, cx);
-                            }
-                        });
-                    }),
-            );
-            for tab in of_kind(kind) {
-                col =
-                    col.child(self.tab_row(&tab, active_tab.as_ref() == Some(&tab.id), compact, p));
-            }
-            list = list.child(col);
-        }
-
-        // Tabs: the browser's own section, then one disclosure per group.
-        list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
-        let store_nt = self.store.clone();
-        list = list.child(
-            action_row("sb-new-tab", icons::PLUS, "New Tab", compact, p)
-                .text_color(p.muted)
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    store_nt.update(cx, |s, cx| {
-                        s.open_tab("hifi://newtab", None, None, cx);
-                    });
-                }),
-        );
-
-        for group in &groups {
-            let gid = group.id.clone();
-            let g_active = active_group.as_ref() == Some(&gid);
-            let active_in_group = if g_active {
-                group.active_tab.clone()
-            } else {
-                None
-            };
-
-            let mut rows: Vec<gpui::AnyElement> = Vec::new();
-            let mut all = Vec::new();
-            if let Some(root) = &group.root {
-                stacks(root, &mut all);
-            }
-            let mut shown_ids: Vec<TabId> = Vec::new();
-            if all.len() > 1 {
-                let shown: Vec<Tab> = all
-                    .iter()
-                    .filter_map(|stack| {
-                        stack
-                            .iter()
-                            .find(|t| group.active_tab.as_ref() == Some(*t))
-                            .or_else(|| stack.last())
-                            .and_then(tab_of)
-                    })
+        let space_tabs: Vec<Tab> = groups
+            .iter()
+            .flat_map(|g| g.tab_ids().into_iter().chain(g.dock.tabs.iter().cloned()))
+            .filter_map(|id| tab_of(&id))
+            .filter(|t| !t.pinned)
+            .collect();
+        let today_groups: Vec<(String, String, Vec<Tab>)> = groups
+            .iter()
+            .map(|group| {
+                let tabs = group
+                    .tab_ids()
+                    .into_iter()
+                    .chain(group.dock.tabs.iter().cloned())
+                    .filter_map(|id| tab_of(&id))
+                    .filter(|tab| !tab.pinned && matches!(tab.kind, TabKind::Web | TabKind::NewTab))
                     .collect();
-                shown_ids = shown.iter().map(|t| t.id.clone()).collect();
-                if compact {
-                    for t in &shown {
-                        rows.push(self.tab_row(
-                            t,
-                            active_in_group.as_ref() == Some(&t.id),
-                            true,
-                            p,
-                        ));
-                    }
-                } else {
-                    rows.push(self.split_row(&gid, &shown, active_in_group.as_ref(), p));
-                }
-            }
-            for id in all.iter().flatten() {
-                if shown_ids.contains(id) {
-                    continue;
-                }
-                let Some(tab) = tab_of(id) else { continue };
-                if tab.pinned || matches!(tab.kind, TabKind::Agent | TabKind::Notes) {
-                    continue;
-                }
-                rows.push(self.tab_row(&tab, active_in_group.as_ref() == Some(id), compact, p));
-            }
-
-            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
-            if compact {
-                list = list.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_none()
-                        .gap(px(1.))
-                        .children(rows),
-                );
-                continue;
-            }
-            let open = !self.collapsed.contains(&gid);
-            let store_plus = self.store.clone();
-            let gid_plus = gid.clone();
-            let plus = div()
-                .id(SharedString::from(format!("group-plus-{gid}")))
-                .size(px(18.))
+                (group.id.clone(), group.name.clone(), tabs)
+            })
+            .collect();
+        let today_has_rows = today_groups.iter().any(|(_, _, tabs)| !tabs.is_empty());
+        if !compact || today_has_rows {
+            let store = self.store.clone();
+            let action = div()
+                .id("sb-today-action")
+                .size(px(20.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(5.))
                 .opacity(0.)
                 .group_hover("sb-disclosure", |s| s.opacity(1.))
-                .hover(|s| s.bg(p.wash(0.14)))
-                .child(glyph(icons::PLUS, 11., p.muted))
+                .hover(|s| s.bg(p.glass_hover()))
+                .child(glyph(icons::PLUS, 13., p.muted))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
-                    store_plus.update(cx, |s, cx| {
-                        s.open_tab("hifi://newtab", Some(gid_plus.clone()), None, cx);
-                    });
+                    store.update(cx, |s, cx| s.open_tab("hifi://newtab", None, None, cx));
                 })
                 .into_any_element();
-            let label = if g_active {
-                group.name.clone()
-            } else {
-                format!("{}  ·  {}", group.name, group.tab_ids().len())
-            };
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
             list = list.child(self.disclosure(
-                SharedString::from(format!("group-{gid}")),
-                &gid,
-                label,
-                open,
-                Some(plus),
+                "sb-today",
+                "__today",
+                "TODAY",
+                true,
+                Some(action),
                 p,
                 cx,
             ));
-            if open {
-                list = list.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_none()
-                        .gap(px(1.))
-                        .pb(px(SIDEBAR_DISCLOSURE_BODY_INSET))
-                        .children(rows),
-                );
+            if today_groups.len() <= 1 || compact {
+                let tabs = today_groups.iter().flat_map(|(_, _, tabs)| tabs.iter());
+                list = list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
+                    tabs.map(|tab| {
+                        self.tab_row(tab, active_tab.as_ref() == Some(&tab.id), compact, p)
+                    }),
+                ));
+            } else {
+                for (gid, name, tabs) in &today_groups {
+                    if tabs.is_empty() {
+                        continue;
+                    }
+                    let open = !self.collapsed.contains(gid);
+                    list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+                    list = list.child(self.disclosure(
+                        SharedString::from(format!("today-group-{gid}")),
+                        gid,
+                        name.clone(),
+                        open,
+                        None,
+                        p,
+                        cx,
+                    ));
+                    if open {
+                        list =
+                            list.child(div().flex().flex_col().flex_none().gap(px(1.)).children(
+                                tabs.iter().map(|tab| {
+                                    self.tab_row(
+                                        tab,
+                                        active_tab.as_ref() == Some(&tab.id),
+                                        compact,
+                                        p,
+                                    )
+                                }),
+                            ));
+                    }
+                }
             }
         }
-        if !compact {
-            let store_g = self.store.clone();
-            list = list
-                .child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none())
-                .child(
-                    action_row(
-                        "sb-newgroup",
-                        icons::FOLDER_WITH_FILES,
-                        "New Group",
-                        false,
-                        p,
-                    )
-                    .text_color(p.faint)
+
+        // Chats, agents, and pages are space-wide sections. Header actions
+        // live in the disclosure row rather than consuming a peer row.
+        let sections: [(&str, &str, &'static str, &'static str); 3] = [
+            ("sb-chats", "CHATS", "New Chat", "hifi://agent"),
+            ("sb-agents", "AGENTS", "New Agent", "hifi://agent"),
+            ("sb-pages", "PAGES", "New Page", "hifi://notes"),
+        ];
+        for (id, title, _new_label, url) in sections {
+            let tabs: Vec<Tab> = space_tabs
+                .iter()
+                .filter(|tab| match title {
+                    "CHATS" => tab.kind == TabKind::Agent && !tab.prompt.trim().is_empty(),
+                    "AGENTS" => {
+                        matches!(
+                            tab.kind,
+                            TabKind::Terminal | TabKind::Diff | TabKind::Preview
+                        ) || (tab.kind == TabKind::Agent && tab.prompt.trim().is_empty())
+                    }
+                    "PAGES" => tab.kind == TabKind::Notes,
+                    _ => false,
+                })
+                .cloned()
+                .collect();
+            if tabs.is_empty() {
+                continue;
+            }
+            let open = !self.collapsed.contains(id);
+            list = list.child(div().h(px(SIDEBAR_SECTION_GAP)).flex_none());
+            if !compact {
+                let store = self.store.clone();
+                let url = url.to_string();
+                let dock = title != "PAGES";
+                let action = div()
+                    .id(SharedString::from(format!("{id}-action")))
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .opacity(0.)
+                    .group_hover("sb-disclosure", |s| s.opacity(1.))
+                    .hover(|s| s.bg(p.glass_hover()))
+                    .child(glyph(icons::PLUS, 13., p.muted))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        store_g.update(cx, |s, cx| {
-                            s.create_group("Group", None, cx);
+                        cx.stop_propagation();
+                        store.update(cx, |s, cx| {
+                            if dock {
+                                s.dock_open(&url, cx);
+                            } else {
+                                s.open_tab(&url, None, None, cx);
+                            }
                         });
-                    }),
-                );
+                    })
+                    .into_any_element();
+                list = list.child(self.disclosure(id, id, title, open, Some(action), p, cx));
+            }
+            if !(open || compact) {
+                continue;
+            }
+            let mut col = div().flex().flex_col().flex_none().gap(px(1.));
+            for tab in tabs {
+                col =
+                    col.child(self.tab_row(&tab, active_tab.as_ref() == Some(&tab.id), compact, p));
+            }
+            list = list.child(col);
+        }
+
+        if !today_has_rows && !compact {
+            list = list.child(
+                div()
+                    .h(px(Theme::ROW_H))
+                    .px(px(Theme::SPACE_SM))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(p.faint)
+                    .child("No tabs yet — ⌘T"),
+            );
         }
         list = list.child(div().h(px(12.)).flex_none());
         bar = bar.child(list);
@@ -803,7 +845,7 @@ impl gpui::Render for Sidebar {
             .items_center()
             .gap(px(4.))
             .px(px(Theme::SPACE_SM))
-            .h(px(44.))
+            .h(px(Theme::SPACE_DOCK_H))
             .border_t_1()
             .border_color(p.hairline(0.05))
             .when(compact, |d| d.flex_col().h_auto().py(px(8.)));
@@ -811,11 +853,12 @@ impl gpui::Render for Sidebar {
             let on = *id == space_id;
             let store = self.store.clone();
             let sid = id.clone();
+            let tooltip_name = name.clone();
             let letter: String = name.chars().next().unwrap_or('S').to_uppercase().collect();
             bottom = bottom.child(
                 div()
                     .id(SharedString::from(format!("space-{id}")))
-                    .size(px(24.))
+                    .size(px(Theme::SPACE_DOCK_BTN))
                     .flex_none()
                     .rounded(px(6.))
                     .flex()
@@ -824,21 +867,33 @@ impl gpui::Render for Sidebar {
                     .cursor_pointer()
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .when(on, |d| d.bg(p.selected()).text_color(p.text))
+                    .when(on, |d| {
+                        d.bg(p.selected())
+                            .text_color(p.text)
+                            .border_1()
+                            .border_color(p.accent.opacity(0.8))
+                    })
                     .when(!on, |d| {
                         d.text_color(p.faint).hover(|s| s.bg(p.glass_hover()))
                     })
                     .child(letter)
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        store.update(cx, |s, cx| s.switch_space(&sid, cx));
+                    .tooltip(move |_, cx| cx.new(|_| SpaceTooltip(tooltip_name.clone())).into())
+                    .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                        store.update(cx, |s, cx| {
+                            s.switch_space(&sid, cx);
+                            s.pending_space_menu = Some(event.position);
+                        });
                     }),
             );
         }
-        let store_sp = self.store.clone();
         let store_st = self.store.clone();
+        let store_settings = store_st.clone();
         bottom = bottom
             .child(icon_button("space-add", icons::PLUS, p, move |cx| {
-                store_sp.update(cx, |s, cx| s.create_space("Space", cx));
+                store_st.update(cx, |s, cx| {
+                    s.pending_space_menu = Some(point(px(24.), px(24.)));
+                    cx.notify();
+                });
             }))
             .when(!compact, |d| d.child(div().flex_1()))
             .child(icon_button(
@@ -846,7 +901,7 @@ impl gpui::Render for Sidebar {
                 icons::SETTINGS,
                 p,
                 move |cx| {
-                    store_st.update(cx, |s, cx| {
+                    store_settings.update(cx, |s, cx| {
                         s.open_tab("hifi://settings", None, None, cx);
                     });
                 },
